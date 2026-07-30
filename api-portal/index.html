@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YOOX Cloud GCS 上云 API 文档</title>
+  <meta name="description" content="YOOX Cloud GCS 上云 API 在线文档：基础介绍、遥控器功能、航线文件格式标准、Enterprise 上云。" />
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <button class="menu-toggle" id="menuToggle" aria-label="菜单">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <div class="brand">
+      <span class="brand-mark">Y</span>
+      <span>YOOX Cloud GCS<br><small>上云 API 文档</small></span>
+    </div>
+    <nav class="top-nav">
+      <a data-goto="overview">基础介绍</a>
+      <a data-goto="rc-features">功能集合</a>
+      <a data-goto="wayline-format">API 介绍</a>
+    </nav>
+    <div class="top-actions">
+      <div class="search-box">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="searchInput" type="search" placeholder="搜索文档…" autocomplete="off" />
+      </div>
+      <a class="ghost-btn" href="/" title="返回控制台">控制台</a>
+    </div>
+  </header>
+
+  <div class="sidebar-mask" id="sidebarMask"></div>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <nav id="sideNav"></nav>
+    </aside>
+
+    <main class="content" id="content">
+
+      <!-- ============ 基础介绍 ============ -->
+      <section class="doc-page" id="overview" data-title="基础介绍">
+        <div class="breadcrumb">基础介绍</div>
+        <h1>基础介绍</h1>
+        <p class="doc-lead">YOOX Cloud GCS 是一套可容器化私有部署的网页云端地面站，基于上云 API 的设备协议，为无人机、遥控器与机巢提供设备管理、实时直播、远程控制、航线任务与媒体归档能力。本节介绍平台定位、系统架构与接口通用约定。</p>
+
+        <h2 id="ov-intro">平台简介</h2>
+        <p>YOOX Cloud GCS 面向行业无人机的云端统一接入与作业场景，核心能力包括：</p>
+        <ul>
+          <li><strong>设备管理</strong>：网关（遥控器/机巢）与子设备（飞行器/负载）的绑定、拓扑、属性与在线状态。</li>
+          <li><strong>实时直播</strong>：设备侧以 RTSP 推流，服务端经 MediaMTX 转封装为 WebRTC，浏览器通过 WHEP 会话播放。</li>
+          <li><strong>虚拟座舱 / 远程控制</strong>：DRC（Direct Remote Control）指令飞行，含控制权租约、心跳与安全联锁。</li>
+          <li><strong>航线任务</strong>：上传 KMZ 航线文件、创建与调度飞行任务、跟踪进度并回传媒体。</li>
+          <li><strong>媒体归档</strong>：媒体文件入对象存储，短时授权 URL 访问。</li>
+        </ul>
+        <div class="callout info"><strong>协议边界：</strong>上云 API 的推流能力矩阵包含 RTMP、RTSP、GB28181。当前运行版本仅开放 <code>RTSP</code> 入流，其余为后期能力。</div>
+
+        <h2 id="ov-arch">系统架构</h2>
+        <p>平台采用前后端分离 + 容器编排。设备通过 MQTT 接入消息代理，Web 控制台与后端服务通过 HTTP / WebSocket 交互，媒体与对象存储独立成栈：</p>
+        <div class="arch-flow">
+          <span class="arch-node">设备 / 机巢</span>
+          <span class="arch-arrow">— MQTT —▶</span>
+          <span class="arch-node">EMQX</span>
+          <span class="arch-arrow">◀—▶</span>
+          <span class="arch-node brand">Cloud Service（Spring Boot）</span>
+          <span class="arch-arrow">◀—▶</span>
+          <span class="arch-node">Web 控制台（Vue3）</span>
+        </div>
+        <div class="arch-flow">
+          <span class="arch-node">设备 RTSP</span>
+          <span class="arch-arrow">—▶</span>
+          <span class="arch-node">MediaMTX</span>
+          <span class="arch-arrow">— WHEP —▶</span>
+          <span class="arch-node">浏览器 WebRTC</span>
+          <span class="arch-arrow">｜</span>
+          <span class="arch-node">MinIO 对象存储</span>
+        </div>
+        <table class="api">
+          <thead><tr><th>组件</th><th>职责</th></tr></thead>
+          <tbody>
+            <tr><td>Cloud Service</td><td>业务 API、设备物模型、鉴权、DRC 控制、航线任务编排</td></tr>
+            <tr><td>EMQX</td><td>设备与云端 MQTT 消息代理，基于 Redis 的 Topic ACL</td></tr>
+            <tr><td>MediaMTX</td><td>RTSP 入流转 WebRTC（WHEP）出流</td></tr>
+            <tr><td>MySQL / Redis</td><td>业务持久化 / 会话、缓存、OSD 与 ACL</td></tr>
+            <tr><td>MinIO</td><td>航线与媒体对象存储，签发短时访问凭据</td></tr>
+          </tbody>
+        </table>
+
+        <h2 id="ov-convention">接口通用约定</h2>
+        <p>HTTP API 统一由 Web 入口反向代理。以下示例默认基地址：</p>
+        <pre><code>BASE_URL=http://&lt;host&gt;:&lt;http-port&gt;</code></pre>
+        <p>除登录、令牌刷新、健康检查与 OpenAPI 外，请求须携带鉴权头：</p>
+        <pre><code>x-auth-token: &lt;access_token&gt;
+Content-Type: application/json</code></pre>
+        <p>统一响应信封：</p>
+        <pre><code>{
+  "code": 0,
+  "message": "success",
+  "data": {}
+}</code></pre>
+        <p><code>code=0</code> 表示业务成功；HTTP <code>401</code> 或业务 <code>code=401</code> 表示令牌无效。调用方必须同时检查 HTTP 状态码与业务 <code>code</code>。</p>
+
+        <h2 id="ov-auth">登录与鉴权</h2>
+        <p>账号分两类：<code>flag=1</code> 为 Web 账号，<code>flag=2</code> 为 Pilot（遥控器）账号。登录成功返回 <code>access_token</code>、<code>workspace_id</code> 及用户信息。</p>
+        <pre><code>curl -sS "$BASE_URL/manage/api/v1/login" \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"&lt;password&gt;","flag":1}'</code></pre>
+        <p>令牌刷新：</p>
+        <pre><code>curl -sS -X POST "$BASE_URL/manage/api/v1/token/refresh" \
+  -H "x-auth-token: $TOKEN"</code></pre>
+        <div class="callout info"><strong>令牌机制：</strong>令牌为 HMAC-SHA256 签名的 JWT，默认有效期 86400 秒。签名密钥由部署侧通过环境变量注入；修改密钥会使既有 Web 与 DRC 会话立即失效。</div>
+
+        <h2 id="ov-quickstart">快速开始</h2>
+        <ol>
+          <li>调用登录接口获取 <code>access_token</code> 与 <code>workspace_id</code>。</li>
+          <li>拉取设备拓扑：<code>GET /manage/api/v1/devices/{workspace_id}/devices</code>。</li>
+          <li>查询直播能力并启动 RTSP 视频源，前端用返回的 WHEP URL 播放。</li>
+          <li>如需远控，进入 DRC 流程获取控制权与短时 MQTT 凭据。</li>
+          <li>上传 KMZ 航线并创建飞行任务，通过 WebSocket 跟踪进度。</li>
+        </ol>
+        <div class="page-nav">
+          <span></span>
+          <a class="next" data-goto="rc-features"><span class="dir">下一篇 ▶</span><br><span class="ttl">功能集合 · 遥控器功能</span></a>
+        </div>
+        <div class="footer">YOOX Cloud GCS · 内部分发文档 · 本页内容基于本项目 API 实现原创编写</div>
+      </section>
+
+      <!-- ============ 功能集合-遥控器功能 ============ -->
+      <section class="doc-page" id="rc-features" data-title="功能集合 · 遥控器功能">
+        <div class="breadcrumb">功能集合 / 遥控器功能</div>
+        <h1>功能集合 · 遥控器功能</h1>
+        <p class="doc-lead">遥控器（Pilot）侧的核心是「把飞行控制权安全地交给云端网页」。本节围绕控制权管理、DRC 指令飞行、指令控制与负载控制展开，所有能力均以设备能力上报为准动态开放。</p>
+
+        <h2 id="rc-login">遥控器账号接入</h2>
+        <p>遥控器以 Pilot 账号（<code>flag=2</code>）登录，成功后获得平台下发的 MQTT 接入地址与设备账号；设备侧据此建立与消息代理的长连接并上报拓扑。</p>
+        <pre><code>curl -sS "$BASE_URL/manage/api/v1/login" \
+  -H 'content-type: application/json' \
+  -d '{"username":"&lt;pilot_user&gt;","password":"&lt;password&gt;","flag":2}'</code></pre>
+
+        <h2 id="rc-authority">控制权管理</h2>
+        <p>飞行控制权与负载控制权相互独立，均为排他资源。进入远控前必须先抢占对应控制权，避免多端争抢。</p>
+        <table class="api">
+          <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="method post">POST</span></td><td><code>/control/api/v1/devices/{sn}/authority/flight</code></td><td>获取飞行控制权</td></tr>
+            <tr><td><span class="method post">POST</span></td><td><code>/control/api/v1/devices/{sn}/authority/payload</code></td><td>获取负载控制权</td></tr>
+          </tbody>
+        </table>
+
+        <h2 id="rc-drc">DRC 指令飞行</h2>
+        <p>DRC 是一个有状态的安全流程，生命周期为：</p>
+        <pre><code>connect ──▶ enter ──▶ MQTT 心跳 / 控制 ──▶ exit</code></pre>
+        <table class="api">
+          <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="method post">POST</span></td><td><code>/control/api/v1/workspaces/{workspace_id}/drc/connect</code></td><td>获取 MQTT 短时连接配置</td></tr>
+            <tr><td><span class="method post">POST</span></td><td><code>/control/api/v1/workspaces/{workspace_id}/drc/enter</code></td><td>获取控制权并生成精确 Topic ACL</td></tr>
+            <tr><td><span class="method post">POST</span></td><td><code>/control/api/v1/workspaces/{workspace_id}/drc/exit</code></td><td>释放控制权并清理 ACL</td></tr>
+          </tbody>
+        </table>
+        <p>连接请求：</p>
+        <pre><code>{ "client_id": "", "expire_sec": 3600 }</code></pre>
+        <p>进入 / 退出请求：</p>
+        <pre><code>{
+  "client_id": "&lt;connect 返回值&gt;",
+  "dock_sn": "&lt;dock sn&gt;",
+  "expire_sec": 3600,
+  "device_info": { "osd_frequency": 10, "hsi_frequency": 1 }
+}</code></pre>
+        <p><code>expire_sec</code> 范围 1800–86400 秒。进入前服务会校验设备在线、飞行状态、任务状态与控制权。连接信息中的 <code>password</code> 为短时 JWT，客户端不得持久化。</p>
+        <div class="callout warn"><strong>安全联锁：</strong>控制端应每秒发送心跳，并以 10 Hz 发布 <code>drone_control</code>。窗口失焦、按键释放、MQTT 断开或退出时，必须先发送零杆量再释放控制权。</div>
+        <p>摇杆控制消息保持设备物模型信封：</p>
+        <pre><code>{
+  "tid": "&lt;uuid&gt;",
+  "bid": "&lt;uuid&gt;",
+  "timestamp": 1785319200000,
+  "method": "drone_control",
+  "data": { "seq": 123, "x": 0, "y": 0, "h": 0, "w": 0, "freq": 10, "delay_time": 300 }
+}</code></pre>
+
+        <h2 id="rc-commands">指令控制</h2>
+        <p>面向机巢/飞行器的通用服务指令与点位飞行：</p>
+        <table class="api">
+          <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="method post">POST</span></td><td><code>/control/api/v1/devices/{sn}/jobs/{service_identifier}</code></td><td>通用服务指令，如返航</td></tr>
+            <tr><td><span class="method post">POST</span></td><td><code>/control/api/v1/devices/{sn}/jobs/fly-to-point</code></td><td>飞向目标点</td></tr>
+            <tr><td><span class="method delete">DELETE</span></td><td><code>/control/api/v1/devices/{sn}/jobs/fly-to-point</code></td><td>取消飞向目标点</td></tr>
+            <tr><td><span class="method post">POST</span></td><td><code>/control/api/v1/devices/{sn}/jobs/takeoff-to-point</code></td><td>起飞到点</td></tr>
+          </tbody>
+        </table>
+
+        <h2 id="rc-payload">云台与负载控制</h2>
+        <table class="api">
+          <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="method post">POST</span></td><td><code>/control/api/v1/devices/{sn}/payload/commands</code></td><td>云台、相机与负载命令</td></tr>
+          </tbody>
+        </table>
+        <div class="callout danger"><strong>能力驱动：</strong>可用的 <code>service_identifier</code> 与负载命令受机型、固件与设备能力限制。前端应按设备能力上报显示，不得把未验证指令作为固定按钮开放。</div>
+        <div class="page-nav">
+          <a data-goto="overview"><span class="dir">◀ 上一篇</span><br><span class="ttl">基础介绍</span></a>
+          <a class="next" data-goto="wayline-format"><span class="dir">下一篇 ▶</span><br><span class="ttl">航线文件格式标准</span></a>
+        </div>
+        <div class="footer">YOOX Cloud GCS · 内部分发文档 · 本页内容基于本项目 API 实现原创编写</div>
+      </section>
+
+      <!-- ============ API介绍-航线文件格式标准 ============ -->
+      <section class="doc-page" id="wayline-format" data-title="API 介绍 · 航线文件格式标准">
+        <div class="breadcrumb">API 介绍 / 航线文件格式标准</div>
+        <h1>航线文件格式标准</h1>
+        <p class="doc-lead">平台航线以 KMZ 压缩包承载，内部采用基于 KML 的 WPML 航线标记语言描述模板与执行航线。本节说明文件结构、核心元素及配套的航线与任务 API。</p>
+
+        <h2 id="wl-kmz">KMZ 文件结构</h2>
+        <p>KMZ 本质是一个 ZIP 压缩包，约定目录为 <code>wpmz/</code>，包含两个核心文件：</p>
+        <table class="api">
+          <thead><tr><th>文件</th><th>作用</th></tr></thead>
+          <tbody>
+            <tr><td><code>wpmz/template.kml</code></td><td>航线模板：作业类型、坐标/高度参考、全局速度、航点与动作模板</td></tr>
+            <tr><td><code>wpmz/waylines.wpml</code></td><td>执行航线：由模板解算出的、设备可直接执行的具体航点序列</td></tr>
+            <tr><td><code>wpmz/res/</code></td><td>可选资源目录（如面状航线所需附属数据）</td></tr>
+          </tbody>
+        </table>
+        <pre><code>mission.kmz
+└── wpmz/
+    ├── template.kml
+    ├── waylines.wpml
+    └── res/</code></pre>
+
+        <h2 id="wl-elements">WPML 核心元素</h2>
+        <p>WPML 使用 <code>&lt;wpml:*&gt;</code> 命名空间扩展标准 KML。常用元素分为三层：</p>
+        <h3>航线级</h3>
+        <ul>
+          <li><code>templateType</code>：作业类型（航点、航带/面状、条带等）。</li>
+          <li><code>waylineCoordinateSysParam</code>：坐标系与高度模式（相对起飞点 / 海拔 / 相对地表）。</li>
+          <li><code>autoFlightSpeed</code>：全局自动飞行速度。</li>
+          <li><code>globalRTHHeight</code>：全局返航高度。</li>
+        </ul>
+        <h3>航点级</h3>
+        <ul>
+          <li><code>Placemark</code> + <code>Point/coordinates</code>：经纬度坐标。</li>
+          <li><code>wpml:height</code> / <code>wpml:ellipsoidHeight</code>：航点高度。</li>
+          <li><code>wpml:waypointHeadingParam</code>：航向控制策略。</li>
+          <li><code>wpml:waypointTurnParam</code>：转弯模式（协调转弯、顶点等）。</li>
+        </ul>
+        <h3>动作级</h3>
+        <ul>
+          <li><code>wpml:actionGroup</code>：动作组，绑定触发方式。</li>
+          <li><code>wpml:action</code>：具体动作（拍照、录像、悬停、云台转动、变焦等）。</li>
+        </ul>
+        <div class="callout info"><strong>模板与执行分离：</strong><code>template.kml</code> 描述「意图」，<code>waylines.wpml</code> 描述「执行」。平台侧或设备侧据模板解算出执行航线，保证不同机型按各自能力落地同一作业意图。</div>
+
+        <h2 id="wl-api">航线与任务 API</h2>
+        <table class="api">
+          <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="method get">GET</span></td><td><code>/wayline/api/v1/workspaces/{workspace_id}/waylines</code></td><td>KMZ 航线分页</td></tr>
+            <tr><td><span class="method post">POST</span></td><td><code>/wayline/api/v1/workspaces/{workspace_id}/waylines/file/upload</code></td><td>上传 KMZ，字段名 <code>file</code></td></tr>
+            <tr><td><span class="method delete">DELETE</span></td><td><code>/wayline/api/v1/workspaces/{workspace_id}/waylines/{wayline_id}</code></td><td>删除航线</td></tr>
+            <tr><td><span class="method post">POST</span></td><td><code>/wayline/api/v1/workspaces/{workspace_id}/flight-tasks</code></td><td>创建飞行任务</td></tr>
+            <tr><td><span class="method get">GET</span></td><td><code>/wayline/api/v1/workspaces/{workspace_id}/jobs</code></td><td>任务分页</td></tr>
+            <tr><td><span class="method put">PUT</span></td><td><code>/wayline/api/v1/workspaces/{workspace_id}/jobs/{job_id}</code></td><td>暂停 / 恢复任务</td></tr>
+            <tr><td><span class="method delete">DELETE</span></td><td><code>/wayline/api/v1/workspaces/{workspace_id}/jobs?job_id=&lt;id&gt;</code></td><td>取消任务</td></tr>
+          </tbody>
+        </table>
+        <p>上传 KMZ：</p>
+        <pre><code>curl -sS "$BASE_URL/wayline/api/v1/workspaces/$WORKSPACE_ID/waylines/file/upload" \
+  -H "x-auth-token: $TOKEN" \
+  -F 'file=@mission.kmz'</code></pre>
+        <p>创建任务核心字段：</p>
+        <pre><code>{
+  "name": "园区巡检-001",
+  "file_id": "&lt;wayline id&gt;",
+  "dock_sn": "&lt;dock sn&gt;",
+  "wayline_type": 0,
+  "task_type": 0,
+  "rth_altitude": 100,
+  "out_of_control_action": 0,
+  "min_battery_capacity": 60,
+  "min_storage_capacity": 1024
+}</code></pre>
+        <p><code>rth_altitude</code> 范围 20–500 米，最低电量范围 50–90。定时任务还需 <code>task_days</code>、<code>task_periods</code>。枚举实际值以在线 OpenAPI 与设备能力为准。</p>
+        <div class="callout warn"><strong>校验要点：</strong>创建任务前应确认 KMZ 与目标机型匹配、返航高度高于航线区域障碍、电量与存储阈值合理、机巢时间已同步。</div>
+        <div class="page-nav">
+          <a data-goto="rc-features"><span class="dir">◀ 上一篇</span><br><span class="ttl">遥控器功能</span></a>
+          <a class="next" data-goto="enterprise"><span class="dir">下一篇 ▶</span><br><span class="ttl">Enterprise 上云</span></a>
+        </div>
+        <div class="footer">YOOX Cloud GCS · 内部分发文档 · 本页内容基于本项目实现及公开的 KMZ/WPML 结构原创编写</div>
+      </section>
+
+      <!-- ============ API介绍-Enterprise上云 ============ -->
+      <section class="doc-page" id="enterprise" data-title="API 介绍 · Enterprise 上云">
+        <div class="breadcrumb">API 介绍 / Enterprise 上云</div>
+        <h1>Enterprise 上云</h1>
+        <p class="doc-lead">Enterprise 上云描述企业级设备如何通过 MQTT 物模型接入平台。本节说明接入架构、Topic 体系、消息信封与设备上线数据流。</p>
+
+        <h2 id="ep-arch">接入架构</h2>
+        <p>设备分为「网关设备」与「子设备」：网关（遥控器或机巢）直接建立 MQTT 连接，子设备（飞行器、负载）经由网关代理上云。平台按网关序列号（<code>gateway_sn</code>）组织 Topic。</p>
+        <div class="arch-flow">
+          <span class="arch-node">子设备（飞行器/负载）</span>
+          <span class="arch-arrow">—▶</span>
+          <span class="arch-node">网关（机巢/遥控器）</span>
+          <span class="arch-arrow">— MQTT —▶</span>
+          <span class="arch-node brand">平台（EMQX + Cloud Service）</span>
+        </div>
+
+        <h2 id="ep-credential">应用凭据</h2>
+        <p>设备侧与平台侧须使用一致的上云开发者应用信息：</p>
+        <table class="api">
+          <thead><tr><th>配置项</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>APP_ID</code></td><td>上云开发者应用 ID</td></tr>
+            <tr><td><code>APP_KEY</code></td><td>上云开发者应用 Key</td></tr>
+            <tr><td><code>APP_LICENSE</code></td><td>上云应用 License</td></tr>
+          </tbody>
+        </table>
+        <div class="callout info"><strong>凭据一致性：</strong>这三个值需与设备端使用的开发者应用一致。修改后需重启后端服务使配置生效。</div>
+
+        <h2 id="ep-topic">MQTT Topic 体系</h2>
+        <p>设备与平台围绕网关序列号约定一组 Topic：</p>
+        <pre><code>sys/product/{gateway_sn}/status            # 上下线状态
+thing/product/{gateway_sn}/requests        # 设备发起的请求
+thing/product/{gateway_sn}/state           # 设备状态 / 属性
+thing/product/{gateway_sn}/events          # 事件上报
+thing/product/{gateway_sn}/services_reply  # 服务调用应答</code></pre>
+        <p>平台下行的服务与属性 Topic 由 SDK 按设备序列号生成。</p>
+
+        <h2 id="ep-envelope">消息信封</h2>
+        <p>物模型消息统一采用如下信封，请求与应答必须关联同一事务 ID（<code>tid</code>）：</p>
+        <pre><code>{
+  "tid": "&lt;事务 id&gt;",
+  "bid": "&lt;业务 id&gt;",
+  "timestamp": 1785319200000,
+  "method": "&lt;方法名&gt;",
+  "data": { }
+}</code></pre>
+        <table class="api">
+          <thead><tr><th>字段</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td><code>tid</code></td><td>事务 ID，用于请求-应答关联</td></tr>
+            <tr><td><code>bid</code></td><td>业务 ID，标识一次业务流程</td></tr>
+            <tr><td><code>timestamp</code></td><td>毫秒级时间戳</td></tr>
+            <tr><td><code>method</code></td><td>方法名，标识消息语义</td></tr>
+            <tr><td><code>data</code></td><td>业务数据载荷</td></tr>
+          </tbody>
+        </table>
+
+        <h2 id="ep-online">设备上线数据流</h2>
+        <ol>
+          <li><strong>上线</strong>：网关在 <code>sys/product/{gateway_sn}/status</code> 上报上线，平台建立设备拓扑。</li>
+          <li><strong>属性 / 状态</strong>：设备持续在 <code>state</code> 上报设备属性与能力（如相机/码流能力）。</li>
+          <li><strong>OSD</strong>：飞行器高频上报姿态、位置、电量等遥测（缓存于 Redis）。</li>
+          <li><strong>事件</strong>：HMS 告警、任务进度等经 <code>events</code> 上报。</li>
+          <li><strong>服务调用</strong>：平台下发服务指令，设备经 <code>services_reply</code> 应答。</li>
+        </ol>
+        <div class="callout info"><strong>状态推送：</strong>平台通过 WebSocket <code>/api/v1/ws</code> 向前端推送设备状态、任务进度、告警与媒体事件，认证参数与消息业务码以在线 OpenAPI / 源码模型为准。</div>
+
+        <h2 id="ep-device-api">设备管理 API</h2>
+        <table class="api">
+          <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="method get">GET</span></td><td><code>/manage/api/v1/devices/{workspace_id}/devices</code></td><td>设备拓扑</td></tr>
+            <tr><td><span class="method get">GET</span></td><td><code>/manage/api/v1/devices/{workspace_id}/devices/{device_sn}</code></td><td>设备详情</td></tr>
+            <tr><td><span class="method post">POST</span></td><td><code>/manage/api/v1/devices/{device_sn}/binding</code></td><td>绑定设备</td></tr>
+            <tr><td><span class="method delete">DELETE</span></td><td><code>/manage/api/v1/devices/{device_sn}/unbinding</code></td><td>解绑设备</td></tr>
+            <tr><td><span class="method get">GET</span></td><td><code>/manage/api/v1/devices/{workspace_id}/devices/hms</code></td><td>HMS 告警分页</td></tr>
+          </tbody>
+        </table>
+        <div class="callout danger"><strong>安全基线：</strong>上线前须修改初始化密码与所有示例密钥，使用 TLS/WSS，限制 MQTT/RTSP 源 IP，管理端口不出公网；不得在日志中记录 JWT、MQTT 密码或对象存储签名 URL。</div>
+        <div class="page-nav">
+          <a data-goto="wayline-format"><span class="dir">◀ 上一篇</span><br><span class="ttl">航线文件格式标准</span></a>
+          <span></span>
+        </div>
+        <div class="footer">YOOX Cloud GCS · 内部分发文档 · 本页内容基于本项目 API 实现原创编写</div>
+      </section>
+
+    </main>
+
+    <aside class="toc" id="toc">
+      <div class="toc-title">本页目录</div>
+      <div id="tocList"></div>
+    </aside>
+  </div>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>

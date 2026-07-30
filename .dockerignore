@@ -1,0 +1,8 @@
+**/target/
+**/.git/
+**/.idea/
+**/*.iml
+**/node_modules/
+**/.DS_Store
+*.md
+docs/

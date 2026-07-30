@@ -1,0 +1,142 @@
+server:
+  port: ${YOOX_API_PORT:9000}
+  shutdown: graceful
+
+spring:
+  application:
+    name: yoox-cloud-gcs
+  main:
+    allow-bean-definition-overriding: true
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+  datasource:
+    druid:
+      type: com.alibaba.druid.pool.DruidDataSource
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      url: jdbc:mysql://${YOOX_DB_HOST:mysql}:${YOOX_DB_PORT:3306}/${YOOX_DB_NAME:cloud_sample}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      username: ${YOOX_DB_USER:yoox}
+      password: ${YOOX_DB_PASSWORD:yoox_db_change_me}
+      initial-size: 2
+      min-idle: 2
+      max-active: 20
+      max-wait: 60000
+  redis:
+    host: ${YOOX_REDIS_HOST:redis}
+    port: ${YOOX_REDIS_PORT:6379}
+    database: ${YOOX_REDIS_DATABASE:0}
+    username: ${YOOX_REDIS_USERNAME:}
+    password: ${YOOX_REDIS_PASSWORD:yoox_redis_change_me}
+    timeout: 5s
+    lettuce:
+      pool:
+        max-active: 16
+        max-idle: 8
+        min-idle: 1
+  servlet:
+    multipart:
+      max-file-size: 2GB
+      max-request-size: 2GB
+
+jwt:
+  issuer: ${YOOX_JWT_ISSUER:YOOX}
+  subject: ${YOOX_JWT_SUBJECT:YOOX_Cloud_GCS}
+  secret: ${YOOX_JWT_SECRET:replace_with_a_32_character_secret}
+  age: ${YOOX_JWT_AGE:86400}
+
+mqtt:
+  BASIC:
+    protocol: ${YOOX_MQTT_PROTOCOL:MQTT}
+    host: ${YOOX_MQTT_HOST:emqx}
+    port: ${YOOX_MQTT_PORT:1883}
+    username: ${YOOX_MQTT_USERNAME:}
+    password: ${YOOX_MQTT_PASSWORD:}
+    client-id: yoox-cloud-${HOSTNAME:service}
+    path:
+  DRC:
+    protocol: ${YOOX_DRC_MQTT_PROTOCOL:WS}
+    host: ${YOOX_DRC_MQTT_HOST:emqx}
+    port: ${YOOX_DRC_MQTT_PORT:8083}
+    path: ${YOOX_DRC_MQTT_PATH:/mqtt}
+    username: ${YOOX_DRC_MQTT_USERNAME:}
+    password: ${YOOX_DRC_MQTT_PASSWORD:}
+
+cloud-sdk:
+  mqtt:
+    inbound-topic: sys/product/+/status,thing/product/+/requests,thing/product/+/state
+
+device:
+  auto-registration:
+    enabled: ${YOOX_DEVICE_AUTO_REGISTER_ENABLED:true}
+    workspace-id: ${YOOX_DEVICE_AUTO_REGISTER_WORKSPACE_ID:e3dea0f5-37f2-4d79-ae58-490af3228069}
+
+url:
+  manage:
+    prefix: manage
+    version: /api/v1
+  map:
+    prefix: map
+    version: /api/v1
+  media:
+    prefix: media
+    version: /api/v1
+  wayline:
+    prefix: wayline
+    version: /api/v1
+  storage:
+    prefix: storage
+    version: /api/v1
+  control:
+    prefix: control
+    version: /api/v1
+
+oss:
+  enable: true
+  provider: minio
+  endpoint: ${YOOX_MINIO_ENDPOINT:http://minio:9000}
+  access-key: ${YOOX_MINIO_ACCESS_KEY:yoox_minio}
+  secret-key: ${YOOX_MINIO_SECRET_KEY:yoox_minio_change_me}
+  bucket: ${YOOX_MINIO_BUCKET:yoox-store}
+  expire: 3600
+  region:
+  object-dir-prefix: wayline
+
+cloud-api:
+  app:
+    id: ${YOOX_CLOUD_APP_ID:replace_with_device_cloud_app_id}
+    key: ${YOOX_CLOUD_APP_KEY:replace_with_device_cloud_app_key}
+    license: ${YOOX_CLOUD_APP_LICENSE:replace_with_device_cloud_license}
+
+# P0 runtime intentionally exposes RTSP only. The device cloud capability matrix
+# also contains RTMP and GB28181; they remain planned and are documented in API指南.
+livestream:
+  url:
+    rtsp:
+      url: rtsp://${YOOX_RTSP_USERNAME:yoox-publisher}:${YOOX_RTSP_PASSWORD:yoox_rtsp_change_me}@${YOOX_PUBLIC_RTSP_HOST:127.0.0.1}:${YOOX_PUBLIC_RTSP_PORT:8554}/
+      payUrl: ${YOOX_WHEP_URL_TEMPLATE:/webrtc/%s/whep}
+      username: ${YOOX_RTSP_USERNAME:yoox-publisher}
+      password: ${YOOX_RTSP_PASSWORD:yoox_rtsp_change_me}
+      port: ${YOOX_PUBLIC_RTSP_PORT:8554}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  metrics:
+    tags:
+      application: yoox-cloud-gcs
+
+logging:
+  level:
+    com.yoox: ${YOOX_LOG_LEVEL:INFO}
+  file:
+    name: ${YOOX_LOG_FILE:/app/logs/yoox-cloud-gcs.log}
+
+ntp:
+  server:
+    host: ${YOOX_NTP_SERVER:pool.ntp.org}

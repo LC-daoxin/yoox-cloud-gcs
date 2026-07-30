@@ -1,0 +1,60 @@
+logLevel: info
+logDestinations: [stdout]
+
+api: true
+apiAddress: :9997
+metrics: true
+metricsAddress: :9998
+pprof: false
+playback: false
+
+authMethod: internal
+authInternalUsers:
+  - user: yoox-publisher
+    pass: yoox_rtsp_change_me
+    ips: []
+    permissions:
+      - action: publish
+        path:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+        path:
+  - user: any
+    pass:
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: api
+      - action: metrics
+  - user: any
+    pass:
+    ips: ["172.16.0.0/12"]
+    permissions:
+      - action: metrics
+
+# P0 accepts RTSP publishing only. Other MediaMTX ingest protocols are
+# deliberately disabled even though the upstream device API has a wider matrix.
+rtsp: true
+rtspAddress: :8554
+rtspTransports: [tcp]
+rtmp: false
+hls: false
+srt: false
+moq: false
+
+# Web browsers cannot play RTSP directly. WHEP is enabled only as the browser
+# playback egress generated from the RTSP source.
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcLocalUDPAddress: :8189
+webrtcIPsFromInterfaces: true
+
+pathDefaults:
+  source: publisher
+  overridePublisher: false
+
+paths:
+  all_others:

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <artifactId>yoox-cloud-api</artifactId>
+        <groupId>com.yoox</groupId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>cloud-api</artifactId>
+    <groupId>com.yoox</groupId>
+    <version>1.0.3</version>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.yoox.great.context</groupId>
+            <artifactId>yoox-framework-context</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
+            <artifactId>yoox-framework-websocket</artifactId>
+            <groupId>com.yoox.great.websocket</groupId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
+            <artifactId>yoox-framework-mqtt</artifactId>
+            <groupId>com.yoox.great.mqtt</groupId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

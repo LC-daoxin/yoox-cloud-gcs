@@ -1,0 +1,35 @@
+package com.yoox.great.mqtt.model.device;
+
+import com.yoox.great.mqtt.enums.wayline.RthModeEnum;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import javax.validation.constraints.NotNull;
+
+public class DockDroneCurrentRthMode {
+
+    /**
+     * Current RTH height mode
+     */
+    @JsonProperty("current_rth_mode")
+    @NotNull
+    private RthModeEnum currentRthMode;
+
+    public DockDroneCurrentRthMode() {
+    }
+
+    @Override
+    public String toString() {
+        return "DockDroneCurrentRthMode{" +
+                "currentRthMode=" + currentRthMode +
+                '}';
+    }
+
+    public RthModeEnum getCurrentRthMode() {
+        return currentRthMode;
+    }
+
+    public DockDroneCurrentRthMode setCurrentRthMode(RthModeEnum currentRthMode) {
+        this.currentRthMode = currentRthMode;
+        return this;
+    }
+}

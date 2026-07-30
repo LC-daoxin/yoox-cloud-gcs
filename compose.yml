@@ -1,0 +1,442 @@
+name: ${COMPOSE_PROJECT_NAME:-yoox-cloud-gcs}
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: "5"
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks:
+    - yoox-net
+  logging: *default-logging
+
+services:
+  mysql:
+    <<: *service-defaults
+    image: mysql:8.4.6
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      MYSQL_DATABASE: ${YOOX_DB_NAME:-cloud_sample}
+      MYSQL_USER: ${YOOX_DB_USER:-yoox}
+      MYSQL_PASSWORD: ${YOOX_DB_PASSWORD:?Set YOOX_DB_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${YOOX_DB_ROOT_PASSWORD:?Set YOOX_DB_ROOT_PASSWORD in .env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./sql/cloud_api.sql:/docker-entrypoint-initdb.d/001-cloud-api.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -uroot -p"$${MYSQL_ROOT_PASSWORD}" --silent
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  mysql-init:
+    image: mysql:8.4.6
+    restart: "no"
+    networks:
+      - yoox-net
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_PWD: ${YOOX_DB_ROOT_PASSWORD:?Set YOOX_DB_ROOT_PASSWORD in .env}
+      YOOX_DB_NAME: ${YOOX_DB_NAME:-cloud_sample}
+      YOOX_DEVICE_MQTT_USERNAME: ${YOOX_DEVICE_MQTT_USERNAME:-yoox-device}
+      YOOX_DEVICE_MQTT_PASSWORD: ${YOOX_DEVICE_MQTT_PASSWORD:?Set YOOX_DEVICE_MQTT_PASSWORD in .env}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mysql -h mysql -uroot "$${YOOX_DB_NAME}" -e "UPDATE manage_user SET mqtt_username='$${YOOX_DEVICE_MQTT_USERNAME}', mqtt_password='$${YOOX_DEVICE_MQTT_PASSWORD}'"
+
+  redis:
+    <<: *service-defaults
+    image: redis:7.4.9-alpine
+    command:
+      - sh
+      - -ec
+      - exec redis-server --appendonly yes --requirepass "$${YOOX_REDIS_PASSWORD}"
+    environment:
+      YOOX_REDIS_PASSWORD: ${YOOX_REDIS_PASSWORD:?Set YOOX_REDIS_PASSWORD in .env}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$${YOOX_REDIS_PASSWORD}" --no-auth-warning ping | grep PONG
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    <<: *service-defaults
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${YOOX_MINIO_ACCESS_KEY:?Set YOOX_MINIO_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${YOOX_MINIO_SECRET_KEY:?Set YOOX_MINIO_SECRET_KEY in .env}
+    ports:
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://127.0.0.1:9000/minio/health/live
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    restart: "no"
+    networks:
+      - yoox-net
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      YOOX_MINIO_ACCESS_KEY: ${YOOX_MINIO_ACCESS_KEY:?Set YOOX_MINIO_ACCESS_KEY in .env}
+      YOOX_MINIO_SECRET_KEY: ${YOOX_MINIO_SECRET_KEY:?Set YOOX_MINIO_SECRET_KEY in .env}
+      YOOX_MINIO_BUCKET: ${YOOX_MINIO_BUCKET:-yoox-store}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set yoox http://minio:9000 "$${YOOX_MINIO_ACCESS_KEY}" "$${YOOX_MINIO_SECRET_KEY}"
+        mc mb --ignore-existing "yoox/$${YOOX_MINIO_BUCKET}"
+
+  emqx:
+    <<: *service-defaults
+    image: emqx/emqx:5.8.9
+    environment:
+      EMQX_NODE__NAME: emqx@emqx
+      EMQX_DASHBOARD__DEFAULT_USERNAME: admin
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${YOOX_EMQX_DASHBOARD_PASSWORD:?Set YOOX_EMQX_DASHBOARD_PASSWORD in .env}
+      EMQX_LISTENERS__WS__DEFAULT__AUTHENTICATION__1__SECRET: '"${YOOX_JWT_SECRET:?Set YOOX_JWT_SECRET in .env}"'
+      EMQX_AUTHORIZATION__SOURCES__1__PASSWORD: '"${YOOX_REDIS_PASSWORD:?Set YOOX_REDIS_PASSWORD in .env}"'
+    ports:
+      - "${YOOX_MQTT_PORT:-1883}:1883"
+      - "127.0.0.1:18083:18083"
+    volumes:
+      - emqx-data:/opt/emqx/data
+      - emqx-log:/opt/emqx/log
+      - ./deploy/emqx/base.hocon:/opt/emqx/etc/base.hocon:ro
+      - ./deploy/emqx/acl.conf:/opt/emqx/etc/acl.conf:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://127.0.0.1:18083/status
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  emqx-init:
+    image: curlimages/curl:8.15.0
+    restart: "no"
+    networks:
+      - yoox-net
+    depends_on:
+      emqx:
+        condition: service_healthy
+    environment:
+      YOOX_EMQX_DASHBOARD_PASSWORD: ${YOOX_EMQX_DASHBOARD_PASSWORD:?Set YOOX_EMQX_DASHBOARD_PASSWORD in .env}
+      YOOX_MQTT_USERNAME: ${YOOX_MQTT_USERNAME:-yoox-cloud}
+      YOOX_MQTT_PASSWORD: ${YOOX_MQTT_PASSWORD:?Set YOOX_MQTT_PASSWORD in .env}
+      YOOX_DEVICE_MQTT_USERNAME: ${YOOX_DEVICE_MQTT_USERNAME:-yoox-device}
+      YOOX_DEVICE_MQTT_PASSWORD: ${YOOX_DEVICE_MQTT_PASSWORD:?Set YOOX_DEVICE_MQTT_PASSWORD in .env}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        login_body=$$(printf '{"username":"admin","password":"%s"}' "$${YOOX_EMQX_DASHBOARD_PASSWORD}")
+        login_response=$$(curl --retry 20 --retry-all-errors --retry-delay 2 -fsS \
+          -H 'content-type: application/json' \
+          -d "$${login_body}" \
+          http://emqx:18083/api/v5/login)
+        dashboard_token=$$(printf '%s' "$${login_response}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+        test -n "$${dashboard_token}" || {
+          printf 'Unable to obtain EMQX Dashboard token.\n' >&2
+          exit 1
+        }
+
+        endpoint='http://emqx:18083/api/v5/authentication/password_based%3Abuilt_in_database/users'
+
+        upsert_user() {
+          user_id="$$1"
+          password="$$2"
+          create_body=$$(printf '{"user_id":"%s","password":"%s","is_superuser":false}' "$${user_id}" "$${password}")
+          update_body=$$(printf '{"password":"%s","is_superuser":false}' "$${password}")
+          status=$$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "authorization: Bearer $${dashboard_token}" \
+            -H 'content-type: application/json' \
+            -d "$${create_body}" \
+            "$${endpoint}")
+          case "$${status}" in
+            200|201|204) ;;
+            409)
+              curl -fsS -o /dev/null -X PUT \
+                -H "authorization: Bearer $${dashboard_token}" \
+                -H 'content-type: application/json' \
+                -d "$${update_body}" \
+                "$${endpoint}/$${user_id}"
+              ;;
+            *)
+              printf 'Unable to create EMQX user %s (HTTP %s).\n' "$${user_id}" "$${status}" >&2
+              exit 1
+              ;;
+          esac
+        }
+
+        upsert_user "$${YOOX_MQTT_USERNAME}" "$${YOOX_MQTT_PASSWORD}"
+        upsert_user "$${YOOX_DEVICE_MQTT_USERNAME}" "$${YOOX_DEVICE_MQTT_PASSWORD}"
+
+  mediamtx:
+    <<: *service-defaults
+    build:
+      context: ./deploy/mediamtx
+      dockerfile: Dockerfile
+    image: yoox/mediamtx:1.19.3
+    environment:
+      MTX_WEBRTCADDITIONALHOSTS: ${YOOX_PUBLIC_HOST:-127.0.0.1}
+      MTX_AUTHINTERNALUSERS_0_USER: ${YOOX_RTSP_USERNAME:-yoox-publisher}
+      MTX_AUTHINTERNALUSERS_0_PASS: ${YOOX_RTSP_PASSWORD:?Set YOOX_RTSP_PASSWORD in .env}
+    ports:
+      - "${YOOX_PUBLIC_RTSP_PORT:-8554}:8554"
+      - "${YOOX_WEBRTC_UDP_PORT:-8189}:8189/udp"
+    volumes:
+      - ./deploy/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    healthcheck:
+      test:
+        - CMD
+        - /busybox
+        - wget
+        - -q
+        - --spider
+        - http://127.0.0.1:9997/v3/config/global/get
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  api:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: yoox/cloud-gcs-api:${YOOX_VERSION:-local}
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      YOOX_DB_HOST: mysql
+      YOOX_DB_NAME: ${YOOX_DB_NAME:-cloud_sample}
+      YOOX_DB_USER: ${YOOX_DB_USER:-yoox}
+      YOOX_DB_PASSWORD: ${YOOX_DB_PASSWORD:?Set YOOX_DB_PASSWORD in .env}
+      YOOX_REDIS_HOST: redis
+      YOOX_REDIS_PASSWORD: ${YOOX_REDIS_PASSWORD:?Set YOOX_REDIS_PASSWORD in .env}
+      YOOX_MQTT_HOST: emqx
+      YOOX_MQTT_PORT: 1883
+      YOOX_MQTT_USERNAME: ${YOOX_MQTT_USERNAME:-yoox-cloud}
+      YOOX_MQTT_PASSWORD: ${YOOX_MQTT_PASSWORD:?Set YOOX_MQTT_PASSWORD in .env}
+      YOOX_DEVICE_AUTO_REGISTER_ENABLED: ${YOOX_DEVICE_AUTO_REGISTER_ENABLED:-true}
+      YOOX_DEVICE_AUTO_REGISTER_WORKSPACE_ID: ${YOOX_DEVICE_AUTO_REGISTER_WORKSPACE_ID:-e3dea0f5-37f2-4d79-ae58-490af3228069}
+      YOOX_DRC_MQTT_PROTOCOL: WS
+      YOOX_DRC_MQTT_HOST: ${YOOX_PUBLIC_HOST:-127.0.0.1}
+      YOOX_DRC_MQTT_PORT: ${YOOX_PILOT_PORT:-9000}
+      YOOX_DRC_MQTT_PATH: /mqtt
+      YOOX_JWT_SECRET: ${YOOX_JWT_SECRET:?Set YOOX_JWT_SECRET in .env}
+      YOOX_MINIO_ENDPOINT: http://minio:9000
+      YOOX_MINIO_ACCESS_KEY: ${YOOX_MINIO_ACCESS_KEY:?Set YOOX_MINIO_ACCESS_KEY in .env}
+      YOOX_MINIO_SECRET_KEY: ${YOOX_MINIO_SECRET_KEY:?Set YOOX_MINIO_SECRET_KEY in .env}
+      YOOX_MINIO_BUCKET: ${YOOX_MINIO_BUCKET:-yoox-store}
+      YOOX_CLOUD_APP_ID: ${YOOX_CLOUD_APP_ID:?Set YOOX_CLOUD_APP_ID in .env}
+      YOOX_CLOUD_APP_KEY: ${YOOX_CLOUD_APP_KEY:?Set YOOX_CLOUD_APP_KEY in .env}
+      YOOX_CLOUD_APP_LICENSE: ${YOOX_CLOUD_APP_LICENSE:?Set YOOX_CLOUD_APP_LICENSE in .env}
+      YOOX_PUBLIC_RTSP_HOST: ${YOOX_PUBLIC_HOST:-127.0.0.1}
+      YOOX_PUBLIC_RTSP_PORT: ${YOOX_PUBLIC_RTSP_PORT:-8554}
+      YOOX_RTSP_USERNAME: ${YOOX_RTSP_USERNAME:-yoox-publisher}
+      YOOX_RTSP_PASSWORD: ${YOOX_RTSP_PASSWORD:?Set YOOX_RTSP_PASSWORD in .env}
+      YOOX_WHEP_URL_TEMPLATE: /webrtc/%s/whep
+      YOOX_LOG_LEVEL: ${YOOX_LOG_LEVEL:-INFO}
+      JAVA_OPTS: ${YOOX_JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError}
+    ports:
+      - "127.0.0.1:${YOOX_API_DIAGNOSTIC_PORT:-19000}:9000"
+    volumes:
+      - api-logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      emqx-init:
+        condition: service_completed_successfully
+      mediamtx:
+        condition: service_healthy
+
+  web:
+    <<: *service-defaults
+    build:
+      context: ./web-console
+      dockerfile: Dockerfile
+    image: yoox/cloud-gcs-web:${YOOX_VERSION:-local}
+    ports:
+      - "${YOOX_HTTP_PORT:-8080}:80"
+      - "${YOOX_PILOT_PORT:-9000}:80"
+    volumes:
+      - ./web-console/public/runtime-config.js:/usr/share/nginx/html/runtime-config.js:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      mediamtx:
+        condition: service_healthy
+
+  api-portal:
+    <<: *service-defaults
+    build:
+      context: ./api-portal
+      dockerfile: Dockerfile
+    image: yoox/cloud-gcs-api-portal:${YOOX_VERSION:-local}
+    ports:
+      - "${YOOX_API_PORTAL_PORT:-8081}:80"
+
+  coturn:
+    <<: *service-defaults
+    image: coturn/coturn:4.6.3
+    profiles:
+      - turn
+    command:
+      - --no-cli
+      - --fingerprint
+      - --lt-cred-mech
+      - --realm=${YOOX_TURN_REALM:-yoox.local}
+      - --user=${YOOX_TURN_USERNAME:-yoox-turn}:${YOOX_TURN_PASSWORD:?Set YOOX_TURN_PASSWORD in .env}
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --log-file=stdout
+    ports:
+      - "${YOOX_TURN_PORT:-3478}:3478"
+      - "${YOOX_TURN_PORT:-3478}:3478/udp"
+      - "49160-49200:49160-49200/udp"
+
+  prometheus:
+    <<: *service-defaults
+    image: prom/prometheus:v3.13.0
+    profiles:
+      - monitoring
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    <<: *service-defaults
+    image: grafana/grafana:13.1.0
+    profiles:
+      - monitoring
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${YOOX_GRAFANA_ADMIN_PASSWORD:?Set YOOX_GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+
+  loki:
+    <<: *service-defaults
+    image: grafana/loki:3.7.2
+    profiles:
+      - monitoring
+    command:
+      - -config.file=/etc/loki/local-config.yml
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ./deploy/loki/loki.yml:/etc/loki/local-config.yml:ro
+      - loki-data:/loki
+
+  promtail:
+    <<: *service-defaults
+    image: grafana/promtail:3.7.2
+    profiles:
+      - monitoring
+    command:
+      - -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./deploy/promtail/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+
+  cadvisor:
+    <<: *service-defaults
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    profiles:
+      - monitoring
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    ports:
+      - "127.0.0.1:8088:8080"
+
+  node-exporter:
+    <<: *service-defaults
+    image: prom/node-exporter:v1.9.1
+    profiles:
+      - monitoring
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    ports:
+      - "127.0.0.1:9100:9100"
+
+networks:
+  yoox-net:
+    name: ${COMPOSE_PROJECT_NAME:-yoox-cloud-gcs}-net
+
+volumes:
+  mysql-data:
+  redis-data:
+  minio-data:
+  emqx-data:
+  emqx-log:
+  api-logs:
+  prometheus-data:
+  grafana-data:
+  loki-data:

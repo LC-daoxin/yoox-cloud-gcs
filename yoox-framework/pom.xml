@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <packaging>pom</packaging>
+    <modules>
+        <module>yoox-framework-redis</module>
+        <module>yoox-framework-context</module>
+        <module>yoox-framework-db</module>
+        <module>yoox-framework-web</module>
+        <module>yoox-framework-storage</module>
+        <module>yoox-framework-websocket</module>
+        <module>yoox-framework-mqtt</module>
+    </modules>
+
+    <groupId>com.yoox.great</groupId>
+    <artifactId>yoox-framework</artifactId>
+    <version>${revision}</version>
+    <name>yoox-framework</name>
+
+    <properties>
+        <revision>1.0.0</revision>
+        <spring-boot.version>2.7.12</spring-boot.version>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <javax-activation.version>1.1.1</javax-activation.version>
+        <mysql.version>8.0.31</mysql.version>
+        <mybatis-plus.version>3.4.2</mybatis-plus.version>
+        <druid.version>1.2.24</druid.version>
+        <mqtt.version>5.5.5</mqtt.version>
+
+
+        <minio.version>8.3.7</minio.version>
+        <aliyun-sdk-sts.version>3.1.0</aliyun-sdk-sts.version>
+        <aliyun-oss.version>3.12.0</aliyun-oss.version>
+        <glassfish-jaxb.version>2.3.3</glassfish-jaxb.version>
+        <jwt.version>3.12.1</jwt.version>
+        <okhttp3.version>4.9.1</okhttp3.version>
+        <cloud-sdk.revision>1.0.3</cloud-sdk.revision>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-parent</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
