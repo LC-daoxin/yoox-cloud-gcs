@@ -49,12 +49,13 @@ services:
     environment:
       MYSQL_PWD: ${YOOX_DB_ROOT_PASSWORD:?Set YOOX_DB_ROOT_PASSWORD in .env}
       YOOX_DB_NAME: ${YOOX_DB_NAME:-cloud_sample}
-      YOOX_DEVICE_MQTT_USERNAME: ${YOOX_DEVICE_MQTT_USERNAME:-yoox-device}
-      YOOX_DEVICE_MQTT_PASSWORD: ${YOOX_DEVICE_MQTT_PASSWORD:?Set YOOX_DEVICE_MQTT_PASSWORD in .env}
+      YOOX_DEVICE_MQTT_USERNAME: ${YOOX_DEVICE_MQTT_USERNAME:-pilot}
+      YOOX_DEVICE_MQTT_PASSWORD: ${YOOX_DEVICE_MQTT_PASSWORD:-pilot123}
     entrypoint:
       - /bin/sh
       - -ec
       - |
+        mysql -h mysql -uroot "$${YOOX_DB_NAME}" -e "ALTER TABLE manage_user MODIFY mqtt_password varchar(128) CHARACTER SET utf8 COLLATE utf8_general_ci NOT NULL DEFAULT '' COMMENT 'The account password used by the current account when logging into the emqx server.'"
         mysql -h mysql -uroot "$${YOOX_DB_NAME}" -e "UPDATE manage_user SET mqtt_username='$${YOOX_DEVICE_MQTT_USERNAME}', mqtt_password='$${YOOX_DEVICE_MQTT_PASSWORD}'"
 
   redis:
@@ -159,8 +160,8 @@ services:
       YOOX_EMQX_DASHBOARD_PASSWORD: ${YOOX_EMQX_DASHBOARD_PASSWORD:?Set YOOX_EMQX_DASHBOARD_PASSWORD in .env}
       YOOX_MQTT_USERNAME: ${YOOX_MQTT_USERNAME:-yoox-cloud}
       YOOX_MQTT_PASSWORD: ${YOOX_MQTT_PASSWORD:?Set YOOX_MQTT_PASSWORD in .env}
-      YOOX_DEVICE_MQTT_USERNAME: ${YOOX_DEVICE_MQTT_USERNAME:-yoox-device}
-      YOOX_DEVICE_MQTT_PASSWORD: ${YOOX_DEVICE_MQTT_PASSWORD:?Set YOOX_DEVICE_MQTT_PASSWORD in .env}
+      YOOX_DEVICE_MQTT_USERNAME: ${YOOX_DEVICE_MQTT_USERNAME:-pilot}
+      YOOX_DEVICE_MQTT_PASSWORD: ${YOOX_DEVICE_MQTT_PASSWORD:-pilot123}
     entrypoint:
       - /bin/sh
       - -ec
@@ -219,7 +220,9 @@ services:
       MTX_AUTHINTERNALUSERS_0_PASS: ${YOOX_RTSP_PASSWORD:?Set YOOX_RTSP_PASSWORD in .env}
     ports:
       - "${YOOX_PUBLIC_RTSP_PORT:-8554}:8554"
-      - "${YOOX_WEBRTC_UDP_PORT:-8189}:8189/udp"
+      - "${YOOX_WEBRTC_FALLBACK_UDP_PORT:-8000}:8000/udp"
+      - "${YOOX_RTCP_PORT:-8188}:8188/udp"
+      - "${YOOX_RTP_PORT:-8189}:8189/udp"
     volumes:
       - ./deploy/mediamtx/mediamtx.yml:/mediamtx.yml:ro
     healthcheck:
@@ -268,9 +271,13 @@ services:
       YOOX_CLOUD_APP_LICENSE: ${YOOX_CLOUD_APP_LICENSE:?Set YOOX_CLOUD_APP_LICENSE in .env}
       YOOX_PUBLIC_RTSP_HOST: ${YOOX_PUBLIC_HOST:-127.0.0.1}
       YOOX_PUBLIC_RTSP_PORT: ${YOOX_PUBLIC_RTSP_PORT:-8554}
+      YOOX_PUBLIC_RTMP_HOST: ${YOOX_PUBLIC_HOST:-127.0.0.1}
+      YOOX_PUBLIC_RTMP_PORT: ${YOOX_PUBLIC_RTSP_PORT:-8554}
       YOOX_RTSP_USERNAME: ${YOOX_RTSP_USERNAME:-yoox-publisher}
       YOOX_RTSP_PASSWORD: ${YOOX_RTSP_PASSWORD:?Set YOOX_RTSP_PASSWORD in .env}
+      YOOX_MEDIAMTX_METRICS_URL: http://mediamtx:9998/metrics
       YOOX_WHEP_URL_TEMPLATE: /webrtc/%s/whep
+      YOOX_RTMP_WHEP_URL_TEMPLATE: /webrtc/live/%s/whep
       YOOX_LOG_LEVEL: ${YOOX_LOG_LEVEL:-INFO}
       JAVA_OPTS: ${YOOX_JAVA_OPTS:--XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError}
     ports:
@@ -300,8 +307,9 @@ services:
     ports:
       - "${YOOX_HTTP_PORT:-8080}:80"
       - "${YOOX_PILOT_PORT:-9000}:80"
-    volumes:
-      - ./web-console/public/runtime-config.js:/usr/share/nginx/html/runtime-config.js:ro
+    environment:
+      YOOX_PUBLIC_HOST: ${YOOX_PUBLIC_HOST:-127.0.0.1}
+      YOOX_PILOT_PORT: ${YOOX_PILOT_PORT:-9000}
     depends_on:
       api:
         condition: service_healthy

@@ -4,9 +4,8 @@
 window.YOOX_RUNTIME = {
   amapKey: '24941ad04ae04fac73d32037b87ea023',
   amapSecurityCode: '',
-  // 「接入配置」页展示给遥控器/Pilot 的设备 MQTT 账号密码
-  deviceMqttUser: 'pilot',
-  deviceMqttPassword: 'pilot123',
+  // 从 localhost/127.0.0.1 打开控制台时使用；容器部署会由 YOOX_PUBLIC_HOST 自动生成。
+  publicHost: '',
   // 遥控器登录、WebSocket 和 DRC MQTT WebSocket 的公网网关端口
   pilotGatewayPort: 9000
 }

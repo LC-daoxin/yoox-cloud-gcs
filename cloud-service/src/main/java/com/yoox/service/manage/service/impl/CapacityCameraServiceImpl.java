@@ -12,7 +12,9 @@ import com.yoox.service.manage.service.ICapacityCameraService;
 import com.yoox.service.manage.service.IDeviceDictionaryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -30,19 +32,29 @@ public class CapacityCameraServiceImpl implements ICapacityCameraService {
 
     @Override
     public List<CapacityCameraDTO> getCapacityCameraByDeviceSn(String deviceSn) {
-        return (List<CapacityCameraDTO>) RedisOpsUtils.hashGet(RedisConst.LIVE_CAPACITY, deviceSn);
+        if (!StringUtils.hasText(deviceSn)) {
+            return Collections.emptyList();
+        }
+        return (List<CapacityCameraDTO>) RedisOpsUtils.hashGet(RedisConst.LIVE_CAPACITY, deviceSn.trim());
     }
 
     @Override
     public Boolean deleteCapacityCameraByDeviceSn(String deviceSn) {
-        return RedisOpsUtils.hashDel(RedisConst.LIVE_CAPACITY, new String[]{deviceSn});
+        if (!StringUtils.hasText(deviceSn)) {
+            return false;
+        }
+        return RedisOpsUtils.hashDel(RedisConst.LIVE_CAPACITY, new String[]{deviceSn.trim()});
     }
 
     @Override
     public void saveCapacityCameraReceiverList(List<CapacityCameraReceiver> capacityCameraReceivers, String deviceSn) {
+        if (!StringUtils.hasText(deviceSn) || capacityCameraReceivers == null) {
+            return;
+        }
         List<CapacityCameraDTO> capacity = capacityCameraReceivers.stream()
+                .filter(Objects::nonNull)
                 .map(this::receiver2Dto).collect(Collectors.toList());
-        RedisOpsUtils.hashSet(RedisConst.LIVE_CAPACITY, deviceSn, capacity);
+        RedisOpsUtils.hashSet(RedisConst.LIVE_CAPACITY, deviceSn.trim(), capacity);
     }
 
     public CapacityCameraDTO receiver2Dto(CapacityCameraReceiver receiver) {

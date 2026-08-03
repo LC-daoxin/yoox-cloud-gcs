@@ -4,21 +4,20 @@ SHELL := /bin/sh
 
 init:
 	@test -f .env || cp .env.example .env
-	@echo "Edit .env and replace every value containing change_me before production use."
-
-config:
-	docker compose --env-file .env config --quiet
+	@echo "Edit .env and replace every value containing change_me or replace_with before use."
 
 preflight:
 	./scripts/preflight.sh
 
-build:
+config: preflight
+
+build: preflight
 	docker compose --env-file .env build
 
-up:
+up: preflight
 	docker compose --env-file .env up -d --build --wait --wait-timeout 300
 
-up-monitoring:
+up-monitoring: preflight
 	docker compose --env-file .env --profile monitoring up -d --build --wait --wait-timeout 300
 
 down:

@@ -2,6 +2,7 @@ package com.yoox.great.mqtt.model.control;
 
 import com.yoox.great.context.base.BaseModel;
 import com.yoox.great.mqtt.model.device.PayloadIndex;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import javax.validation.constraints.Max;
 import javax.validation.constraints.Min;
@@ -15,13 +16,13 @@ public class CameraLookAtRequest extends BaseModel {
      * The format is *{type-subtype-gimbalindex}*.
      * Please read [Product Supported](https://developer.yoox.com/doc/cloud-api-tutorial/en/overview/product-support.html)
      */
-    @NotNull
+    @JsonIgnore
     private PayloadIndex payloadIndex;
 
     /**
      * Whether the relative location of drone head and gimbal is locked
      */
-    @NotNull
+    @JsonIgnore
     private Boolean locked;
 
     /**
@@ -76,14 +77,26 @@ public class CameraLookAtRequest extends BaseModel {
         return this;
     }
 
+    public Float getLatitude() {
+        return latitude;
+    }
+
     public CameraLookAtRequest setLatitude(Float latitude) {
         this.latitude = latitude;
         return this;
     }
 
+    public Float getLongitude() {
+        return longitude;
+    }
+
     public CameraLookAtRequest setLongitude(Float longitude) {
         this.longitude = longitude;
         return this;
+    }
+
+    public Float getHeight() {
+        return height;
     }
 
     public CameraLookAtRequest setHeight(Float height) {

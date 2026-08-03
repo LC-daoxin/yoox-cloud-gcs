@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import com.yoox.great.mqtt.model.control.TargetDetectResultReport;
 
 @Slf4j
 @Configuration
@@ -42,7 +43,8 @@ public class StateRouter {
                         log.info("【state】 router log info print:{}", response);
                         String topic = String.valueOf(source.getHeaders().get(MqttHeaders.RECEIVED_TOPIC));
                         String from = topic.substring((TopicConst.THING_MODEL_PRE + TopicConst.PRODUCT).length(), topic.indexOf(TopicConst.STATE_SUF));
-                        return response.setFrom(from).setData(Common.getObjectMapper().convertValue(response.getData(), getTypeReference(response.getGateway(), response.getData())));
+                        return response.setFrom(from).setData(Common.getObjectMapper().convertValue(
+                                response.getData(), getTypeReference(response.getGateway(), response.getMethod(), response.getData())));
                     } catch (IOException e) {
                         throw new CloudSDKException(e);
                     }
@@ -71,7 +73,12 @@ public class StateRouter {
     }
 
 
-    private Class getTypeReference(String gatewaySn, Object data) {
+    private Class getTypeReference(String gatewaySn, String method, Object data) {
+        if ("target_detect_result_report".equals(method)
+                || data instanceof Map && ((Map<?, ?>) data).containsKey("obj_cnt")
+                && ((Map<?, ?>) data).containsKey("objs")) {
+            return TargetDetectResultReport.class;
+        }
         Set<String> keys = ((Map<String, Object>) data).keySet();
         switch (SDKManager.getDeviceSDK(gatewaySn).getType()) {
             case RC:

@@ -40,3 +40,31 @@ export function wgs84ToGcj02(lng: number, lat: number): [number, number] {
   dLng = (dLng * 180.0) / ((A / sqrtMagic) * Math.cos(radLat) * PI)
   return [lng + dLng, lat + dLat]
 }
+
+/**
+ * GCJ-02 转 WGS-84，返回 [lng, lat]。
+ *
+ * GCJ-02 没有公开的解析逆变换，因此从输入坐标开始迭代：每轮把当前
+ * WGS-84 猜测正向转换为 GCJ-02，再用输出误差修正猜测。正向变换在
+ * 局部接近恒等映射，通常 2–3 轮即可达到亚米级精度；这里保留最多
+ * 10 轮并以约厘米级角度误差作为收敛条件。
+ */
+export function gcj02ToWgs84(lng: number, lat: number): [number, number] {
+  if (!Number.isFinite(lng) || !Number.isFinite(lat) || (lng === 0 && lat === 0)) return [lng, lat]
+  if (outOfChina(lng, lat)) return [lng, lat]
+
+  let wgsLng = lng
+  let wgsLat = lat
+  const tolerance = 1e-7
+
+  for (let iteration = 0; iteration < 10; iteration += 1) {
+    const [projectedLng, projectedLat] = wgs84ToGcj02(wgsLng, wgsLat)
+    const lngError = projectedLng - lng
+    const latError = projectedLat - lat
+    wgsLng -= lngError
+    wgsLat -= latError
+    if (Math.max(Math.abs(lngError), Math.abs(latError)) <= tolerance) break
+  }
+
+  return [wgsLng, wgsLat]
+}

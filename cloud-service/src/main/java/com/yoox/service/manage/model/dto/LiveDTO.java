@@ -9,6 +9,8 @@ public class LiveDTO {
 
     private String url;
 
+    private Boolean reused;
+
     private String username;
 
     private String password;

@@ -41,9 +41,33 @@ public enum DrcStatusErrorEnum implements IErrorInfo {
         return code;
     }
 
-    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
     public static DrcStatusErrorEnum find(int code) {
         return Arrays.stream(values()).filter(error -> error.code == code).findAny()
                 .orElseThrow(() -> new CloudSDKException(DrcStatusErrorEnum.class, code));
+    }
+
+    /**
+     * Device firmware variants report this field as a JSON number, a numeric
+     * string, or the symbolic enum name. Accept all three wire forms while
+     * keeping the canonical serialized representation numeric via JsonValue.
+     */
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    public static DrcStatusErrorEnum fromJson(Object value) {
+        if (value instanceof Number) {
+            return find(((Number) value).intValue());
+        }
+        if (value instanceof String) {
+            String text = ((String) value).trim();
+            try {
+                return find(Integer.parseInt(text));
+            } catch (NumberFormatException ignored) {
+                try {
+                    return valueOf(text);
+                } catch (IllegalArgumentException exception) {
+                    throw new CloudSDKException(DrcStatusErrorEnum.class, value);
+                }
+            }
+        }
+        throw new CloudSDKException(DrcStatusErrorEnum.class, value);
     }
 }

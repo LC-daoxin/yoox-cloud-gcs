@@ -32,6 +32,10 @@ public enum ControlMethodEnum {
 
     CAMERA_FOCAL_LENGTH_SET("camera_focal_length_set"),
 
+    CAMERA_FOCAL_LENGTH_DRAG("camera_focal_length_drag"),
+
+    CAMERA_SCREEN_DRAG("camera_screen_drag"),
+
     GIMBAL_RESET("gimbal_reset"),
 
     CAMERA_LOOK_AT("camera_look_at"),
@@ -57,6 +61,10 @@ public enum ControlMethodEnum {
     IR_METERING_AREA_SET("ir_metering_area_set"),
 
     CAMERA_POINT_FOCUS_ACTION("camera_point_focus_action"),
+
+    TARGET_DETECT_OPEN("target_detect_open"),
+
+    TARGET_DETECT_CLOSE("target_detect_close"),
 
     DRONE_CONTROL("drone_control"),
 

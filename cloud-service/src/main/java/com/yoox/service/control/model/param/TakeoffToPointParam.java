@@ -25,22 +25,18 @@ public class TakeoffToPointParam {
     @NotNull
     private Double targetLatitude;
 
-    @Range(min = 2, max = 10000)
+    @Range(min = 2, max = 1500)
     @NotNull
     private Double targetHeight;
 
     @Range(min = 2, max = 1500)
-    @NotNull
     private Double securityTakeoffHeight;
 
     @Range(min = 2, max = 1500)
-    @NotNull
     private Double rthAltitude;
 
-    @NotNull
     private RcLostActionEnum rcLostAction;
 
-    @NotNull
     private ExitWaylineWhenRcLostEnum exitWaylineWhenRcLost;
 
     @Range(min = 1, max = 15)

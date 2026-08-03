@@ -9,6 +9,7 @@ import com.yoox.great.mqtt.model.property.DockDroneCommanderFlightHeight;
 import com.yoox.great.mqtt.model.property.DockDroneCommanderModeLostAction;
 import com.yoox.great.mqtt.model.property.DockDroneOfflineMapEnable;
 import com.yoox.great.mqtt.model.property.DockDroneRthMode;
+import com.yoox.great.mqtt.model.control.TargetDetectResultReport;
 
 import java.util.Arrays;
 
@@ -53,6 +54,8 @@ public enum StateDataKeyEnum {
     DOCK_AND_DRONE_DONGLE_INFOS(ChannelName.INBOUND_STATE_DOCK_AND_DRONE_DONGLE_INFOS, DongleInfos.class),
 
     DOCK_SILENT_MODE(ChannelName.INBOUND_STATE_DOCK_SILENT_MODE, DockSilentMode.class),
+
+    TARGET_DETECT_RESULT(ChannelName.INBOUND_STATE_TARGET_DETECT_RESULT, TargetDetectResultReport.class),
 
     UNKNOWN(ChannelName.DEFAULT, Object.class);
 

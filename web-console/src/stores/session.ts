@@ -40,6 +40,14 @@ export const useSessionStore = defineStore('session', () => {
     localStorage.setItem(WORKSPACE_KEY, JSON.stringify(current))
   }
 
+  async function refresh() {
+    if (!token.value) return
+    const refreshed = await post<SessionUser>('/manage/api/v1/token/refresh')
+    user.value = refreshed
+    setToken(refreshed.access_token)
+    localStorage.setItem(USER_KEY, JSON.stringify(refreshed))
+  }
+
   function logout() {
     user.value = null
     workspace.value = null
@@ -48,5 +56,5 @@ export const useSessionStore = defineStore('session', () => {
     localStorage.removeItem(WORKSPACE_KEY)
   }
 
-  return { user, workspace, token, workspaceId, login, loadWorkspace, logout }
+  return { user, workspace, token, workspaceId, login, loadWorkspace, refresh, logout }
 })

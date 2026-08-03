@@ -2,6 +2,7 @@ package com.yoox.service.manage.service.impl;
 
 import com.yoox.api.livestream.AbstractLivestreamService;
 import com.yoox.great.context.enums.device.DeviceDomainEnum;
+import com.yoox.great.context.exception.CloudSDKException;
 import com.yoox.great.context.response.HttpResultResponse;
 import com.yoox.great.mqtt.enums.livestream.LiveErrorCodeEnum;
 import com.yoox.great.mqtt.enums.livestream.UrlTypeEnum;
@@ -15,9 +16,15 @@ import com.yoox.service.manage.model.param.DeviceQueryParam;
 import com.yoox.service.manage.service.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -27,6 +34,10 @@ import java.util.stream.Collectors;
 @Service
 @Transactional
 public class LiveStreamServiceImpl implements ILiveStreamService {
+
+    private static final HttpClient MEDIA_MTX_HTTP_CLIENT = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(1))
+            .build();
 
     @Autowired
     private ICapacityCameraService capacityCameraService;
@@ -42,6 +53,9 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
 
     @Autowired
     private AbstractLivestreamService abstractLivestreamService;
+
+    @Value("${livestream.mediamtx-metrics-url:http://mediamtx:9998/metrics}")
+    private String mediaMtxMetricsUrl;
 
     @Override
     public List<CapacityDeviceDTO> getLiveCapacity(String workspaceId) {
@@ -63,10 +77,12 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
 
     @Override
     public HttpResultResponse liveStart(LiveTypeDTO liveParam) {
-        if (liveParam == null || liveParam.getUrlType() != UrlTypeEnum.RTSP) {
+        if (liveParam == null ||
+                (liveParam.getUrlType() != UrlTypeEnum.RTSP &&
+                        liveParam.getUrlType() != UrlTypeEnum.RTMP)) {
             return HttpResultResponse.error(
                     LiveErrorCodeEnum.URL_TYPE_NOT_SUPPORTED.getCode(),
-                    "YOOX Cloud GCS P0 only supports RTSP live streaming.");
+                    "Only RTSP and RTMP live streaming are supported.");
         }
 
         HttpResultResponse<DeviceDTO> responseResult = this.checkBeforeLive(liveParam.getVideoId());
@@ -81,19 +97,43 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
         // 支持调用方自定义推流地址：LiveTypeDTO.url 非空时覆盖配置生成的推流地址下发给设备
         boolean customPushUrl = liveParam.getUrl() != null && !liveParam.getUrl().trim().isEmpty();
         String pushUrl = customPushUrl ? liveParam.getUrl().trim() : url.toString();
+        String streamName = streamName(liveParam.getVideoId());
+        String configuredPlaybackUrl = getConfiguredPlaybackUrl(url);
+        boolean canReusePublisher = liveParam.getUrlType() == UrlTypeEnum.RTSP &&
+                !customPushUrl &&
+                configuredPlaybackUrl != null;
+
+        if (canReusePublisher && isMediaPublisherReady(streamName)) {
+            return reusedLiveResponse(streamName, configuredPlaybackUrl);
+        }
 
         LiveStartPushRequest3 request3 = new LiveStartPushRequest3();
         request3.setUrl(pushUrl);
         request3.setUrl_type(liveParam.getUrlType().getType());
-        request3.setVideo_id(liveParam.getVideoId().getDroneSn() + "-" + liveParam.getVideoId().getPayloadIndex().toString());
+        // Autel's live_start_push protocol is an exception to the regular VideoId
+        // wire format: firmware expects "droneSn-payloadIndex" here. Stop, quality
+        // and lens-change commands still use the SDK's slash-delimited VideoId.
+        request3.setVideo_id(streamName);
         request3.setVideo_quality(liveParam.getVideoQuality().getQuality());
         if (liveParam.getVideoType() != null) {
             request3.setVideo_type(liveParam.getVideoType().getType());
         }
 
-        TopicServicesResponse<ServicesReplyData<String>> response = abstractLivestreamService.liveStartPush3(
-                SDKManager.getDeviceSDK(responseResult.getData().getDeviceSn()),
-                request3);
+        TopicServicesResponse<ServicesReplyData<String>> response;
+        try {
+            response = abstractLivestreamService.liveStartPush3(
+                    SDKManager.getDeviceSDK(responseResult.getData().getDeviceSn()),
+                    request3);
+        } catch (CloudSDKException exception) {
+            // Another page or a concurrent request may have started publishing while
+            // this MQTT request was waiting for a reply. Treat the ready publisher
+            // as the source of truth instead of surfacing a false 211001 failure.
+            if (canReusePublisher && isMediaPublisherReady(streamName)) {
+                log.info("MQTT 启动直播未收到回复，但媒体流已就绪，按复用成功处理: stream={}", streamName);
+                return reusedLiveResponse(streamName, configuredPlaybackUrl);
+            }
+            throw exception;
+        }
 
         log.info("发送 RTSP 直播指令: video_id={}, video_type={}",
                 request3.getVideo_id(), request3.getVideo_type());
@@ -102,16 +142,20 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
                 response.getData().getInfo() == null ? null : "<RTSP URL>",
                 response.getData().getOutput());
         if (!response.getData().getResult().isSuccess()) {
+            if (canReusePublisher && isMediaPublisherReady(streamName)) {
+                log.info("设备返回直播启动失败，但媒体流已就绪，按复用成功处理: stream={}", streamName);
+                return reusedLiveResponse(streamName, configuredPlaybackUrl);
+            }
             return HttpResultResponse.error(response.getData().getResult());
         }
 
         LiveDTO live = new LiveDTO();
+        live.setReused(false);
 
-        LivestreamRtspUrl rtspPlayback = (LivestreamRtspUrl) url;
         String deviceRtspUrl = response.getData().getInfo();
-        if (rtspPlayback.getPayUrl() != null && !rtspPlayback.getPayUrl().trim().isEmpty()) {
+        if (configuredPlaybackUrl != null && !configuredPlaybackUrl.trim().isEmpty()) {
             // Devices publish RTSP to MediaMTX; browsers consume the matching WHEP endpoint.
-            live.setUrl(rtspPlayback.getPayUrl());
+            live.setUrl(configuredPlaybackUrl);
         } else if (deviceRtspUrl != null && !deviceRtspUrl.trim().isEmpty()) {
             live.setUrl(deviceRtspUrl);
         } else if (pushUrl.regionMatches(true, 0, "rtsp://", 0, 7)) {
@@ -211,8 +255,22 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
      * @param videoId
      */
     private ILivestreamUrl setExt(ILivestreamUrl url, VideoId videoId) {
+        String streamName = streamName(videoId);
+        if (url instanceof LivestreamRtmpUrl configured) {
+            LivestreamRtmpUrl rtmpUrl = configured.clone();
+            String prefix = rtmpUrl.getUrl();
+            if (prefix != null && !prefix.trim().isEmpty()) {
+                int queryIndex = prefix.indexOf('?');
+                String base = queryIndex < 0 ? prefix : prefix.substring(0, queryIndex);
+                String query = queryIndex < 0 ? "" : prefix.substring(queryIndex);
+                rtmpUrl.setUrl((base.endsWith("/") ? base + streamName : base + "/" + streamName) + query);
+            }
+            if (rtmpUrl.getPayUrl() != null && !rtmpUrl.getPayUrl().trim().isEmpty()) {
+                rtmpUrl.setPayUrl(String.format(rtmpUrl.getPayUrl(), streamName));
+            }
+            return rtmpUrl;
+        }
         LivestreamRtspUrl rtspUrl = (LivestreamRtspUrl) url.clone();
-        String streamName = videoId.getDroneSn() + "-" + videoId.getPayloadIndex();
         String rtspPrefix = rtspUrl.getUrl();
         if (rtspPrefix != null && !rtspPrefix.trim().isEmpty()) {
             rtspUrl.setUrl(rtspPrefix.endsWith("/")
@@ -223,5 +281,81 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
             rtspUrl.setPayUrl(String.format(rtspUrl.getPayUrl(), streamName));
         }
         return rtspUrl;
+    }
+
+    private String streamName(VideoId videoId) {
+        return videoId.getDroneSn() + "-" + videoId.getPayloadIndex();
+    }
+
+    private String getConfiguredPlaybackUrl(ILivestreamUrl url) {
+        String playbackUrl = url instanceof LivestreamRtspUrl rtsp
+                ? rtsp.getPayUrl()
+                : url instanceof LivestreamRtmpUrl rtmp
+                    ? rtmp.getPayUrl()
+                    : null;
+        return playbackUrl == null || playbackUrl.trim().isEmpty() ? null : playbackUrl;
+    }
+
+    private HttpResultResponse<LiveDTO> reusedLiveResponse(String streamName, String playbackUrl) {
+        LiveDTO live = new LiveDTO();
+        live.setUrl(playbackUrl);
+        live.setReused(true);
+        log.info("复用 MediaMTX 已有发布流，不再下发 MQTT 启动指令: stream={}", streamName);
+        return HttpResultResponse.success(live);
+    }
+
+    private boolean isMediaPublisherReady(String streamName) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(mediaMtxMetricsUrl))
+                    .timeout(Duration.ofMillis(1_500))
+                    .GET()
+                    .build();
+            HttpResponse<String> response = MEDIA_MTX_HTTP_CLIENT.send(
+                    request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("查询 MediaMTX 指标失败: stream={}, status={}",
+                        streamName, response.statusCode());
+                return false;
+            }
+            String labels = "{name=\"" + escapePrometheusLabel(streamName) +
+                    "\",state=\"ready\"}";
+            String metrics = response.body();
+            boolean publisherReady = hasPositiveMetric(metrics, "paths" + labels);
+            boolean mediaReceived = hasPositiveMetric(metrics, "paths_inbound_bytes" + labels) ||
+                    hasPositiveMetric(metrics, "paths_bytes_received" + labels);
+            if (publisherReady && !mediaReceived) {
+                log.warn("MediaMTX 发布会话已建立但尚未收到媒体帧，不按可复用流处理: stream={}", streamName);
+            }
+            return publisherReady && mediaReceived;
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            log.warn("查询 MediaMTX 发布流被中断: stream={}", streamName);
+            return false;
+        } catch (Exception exception) {
+            log.warn("查询 MediaMTX 发布流异常，将继续按设备启动流程处理: stream={}, error={}",
+                    streamName, exception.getMessage());
+            return false;
+        }
+    }
+
+    private boolean hasPositiveMetric(String metrics, String metricPrefix) {
+        return metrics.lines()
+                .filter(line -> line.startsWith(metricPrefix))
+                .map(line -> line.substring(metricPrefix.length()).trim())
+                .anyMatch(value -> {
+                    try {
+                        return Double.parseDouble(value) > 0;
+                    } catch (NumberFormatException ignored) {
+                        return false;
+                    }
+                });
+    }
+
+    private String escapePrometheusLabel(String value) {
+        return value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n");
     }
 }

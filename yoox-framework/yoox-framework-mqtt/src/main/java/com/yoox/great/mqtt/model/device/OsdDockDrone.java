@@ -29,9 +29,9 @@ public class OsdDockDrone {
 
     private Float horizontalSpeed;
 
-    private Float latitude;
+    private Double latitude;
 
-    private Float longitude;
+    private Double longitude;
     @JsonProperty(value = "mode_code")
     private DroneModeCodeEnum modeCode;
 
@@ -223,20 +223,20 @@ public class OsdDockDrone {
         return this;
     }
 
-    public Float getLatitude() {
+    public Double getLatitude() {
         return latitude;
     }
 
-    public OsdDockDrone setLatitude(Float latitude) {
+    public OsdDockDrone setLatitude(Double latitude) {
         this.latitude = latitude;
         return this;
     }
 
-    public Float getLongitude() {
+    public Double getLongitude() {
         return longitude;
     }
 
-    public OsdDockDrone setLongitude(Float longitude) {
+    public OsdDockDrone setLongitude(Double longitude) {
         this.longitude = longitude;
         return this;
     }

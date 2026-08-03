@@ -16,8 +16,8 @@ public class CameraFocalLengthSetRequest extends BaseModel {
     @NotNull
     private ZoomCameraTypeEnum cameraType;
 
-    @Min(2)
-    @Max(200)
+    @Min(1)
+    @Max(160)
     @NotNull
     private Float zoomFactor;
 

@@ -1,24 +1,33 @@
 package com.yoox.service.manage.service.impl;
 
 import com.yoox.api.device.AbstractDeviceService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yoox.great.context.enums.device.DeviceDomainEnum;
 import com.yoox.great.context.enums.version.GatewayManager;
 import com.yoox.great.mqtt.core.consume.MqttReply;
 import com.yoox.great.mqtt.core.SDKManager;
 import com.yoox.great.mqtt.enums.control.ControlSourceEnum;
+import com.yoox.great.mqtt.enums.device.DroneModeCodeEnum;
 import com.yoox.great.mqtt.enums.tsa.IconUrlEnum;
 import com.yoox.great.mqtt.handle.osd.TopicOsdRequest;
 import com.yoox.great.mqtt.handle.state.TopicStateRequest;
 import com.yoox.great.mqtt.handle.status.TopicStatusRequest;
 import com.yoox.great.mqtt.handle.status.TopicStatusResponse;
 import com.yoox.great.mqtt.model.device.*;
+import com.yoox.great.mqtt.model.control.TargetDetectResultReport;
+import com.yoox.great.mqtt.model.livestream.RcLiveCapacityDevice;
 import com.yoox.great.mqtt.model.tsa.DeviceIconUrl;
 import com.yoox.great.websocket.enums.BizCodeEnum;
+import com.yoox.great.websocket.enums.UserTypeEnum;
 import com.yoox.great.websocket.service.IWebSocketMessageService;
 import com.yoox.service.manage.model.dto.DeviceDTO;
+import com.yoox.service.control.service.impl.PointFlightTaskStore;
 import com.yoox.service.manage.model.dto.DevicePayloadReceiver;
 import com.yoox.service.manage.model.enums.DeviceFirmwareStatusEnum;
 import com.yoox.service.manage.model.param.DeviceQueryParam;
+import com.yoox.service.manage.model.receiver.CapacityCameraReceiver;
+import com.yoox.service.manage.service.ICapacityCameraService;
 import com.yoox.service.manage.service.IDeviceDictionaryService;
 import com.yoox.service.manage.service.IDevicePayloadService;
 import com.yoox.service.manage.service.IDeviceRedisService;
@@ -36,10 +45,18 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 @Slf4j
 public class SDKDeviceService extends AbstractDeviceService {
+
+    private static final long MISSING_CAPACITY_DEVICE_SN_LOG_INTERVAL_MS = 60_000L;
+
+    private final Map<String, AtomicLong> missingCapacityDeviceSnLogAt = new ConcurrentHashMap<>();
 
     @Autowired
     private IDeviceRedisService deviceRedisService;
@@ -59,11 +76,38 @@ public class SDKDeviceService extends AbstractDeviceService {
     @Autowired
     private IWorkspaceService workspaceService;
 
+    @Autowired
+    private ICapacityCameraService capacityCameraService;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired
+    private PointFlightTaskStore pointFlightTaskStore;
+
     @Value("${device.auto-registration.enabled:true}")
     private boolean autoRegistrationEnabled;
 
     @Value("${device.auto-registration.workspace-id:}")
     private String autoRegistrationWorkspaceId;
+
+    @Override
+    public void targetDetectResult(TopicStateRequest<TargetDetectResultReport> request, MessageHeaders headers) {
+        String gatewaySn = request.getGateway() == null ? request.getFrom() : request.getGateway();
+        Optional<DeviceDTO> gateway = deviceRedisService.getDeviceOnline(gatewaySn);
+        if (gateway.isEmpty()) {
+            log.warn("Ignoring target detection report from offline gateway {}", gatewaySn);
+            return;
+        }
+        Map<String, Object> data = new LinkedHashMap<>(
+                objectMapper.convertValue(request.getData(), new TypeReference<Map<String, Object>>() { }));
+        data.put("sn", gatewaySn);
+        data.put("method", "target_detect_result_report");
+        data.put("timestamp", request.getTimestamp());
+        webSocketMessageService.sendBatch(
+                gateway.get().getWorkspaceId(), UserTypeEnum.WEB.getVal(),
+                BizCodeEnum.TARGET_DETECT_RESULT_REPORT.getCode(), data);
+    }
 
     @Override
     public TopicStatusResponse<MqttReply> updateTopoOnline(TopicStatusRequest<UpdateTopo> request, MessageHeaders headers) {
@@ -95,6 +139,11 @@ public class SDKDeviceService extends AbstractDeviceService {
         if (deviceOpt.isPresent() && gatewayOpt.isPresent()) {
             ensureDeviceBinding(gatewaySn, workspaceId);
             ensureDeviceBinding(deviceSn, workspaceId);
+            // MQTT clean sessions do not retain the runtime topics after a
+            // reconnect. Re-apply all gateway and aircraft subscriptions for
+            // every online topology notification; subscription is idempotent.
+            deviceService.gatewayOnlineSubscribeTopic(gatewayManager);
+            deviceService.subDeviceOnlineSubscribeTopic(gatewayManager);
             deviceOnlineAgain(workspaceId, gatewaySn, deviceSn);
             return new TopicStatusResponse<MqttReply>().setData(MqttReply.success());
         }
@@ -168,6 +217,7 @@ public class SDKDeviceService extends AbstractDeviceService {
     @Override
     public void osdDock(TopicOsdRequest<OsdDock> request, MessageHeaders headers) {
         String from = request.getFrom();
+        boolean wasOnline = deviceRedisService.checkDeviceOnline(from);
         Optional<DeviceDTO> deviceOpt = deviceRedisService.getDeviceOnline(from);
         if (deviceOpt.isEmpty() || !StringUtils.hasText(deviceOpt.get().getWorkspaceId())) {
             deviceOpt = deviceService.getDeviceBySn(from);
@@ -185,7 +235,7 @@ public class SDKDeviceService extends AbstractDeviceService {
             deviceService.getDeviceBySn(device.getChildDeviceSn()).ifPresent(device::setChildren);
         }
 
-        deviceRedisService.setDeviceOnline(device);
+        markOnlineFromOsd(device, request.getGateway(), wasOnline);
         fillDockOsd(from, request.getData());
 
         deviceService.pushOsdDataToWeb(device.getWorkspaceId(), BizCodeEnum.DOCK_OSD, from, request.getData());
@@ -194,6 +244,7 @@ public class SDKDeviceService extends AbstractDeviceService {
     @Override
     public void osdDockDrone(TopicOsdRequest<OsdDockDrone> request, MessageHeaders headers) {
         String from = request.getFrom();
+        boolean wasOnline = deviceRedisService.checkDeviceOnline(from);
         Optional<DeviceDTO> deviceOpt = deviceRedisService.getDeviceOnline(from);
         if (deviceOpt.isEmpty()) {
             deviceOpt = deviceService.getDeviceBySn(from);
@@ -208,8 +259,11 @@ public class SDKDeviceService extends AbstractDeviceService {
         }
 
         DeviceDTO device = deviceOpt.get();
-        deviceRedisService.setDeviceOnline(device);
+        markOnlineFromOsd(device, request.getGateway(), wasOnline);
         deviceRedisService.setDeviceOsd(from, request.getData());
+
+        finishPointFlightWhenIdle(
+                request.getGateway(), request.getData().getModeCode(), device.getWorkspaceId());
 
         deviceService.pushOsdDataToWeb(device.getWorkspaceId(), BizCodeEnum.DEVICE_OSD, from, request.getData());
     }
@@ -217,6 +271,7 @@ public class SDKDeviceService extends AbstractDeviceService {
     @Override
     public void osdRemoteControl(TopicOsdRequest<OsdRemoteControl> request, MessageHeaders headers) {
         String from = request.getFrom();
+        boolean wasOnline = deviceRedisService.checkDeviceOnline(from);
         Optional<DeviceDTO> deviceOpt = deviceRedisService.getDeviceOnline(from);
         if (deviceOpt.isEmpty()) {
             deviceOpt = deviceService.getDeviceBySn(from);
@@ -229,9 +284,22 @@ public class SDKDeviceService extends AbstractDeviceService {
         if (StringUtils.hasText(device.getChildDeviceSn())) {
             deviceService.getDeviceBySn(device.getChildDeviceSn()).ifPresent(device::setChildren);
         }
-        deviceRedisService.setDeviceOnline(device);
+        markOnlineFromOsd(device, request.getGateway(), wasOnline);
 
         OsdRemoteControl data = request.getData();
+        if (data.getDeviceList() != null) {
+            data.getDeviceList().forEach(capacityDevice -> {
+                String capacityDeviceSn = resolveCapacityDeviceSn(device, capacityDevice, from);
+                if (!StringUtils.hasText(capacityDeviceSn)) {
+                    return;
+                }
+                List<CapacityCameraReceiver> cameras = objectMapper.convertValue(
+                        capacityDevice.getCameraList(),
+                        new TypeReference<List<CapacityCameraReceiver>>() {
+                        });
+                capacityCameraService.saveCapacityCameraReceiverList(cameras, capacityDeviceSn);
+            });
+        }
         deviceService.pushOsdDataToPilot(device.getWorkspaceId(), from,
                 new DeviceOsdHost()
                         .setLatitude(data.getLatitude())
@@ -241,9 +309,38 @@ public class SDKDeviceService extends AbstractDeviceService {
 
     }
 
+    private String resolveCapacityDeviceSn(
+            DeviceDTO gateway, RcLiveCapacityDevice capacityDevice, String gatewaySn) {
+        if (capacityDevice != null && StringUtils.hasText(capacityDevice.getSn())) {
+            return capacityDevice.getSn().trim();
+        }
+        if (capacityDevice != null && StringUtils.hasText(gateway.getChildDeviceSn())) {
+            return gateway.getChildDeviceSn().trim();
+        }
+
+        warnMissingCapacityDeviceSn(gatewaySn, capacityDevice == null);
+        return null;
+    }
+
+    private void warnMissingCapacityDeviceSn(String gatewaySn, boolean nullEntry) {
+        long now = System.currentTimeMillis();
+        String logKey = StringUtils.hasText(gatewaySn) ? gatewaySn : "unknown";
+        AtomicLong logAt = missingCapacityDeviceSnLogAt.computeIfAbsent(logKey, key -> new AtomicLong());
+        long previous = logAt.get();
+        if (previous != 0 && now - previous < MISSING_CAPACITY_DEVICE_SN_LOG_INTERVAL_MS) {
+            return;
+        }
+        if (!logAt.compareAndSet(previous, now)) {
+            return;
+        }
+        log.warn("Skipping RC live-capacity entry from gateway {}: {} and no bound child device SN is available.",
+                gatewaySn, nullEntry ? "entry is null" : "device SN is missing");
+    }
+
     @Override
     public void osdRcDrone(TopicOsdRequest<OsdRcDrone> request, MessageHeaders headers) {
         String from = request.getFrom();
+        boolean wasOnline = deviceRedisService.checkDeviceOnline(from);
         Optional<DeviceDTO> deviceOpt = deviceRedisService.getDeviceOnline(from);
         if (deviceOpt.isEmpty()) {
             deviceOpt = deviceService.getDeviceBySn(from);
@@ -257,9 +354,11 @@ public class SDKDeviceService extends AbstractDeviceService {
             log.error("Please bind the drone first.");
         }
 
-        deviceRedisService.setDeviceOnline(device);
+        markOnlineFromOsd(device, request.getGateway(), wasOnline);
 
         OsdRcDrone data = request.getData();
+        deviceRedisService.setDeviceOsd(from, data);
+        finishPointFlightWhenIdle(request.getGateway(), data.getModeCode(), device.getWorkspaceId());
         deviceService.pushOsdDataToPilot(device.getWorkspaceId(), from,
                 new DeviceOsdHost()
                         .setLatitude(data.getLatitude())
@@ -271,6 +370,56 @@ public class SDKDeviceService extends AbstractDeviceService {
                         .setHorizontalSpeed(data.getHorizontalSpeed())
                         .setVerticalSpeed(data.getVerticalSpeed()));
         deviceService.pushOsdDataToWeb(device.getWorkspaceId(), BizCodeEnum.DEVICE_OSD, from, data);
+    }
+
+    private void finishPointFlightWhenIdle(
+            String gatewaySn, DroneModeCodeEnum modeCode, String workspaceId) {
+        if (modeCode != DroneModeCodeEnum.IDLE || !StringUtils.hasText(gatewaySn)
+                || !StringUtils.hasText(workspaceId)) {
+            return;
+        }
+        pointFlightTaskStore.finishProgressingTaskOnIdle(gatewaySn).ifPresent(state -> {
+            String kind = String.valueOf(state.getOrDefault("kind", ""));
+            BizCodeEnum bizCode = "takeoff".equals(kind)
+                    ? BizCodeEnum.TAKE_OFF_TO_POINT_PROGRESS
+                    : BizCodeEnum.FLY_TO_POINT_PROGRESS;
+            webSocketMessageService.sendBatch(
+                    workspaceId, UserTypeEnum.WEB.getVal(), bizCode.getCode(), state);
+            log.info("Finished {} point-flight task for gateway {} because aircraft is idle.",
+                    kind, gatewaySn);
+        });
+    }
+
+    private void markOnlineFromOsd(DeviceDTO device, String gatewaySn, boolean wasOnline) {
+        deviceRedisService.setDeviceOnline(device);
+        if (wasOnline || !StringUtils.hasText(device.getWorkspaceId())) {
+            return;
+        }
+
+        boolean isAircraft = DeviceDomainEnum.DRONE == device.getDomain();
+        String resolvedGatewaySn = isAircraft ? gatewaySn : device.getDeviceSn();
+        String resolvedAircraftSn = isAircraft ? device.getDeviceSn() : device.getChildDeviceSn();
+        deviceService.pushDeviceOnlineTopo(
+                device.getWorkspaceId(), resolvedGatewaySn, resolvedAircraftSn);
+        log.info("Recovered device online state from OSD: gateway={}, device={}",
+                resolvedGatewaySn, device.getDeviceSn());
+    }
+
+    @Override
+    public void dockLiveStatusUpdate(TopicStateRequest<DockLiveStatus> request, MessageHeaders headers) {
+        pushLiveStatus(request.getFrom(), request.getData());
+    }
+
+    @Override
+    public void rcLiveStatusUpdate(TopicStateRequest<RcLiveStatus> request, MessageHeaders headers) {
+        pushLiveStatus(request.getFrom(), request.getData());
+    }
+
+    private void pushLiveStatus(String gatewaySn, Object status) {
+        deviceService.getDeviceBySn(gatewaySn)
+                .filter(device -> StringUtils.hasText(device.getWorkspaceId()))
+                .ifPresent(device -> deviceService.pushOsdDataToWeb(
+                        device.getWorkspaceId(), BizCodeEnum.LIVE_STATUS, gatewaySn, status));
     }
 
     @Override

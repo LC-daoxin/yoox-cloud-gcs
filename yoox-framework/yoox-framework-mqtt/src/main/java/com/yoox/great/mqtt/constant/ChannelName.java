@@ -59,6 +59,8 @@ public class ChannelName {
 
     public static final String INBOUND_STATE_DOCK_SILENT_MODE = "inboundStateDockSilentMode";
 
+    public static final String INBOUND_STATE_TARGET_DETECT_RESULT = "inboundStateTargetDetectResult";
+
 
     public static final String OUTBOUND_STATE = "outboundState";
 

@@ -145,6 +145,7 @@ public class DeviceHmsServiceImpl extends AbstractHmsService implements IDeviceH
         if (entity == null) {
             return null;
         }
+        HmsMessage hmsMessage = HmsJsonUtil.get(entity.getHmsKey());
         return DeviceHmsDTO.builder()
                 .bid(entity.getBid())
                 .tid(entity.getTid())
@@ -156,9 +157,17 @@ public class DeviceHmsServiceImpl extends AbstractHmsService implements IDeviceH
                 .key(entity.getHmsKey())
                 .level(entity.getLevel())
                 .module(entity.getModule())
-                .messageEn(entity.getMessageEn())
-                .messageZh(entity.getMessageZh())
+                .messageEn(resolveStoredMessage(entity.getMessageEn(), hmsMessage.getEn(), "Unknown("))
+                .messageZh(resolveStoredMessage(entity.getMessageZh(), hmsMessage.getZh(), "未知错误（"))
                 .build();
+    }
+
+    private String resolveStoredMessage(String stored, String resolved, String unknownPrefix) {
+        if (StringUtils.hasText(resolved) &&
+                (!StringUtils.hasText(stored) || stored.startsWith(unknownPrefix))) {
+            return resolved;
+        }
+        return stored;
     }
 
     private void fillEntity(DeviceHmsEntity dto, DeviceHms receiver) {
@@ -166,13 +175,11 @@ public class DeviceHmsServiceImpl extends AbstractHmsService implements IDeviceH
         dto.setModule(receiver.getModule().getModule());
         dto.setHmsId(UUID.randomUUID().toString());
         DeviceDomainEnum domain = receiver.getDeviceType().getDomain();
-        if (DeviceDomainEnum.DOCK == domain) {
-            dto.setHmsKey(HmsFaqIdEnum.DOCK_TIP.getText() + receiver.getCode());
-            return;
-        }
-        StringBuilder key = new StringBuilder(HmsFaqIdEnum.FPV_TIP.getText()).append(receiver.getCode());
+        HmsFaqIdEnum faqId = DeviceDomainEnum.PAYLOAD == domain
+                ? HmsFaqIdEnum.FPV_TIP : HmsFaqIdEnum.find(domain);
+        StringBuilder key = new StringBuilder(faqId.getText()).append(receiver.getCode());
 
-        if (receiver.getInTheSky()) {
+        if (DeviceDomainEnum.DRONE == domain && Boolean.TRUE.equals(receiver.getInTheSky())) {
             key.append(HmsInTheSkyEnum.IN_THE_SKY.getText());
         }
         dto.setHmsKey(key.toString());
@@ -189,6 +196,9 @@ public class DeviceHmsServiceImpl extends AbstractHmsService implements IDeviceH
 
     private Map<String, String> fillKeyArgs(String l, DeviceHmsArgs hmsArgs) {
         Map<String, String> args = new HashMap<>();
+        if (hmsArgs == null) {
+            return args;
+        }
         args.put(HmsFormatKeyEnum.ALARM_ID.getKey(), Objects.nonNull(hmsArgs.getAlarmId()) ? Long.toHexString(hmsArgs.getAlarmId()) : null);
         args.put(HmsFormatKeyEnum.COMPONENT_INDEX.getKey(),
                 Objects.nonNull(hmsArgs.getComponentIndex()) ? String.valueOf(hmsArgs.getComponentIndex() + 1) : null);

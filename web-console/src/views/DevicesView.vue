@@ -8,19 +8,24 @@ const session = useSessionStore()
 
 // 接入配置自动按部署地址生成
 const rt = (window as any).YOOX_RUNTIME || {}
-const mqttUser = rt.deviceMqttUser || 'pilot'
-const mqttPwd  = rt.deviceMqttPassword || 'pilot123'
+const isLoopbackHost = (host: string) => host === 'localhost' || host === '127.0.0.1' || host === '::1'
+const configuredPublicHost = String(rt.publicHost || '').trim()
+const publicHost = isLoopbackHost(window.location.hostname)
+  ? configuredPublicHost || window.location.hostname
+  : window.location.hostname
+const mqttUser = computed(() => session.user?.mqtt_username || '未配置')
+const mqttPwd = computed(() => session.user?.mqtt_password || '未配置')
 const pilotGatewayPort = String(rt.pilotGatewayPort || 9000)
-const pilotGatewayHost = `${window.location.hostname}:${pilotGatewayPort}`
+const pilotGatewayHost = `${publicHost}:${pilotGatewayPort}`
 const pilotHttpScheme = window.location.protocol === 'https:' ? 'https' : 'http'
 const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
 const connConfig = computed(() => [
-  { key: 'mqtt',     label: 'MQTT 地址', value: `mqtt://${window.location.hostname}:1883` },
-  { key: 'mqttUser', label: 'MQTT 账号', value: mqttUser },
-  { key: 'mqttPwd',  label: 'MQTT 密码', value: mqttPwd },
+  { key: 'mqtt',     label: 'MQTT 地址', value: `mqtt://${publicHost}:1883` },
+  { key: 'mqttUser', label: 'MQTT 账号', value: mqttUser.value },
+  { key: 'mqttPwd',  label: 'MQTT 密码', value: mqttPwd.value },
   { key: 'server',   label: '登录地址',  value: `${pilotHttpScheme}://${pilotGatewayHost}` },
-  { key: 'account',  label: '账号',      value: mqttUser },
-  { key: 'password', label: '密码',      value: mqttPwd },
+  { key: 'account',  label: '账号',      value: mqttUser.value },
+  { key: 'password', label: '密码',      value: mqttPwd.value },
   { key: 'ws',       label: 'WebSocket', value: `${wsScheme}://${pilotGatewayHost}/api/v1/ws` }
 ])
 const copiedKey = ref('')
@@ -164,7 +169,14 @@ async function removeDevice() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  try {
+    await session.refresh()
+  } catch {
+    return
+  }
+  await load()
+})
 </script>
 
 <template>

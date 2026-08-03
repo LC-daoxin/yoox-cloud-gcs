@@ -5,20 +5,27 @@ import com.yoox.api.control.AbstractControlService;
 
 import com.yoox.api.debug.AbstractDebugService;
 
+import com.yoox.great.context.enums.device.DeviceDomainEnum;
 import com.yoox.great.context.exception.CloudSDKErrorEnum;
 import com.yoox.great.context.response.HttpResultResponse;
+import com.yoox.great.mqtt.enums.control.ControlSourceEnum;
 import com.yoox.great.mqtt.enums.debug.DebugMethodEnum;
 import com.yoox.great.mqtt.enums.device.DockModeCodeEnum;
 import com.yoox.great.mqtt.enums.device.DroneModeCodeEnum;
+import com.yoox.great.mqtt.enums.device.RcLostActionEnum;
 import com.yoox.great.mqtt.model.control.FlyToPointRequest;
 import com.yoox.great.mqtt.model.control.PayloadAuthorityGrabRequest;
 import com.yoox.great.mqtt.model.control.TakeoffToPointRequest;
+import com.yoox.great.mqtt.model.control.TargetDetectOpenRequest;
 import com.yoox.great.mqtt.model.device.PayloadIndex;
+import com.yoox.great.websocket.enums.BizCodeEnum;
+import com.yoox.great.websocket.enums.UserTypeEnum;
 import com.yoox.great.websocket.service.IWebSocketMessageService;
 import com.yoox.great.mqtt.handle.services.ServicesReplyData;
 import com.yoox.great.mqtt.handle.services.TopicServicesResponse;
 import com.yoox.great.mqtt.core.SDKManager;
 import com.yoox.service.control.model.enums.DroneAuthorityEnum;
+import com.yoox.service.control.model.enums.DroneControlMethodEnum;
 import com.yoox.service.control.model.enums.RemoteDebugMethodEnum;
 import com.yoox.service.control.model.param.*;
 import com.yoox.service.control.service.IControlService;
@@ -32,7 +39,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -55,6 +66,12 @@ public class ControlServiceImpl implements IControlService {
 
     @Autowired
     private IDevicePayloadService devicePayloadService;
+
+    @Autowired
+    private PayloadAuthorityCacheService payloadAuthorityCacheService;
+
+    @Autowired
+    private PointFlightTaskStore pointFlightTaskStore;
 
     @Autowired
     private AbstractControlService abstractControlService;
@@ -106,12 +123,9 @@ public class ControlServiceImpl implements IControlService {
 
     private void checkFlyToCondition(String dockSn) {
         // TODO 设备固件版本不兼容情况
-        Optional<DeviceDTO> dockOpt = deviceRedisService.getDeviceOnline(dockSn);
-        if (dockOpt.isEmpty()) {
-            throw new RuntimeException("The dock is offline, please restart the dock.");
-        }
+        DeviceDTO gateway = requireOnlineGatewayAndAircraft(dockSn);
 
-        DroneModeCodeEnum deviceMode = deviceService.getDeviceMode(dockOpt.get().getChildDeviceSn());
+        DroneModeCodeEnum deviceMode = deviceService.getDeviceMode(gateway.getChildDeviceSn());
         if (DroneModeCodeEnum.MANUAL != deviceMode) {
             throw new RuntimeException("The current state of the drone does not support this function, please try again later.");
         }
@@ -124,34 +138,105 @@ public class ControlServiceImpl implements IControlService {
 
     @Override
     public HttpResultResponse flyToPoint(String sn, FlyToPointParam param) {
-        checkFlyToCondition(sn);
-
+        if (pointFlightTaskStore.hasPotentiallyActiveTask(sn)) {
+            return HttpResultResponse.error(
+                    "A point-flight command is already active or awaiting confirmation. Stop it before starting another one.");
+        }
         param.setFlyToId(UUID.randomUUID().toString());
-        TopicServicesResponse<ServicesReplyData> response = abstractControlService.flyToPoint(
-                SDKManager.getDeviceSDK(sn), mapper.convertValue(param, FlyToPointRequest.class));
-        ServicesReplyData reply = response.getData();
-        return reply.getResult().isSuccess() ?
-                HttpResultResponse.success()
-                : HttpResultResponse.error("Flying to the target point failed. " + reply.getResult());
+        if (!pointFlightTaskStore.tryRecordPending(sn, "flyto", param.getFlyToId())) {
+            return HttpResultResponse.error(
+                    "A point-flight command is already active or awaiting confirmation. Stop it before starting another one.");
+        }
+        try {
+            checkFlyToCondition(sn);
+        } catch (RuntimeException exception) {
+            pointFlightTaskStore.recordFailure(
+                    sn, "flyto", param.getFlyToId(), exception.getMessage());
+            throw exception;
+        }
+
+        TopicServicesResponse<ServicesReplyData> response;
+        try {
+            response = abstractControlService.flyToPoint(
+                    SDKManager.getDeviceSDK(sn), mapper.convertValue(param, FlyToPointRequest.class));
+        } catch (RuntimeException exception) {
+            pointFlightTaskStore.recordUnknown(
+                    sn, "flyto", param.getFlyToId(), exception.getMessage());
+            throw exception;
+        }
+        ServicesReplyData reply = response == null ? null : response.getData();
+        if (reply == null || reply.getResult() == null) {
+            pointFlightTaskStore.recordUnknown(
+                    sn, "flyto", param.getFlyToId(), "The device reply was empty.");
+            return HttpResultResponse.error(
+                    "FlyTo command status is unknown. Check task status before retrying.");
+        }
+        if (reply.getResult().isSuccess()) {
+            pointFlightTaskStore.recordAccepted(sn, "flyto", param.getFlyToId());
+            return HttpResultResponse.success();
+        }
+        pointFlightTaskStore.recordFailure(
+                sn, "flyto", param.getFlyToId(), reply.getResult().toString());
+        return HttpResultResponse.error("Flying to the target point failed. " + reply.getResult());
     }
 
     @Override
     public HttpResultResponse flyToPointStop(String sn) {
-        TopicServicesResponse<ServicesReplyData> response = abstractControlService.flyToPointStop(SDKManager.getDeviceSDK(sn));
-        ServicesReplyData reply = response.getData();
-
-        return reply.getResult().isSuccess() ?
-                HttpResultResponse.success()
-                : HttpResultResponse.error("The drone flying to the target point failed to stop. " + reply.getResult());
+        requireOnlineGatewayAndAircraft(sn);
+        HttpResultResponse authority = seizeAuthority(sn, DroneAuthorityEnum.FLIGHT, null);
+        if (HttpResultResponse.CODE_SUCCESS != authority.getCode()) {
+            return authority;
+        }
+        pointFlightTaskStore.recordCancelRequested(sn, false, "Cancel command is being sent.");
+        TopicServicesResponse<ServicesReplyData> response;
+        try {
+            response = abstractControlService.flyToPointStop(SDKManager.getDeviceSDK(sn));
+        } catch (RuntimeException exception) {
+            pointFlightTaskStore.recordCancelRequested(sn, true, exception.getMessage());
+            throw exception;
+        }
+        ServicesReplyData reply = response == null ? null : response.getData();
+        if (reply == null || reply.getResult() == null) {
+            pointFlightTaskStore.recordCancelRequested(
+                    sn, true, "The device reply was empty.");
+            return HttpResultResponse.error(
+                    "FlyTo stop status is unknown. It is safe to retry the stop command.");
+        }
+        if (reply.getResult().isSuccess()) {
+            pointFlightTaskStore.recordCancelRequested(sn, false, "Cancel command accepted.");
+            return HttpResultResponse.success();
+        }
+        pointFlightTaskStore.recordCancelFailure(sn, reply.getResult().toString());
+        return HttpResultResponse.error(
+                "The drone flying to the target point failed to stop. " + reply.getResult());
     }
 
-    private void checkTakeoffCondition(String dockSn) {
-        Optional<DeviceDTO> dockOpt = deviceRedisService.getDeviceOnline(dockSn);
-        if (dockOpt.isEmpty() || DockModeCodeEnum.IDLE != deviceService.getDockMode(dockSn)) {
-            throw new RuntimeException("The current state does not support takeoff.");
+    @Override
+    public HttpResultResponse getPointFlightState(String sn) {
+        return HttpResultResponse.success(pointFlightTaskStore.get(sn).orElse(null));
+    }
+
+    private void checkTakeoffCondition(String gatewaySn) {
+        DeviceDTO gateway = deviceRedisService.getDeviceOnline(gatewaySn)
+                .orElseThrow(() -> new RuntimeException("The gateway is offline, please reconnect the device."));
+
+        if (DeviceDomainEnum.DOCK == gateway.getDomain()) {
+            if (DockModeCodeEnum.IDLE != deviceService.getDockMode(gatewaySn)) {
+                throw new RuntimeException("The current dock state does not support takeoff.");
+            }
+        } else if (DeviceDomainEnum.REMOTER_CONTROL == gateway.getDomain()) {
+            String aircraftSn = gateway.getChildDeviceSn();
+            if (aircraftSn == null || deviceRedisService.getDeviceOnline(aircraftSn).isEmpty()) {
+                throw new RuntimeException("The aircraft is offline, please reconnect the aircraft.");
+            }
+            if (DroneModeCodeEnum.IDLE != deviceService.getDeviceMode(aircraftSn)) {
+                throw new RuntimeException("The aircraft must be on the ground and idle before takeoff.");
+            }
+        } else {
+            throw new RuntimeException("The current gateway type does not support takeoff.");
         }
 
-        HttpResultResponse result = seizeAuthority(dockSn, DroneAuthorityEnum.FLIGHT, null);
+        HttpResultResponse result = seizeAuthority(gatewaySn, DroneAuthorityEnum.FLIGHT, null);
         if (HttpResultResponse.CODE_SUCCESS != result.getCode()) {
             throw new IllegalArgumentException(result.getMessage());
         }
@@ -160,29 +245,94 @@ public class ControlServiceImpl implements IControlService {
 
     @Override
     public HttpResultResponse takeoffToPoint(String sn, TakeoffToPointParam param) {
-        checkTakeoffCondition(sn);
-
+        if (pointFlightTaskStore.hasPotentiallyActiveTask(sn)) {
+            return HttpResultResponse.error(
+                    "A point-flight command is already active or awaiting confirmation. Resolve it before takeoff.");
+        }
+        // Autel smart-controller gateways validate these safety fields even
+        // though the direct-cloud command uses the compact takeoff payload.
+        // Supply conservative defaults when the cockpit only specifies the
+        // destination and speed.
+        if (param.getSecurityTakeoffHeight() == null) {
+            param.setSecurityTakeoffHeight(20D);
+        }
+        if (param.getRthAltitude() == null) {
+            param.setRthAltitude(20D);
+        }
+        if (param.getRcLostAction() == null) {
+            param.setRcLostAction(RcLostActionEnum.RETURN_HOME);
+        }
         param.setFlightId(UUID.randomUUID().toString());
-        TopicServicesResponse<ServicesReplyData> response = abstractControlService.takeoffToPoint(
-                SDKManager.getDeviceSDK(sn), mapper.convertValue(param, TakeoffToPointRequest.class));
-        ServicesReplyData reply = response.getData();
-        return reply.getResult().isSuccess() ?
-                HttpResultResponse.success()
-                : HttpResultResponse.error("The drone failed to take off. " + reply.getResult());
+        if (!pointFlightTaskStore.tryRecordPending(sn, "takeoff", param.getFlightId())) {
+            return HttpResultResponse.error(
+                    "A point-flight command is already active or awaiting confirmation. Resolve it before takeoff.");
+        }
+        TakeoffToPointRequest request;
+        DeviceDomainEnum gatewayDomain;
+        try {
+            checkTakeoffCondition(sn);
+            request = mapper.convertValue(param, TakeoffToPointRequest.class);
+            gatewayDomain = deviceRedisService.getDeviceOnline(sn)
+                    .map(DeviceDTO::getDomain)
+                    .orElse(null);
+        } catch (RuntimeException exception) {
+            pointFlightTaskStore.recordFailure(
+                    sn, "takeoff", param.getFlightId(), exception.getMessage());
+            throw exception;
+        }
+        TopicServicesResponse<ServicesReplyData> response;
+        try {
+            response = DeviceDomainEnum.REMOTER_CONTROL == gatewayDomain
+                    ? abstractControlService.takeoffToPointRc(SDKManager.getDeviceSDK(sn), request)
+                    : abstractControlService.takeoffToPoint(SDKManager.getDeviceSDK(sn), request);
+        } catch (RuntimeException exception) {
+            pointFlightTaskStore.recordUnknown(
+                    sn, "takeoff", param.getFlightId(), exception.getMessage());
+            throw exception;
+        }
+        ServicesReplyData reply = response == null ? null : response.getData();
+        if (reply == null || reply.getResult() == null) {
+            pointFlightTaskStore.recordUnknown(
+                    sn, "takeoff", param.getFlightId(), "The device reply was empty.");
+            return HttpResultResponse.error(
+                    "Takeoff command status is unknown. Check task status before retrying.");
+        }
+        if (reply.getResult().isSuccess()) {
+            pointFlightTaskStore.recordAccepted(sn, "takeoff", param.getFlightId());
+            return HttpResultResponse.success();
+        }
+        pointFlightTaskStore.recordFailure(
+                sn, "takeoff", param.getFlightId(), reply.getResult().toString());
+        return HttpResultResponse.error("The drone failed to take off. " + reply.getResult());
     }
 
     @Override
     public HttpResultResponse seizeAuthority(String sn, DroneAuthorityEnum authority, DronePayloadParam param) {
+        return seizeAuthority(sn, authority, param, false);
+    }
+
+    @Override
+    public HttpResultResponse seizeAuthority(
+            String sn,
+            DroneAuthorityEnum authority,
+            DronePayloadParam param,
+            boolean force) {
+        requireOnlineGatewayAndAircraft(sn);
         TopicServicesResponse<ServicesReplyData> response;
         switch (authority) {
             case FLIGHT:
-                if (deviceService.checkAuthorityFlight(sn)) {
+                if (!force && deviceService.checkAuthorityFlight(sn)) {
                     return HttpResultResponse.success();
                 }
                 response = abstractControlService.flightAuthorityGrab(SDKManager.getDeviceSDK(sn));
                 break;
             case PAYLOAD:
-                if (checkPayloadAuthority(sn, param.getPayloadIndex())) {
+                if (param == null || !StringUtils.hasText(param.getPayloadIndex())) {
+                    return HttpResultResponse.error(CloudSDKErrorEnum.INVALID_PARAMETER);
+                }
+                if (!force && checkPayloadAuthority(sn, param.getPayloadIndex())) {
+                    publishPayloadAuthorityState(sn, param.getPayloadIndex(), true,
+                            0, "已取得负载控制权", null);
                     return HttpResultResponse.success();
                 }
                 response = abstractControlService.payloadAuthorityGrab(SDKManager.getDeviceSDK(sn),
@@ -193,25 +343,75 @@ public class ControlServiceImpl implements IControlService {
         }
 
         ServicesReplyData serviceReply = response.getData();
-        return serviceReply.getResult().isSuccess() ?
-                HttpResultResponse.success()
-                : HttpResultResponse.error(serviceReply.getResult());
+        if (!serviceReply.getResult().isSuccess()) {
+            return HttpResultResponse.error(serviceReply.getResult());
+        }
+        if (DroneAuthorityEnum.FLIGHT == authority) {
+            deviceRedisService.getDeviceOnline(sn)
+                    .ifPresentOrElse(
+                            gateway -> deviceService.updateFlightControl(gateway, ControlSourceEnum.A),
+                            () -> log.warn("Unable to cache confirmed flight authority: gateway {} is offline", sn));
+        } else if (DroneAuthorityEnum.PAYLOAD == authority && param != null) {
+            payloadAuthorityCacheService.confirm(sn, param.getPayloadIndex());
+        }
+        return HttpResultResponse.success();
+    }
+
+    /**
+     * The MQTT services_reply belongs to the whole workspace, not only to the
+     * HTTP caller that initiated the command. Include the payload index and
+     * broadcast the confirmed result so every open cockpit can update the same
+     * authority state.
+     */
+    private void publishPayloadAuthorityState(
+            String gatewaySn,
+            String payloadIndex,
+            boolean success,
+            Integer result,
+            String message,
+            TopicServicesResponse<?> response) {
+        Optional<String> workspaceId = deviceService.getDeviceBySn(gatewaySn)
+                .map(DeviceDTO::getWorkspaceId)
+                .filter(value -> value != null && !value.isBlank());
+        if (workspaceId.isEmpty()) {
+            log.warn("无法广播负载控制权状态，网关未绑定工作空间: gateway={}, payload={}",
+                    gatewaySn, payloadIndex);
+            return;
+        }
+
+        Map<String, Object> notification = new LinkedHashMap<>();
+        notification.put("gateway_sn", gatewaySn);
+        notification.put("payload_index", payloadIndex);
+        notification.put("method", DroneControlMethodEnum.PAYLOAD_AUTHORITY_GRAB.getMethod());
+        notification.put("result", result);
+        notification.put("success", success);
+        notification.put("message", message);
+        notification.put("tid", response == null ? null : response.getTid());
+        notification.put("bid", response == null ? null : response.getBid());
+        notification.put("timestamp", response == null ? System.currentTimeMillis() : response.getTimestamp());
+
+        webSocketMessageService.sendBatch(
+                workspaceId.get(),
+                UserTypeEnum.WEB.getVal(),
+                BizCodeEnum.PAYLOAD_AUTHORITY_GRAB.getCode(),
+                notification);
+        log.info("已广播负载控制权状态: gateway={}, payload={}, success={}",
+                gatewaySn, payloadIndex, success);
     }
 
     private Boolean checkPayloadAuthority(String sn, String payloadIndex) {
-        Optional<DeviceDTO> dockOpt = deviceRedisService.getDeviceOnline(sn);
-        if (dockOpt.isEmpty()) {
-            throw new RuntimeException("The dock is offline, please restart the dock.");
-        }
-        return devicePayloadService.checkAuthorityPayload(dockOpt.get().getChildDeviceSn(), payloadIndex);
+        DeviceDTO gateway = requireOnlineGatewayAndAircraft(sn);
+        return devicePayloadService.checkAuthorityPayload(gateway.getChildDeviceSn(), payloadIndex);
     }
 
     @Override
     public HttpResultResponse payloadCommands(PayloadCommandsParam param) throws Exception {
-        param.getCmd().getClazz()
+        PayloadCommandsHandler handler = param.getCmd().getClazz()
                 .getDeclaredConstructor(DronePayloadParam.class)
-                .newInstance(param.getData())
-                .checkCondition(param.getSn());
+                .newInstance(param.getData());
+        if (!handler.checkCondition(param.getSn())) {
+            return HttpResultResponse.success();
+        }
 
         TopicServicesResponse<ServicesReplyData> response = abstractControlService.payloadControl(
                 SDKManager.getDeviceSDK(param.getSn()), param.getCmd().getCmd(),
@@ -221,5 +421,52 @@ public class ControlServiceImpl implements IControlService {
         return serviceReply.getResult().isSuccess() ?
                 HttpResultResponse.success()
                 : HttpResultResponse.error(serviceReply.getResult());
+    }
+
+    @Override
+    public HttpResultResponse openTargetDetection(String sn, TargetDetectOpenRequest param) {
+        requirePayloadAuthority(sn);
+        TopicServicesResponse<ServicesReplyData> response = abstractControlService.targetDetectOpen(
+                SDKManager.getDeviceSDK(sn), param);
+        ServicesReplyData reply = response.getData();
+        return reply.getResult().isSuccess()
+                ? HttpResultResponse.success()
+                : HttpResultResponse.error(reply.getResult());
+    }
+
+    @Override
+    public HttpResultResponse closeTargetDetection(String sn) {
+        requirePayloadAuthority(sn);
+        TopicServicesResponse<ServicesReplyData> response = abstractControlService.targetDetectClose(
+                SDKManager.getDeviceSDK(sn));
+        ServicesReplyData reply = response.getData();
+        return reply.getResult().isSuccess()
+                ? HttpResultResponse.success()
+                : HttpResultResponse.error(reply.getResult());
+    }
+
+    private DeviceDTO requireOnlineGatewayAndAircraft(String gatewaySn) {
+        DeviceDTO gateway = deviceRedisService.getDeviceOnline(gatewaySn)
+                .orElseThrow(() -> new RuntimeException("The gateway is offline, please reconnect the device."));
+        if (!StringUtils.hasText(gateway.getChildDeviceSn())) {
+            throw new RuntimeException("The gateway is not connected to an aircraft.");
+        }
+        if (deviceRedisService.getDeviceOnline(gateway.getChildDeviceSn()).isEmpty()) {
+            throw new RuntimeException("The aircraft is offline, please reconnect the aircraft.");
+        }
+        return gateway;
+    }
+
+    private void requirePayloadAuthority(String gatewaySn) {
+        DeviceDTO gateway = requireOnlineGatewayAndAircraft(gatewaySn);
+        DeviceDTO aircraft = deviceRedisService.getDeviceOnline(gateway.getChildDeviceSn())
+                .orElseThrow(() -> new RuntimeException("The aircraft is offline, please reconnect the aircraft."));
+        boolean hasAuthority = !CollectionUtils.isEmpty(aircraft.getPayloadsList())
+                && aircraft.getPayloadsList().stream()
+                .filter(Objects::nonNull)
+                .anyMatch(payload -> ControlSourceEnum.A == payload.getControlSource());
+        if (!hasAuthority) {
+            throw new RuntimeException("The device does not have payload control authority.");
+        }
     }
 }

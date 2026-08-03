@@ -51,21 +51,34 @@ public class WebSocketMessageServiceImpl implements IWebSocketMessageService {
             return;
         }
 
+        byte[] payload;
         try {
-            TextMessage data = new TextMessage(mapper.writeValueAsBytes(message));
-            for (MyConcurrentWebSocketSession session : sessions) {
+            payload = mapper.writeValueAsBytes(message);
+        } catch (IOException exception) {
+            log.warn("Failed to serialize WebSocket batch message. bizCode={}", message.getBizCode(), exception);
+            return;
+        }
+
+        int delivered = 0;
+        int skipped = 0;
+        for (MyConcurrentWebSocketSession session : sessions) {
+            try {
                 if (!session.isOpen()) {
                     session.close();
-                    log.debug("This session is closed.");
-                    return;
+                    skipped++;
+                    log.debug("Skipping closed WebSocket session. ID: {}", session.getId());
+                    continue;
                 }
-                session.sendMessage(data);
+                session.sendMessage(new TextMessage(payload));
+                delivered++;
+            } catch (IOException | RuntimeException exception) {
+                skipped++;
+                log.warn("Failed to publish WebSocket message to session {}. bizCode={}",
+                        session.getId(), message.getBizCode(), exception);
             }
-        } catch (IOException e) {
-            log.info("Failed to publish the message. {}", message.toString());
-
-            e.printStackTrace();
         }
+        log.debug("WebSocket batch completed. bizCode={}, targets={}, delivered={}, skipped={}",
+                message.getBizCode(), sessions.size(), delivered, skipped);
     }
 
     @Override

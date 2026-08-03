@@ -1,0 +1,7 @@
+// 容器启动时由 nginx 官方镜像根据部署环境生成。
+window.YOOX_RUNTIME = {
+  amapKey: '24941ad04ae04fac73d32037b87ea023',
+  amapSecurityCode: '',
+  publicHost: '${YOOX_PUBLIC_HOST}',
+  pilotGatewayPort: ${YOOX_PILOT_PORT}
+}

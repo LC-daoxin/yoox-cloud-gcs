@@ -9,11 +9,11 @@ public class DeviceOsdHost {
 
     @Schema(description = "device latitude")
     @NotNull
-    private Float latitude;
+    private Double latitude;
 
     @Schema(description = "device longitude")
     @NotNull
-    private Float longitude;
+    private Double longitude;
 
     @Schema(description = "device ellipsoid height")
     @NotNull
@@ -54,20 +54,20 @@ public class DeviceOsdHost {
                 '}';
     }
 
-    public Float getLatitude() {
+    public Double getLatitude() {
         return latitude;
     }
 
-    public DeviceOsdHost setLatitude(Float latitude) {
+    public DeviceOsdHost setLatitude(Double latitude) {
         this.latitude = latitude;
         return this;
     }
 
-    public Float getLongitude() {
+    public Double getLongitude() {
         return longitude;
     }
 
-    public DeviceOsdHost setLongitude(Float longitude) {
+    public DeviceOsdHost setLongitude(Double longitude) {
         this.longitude = longitude;
         return this;
     }

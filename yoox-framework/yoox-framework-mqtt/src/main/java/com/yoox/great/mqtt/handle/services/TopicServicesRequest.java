@@ -2,10 +2,17 @@ package com.yoox.great.mqtt.handle.services;
 
 
 import com.yoox.great.mqtt.core.CommonTopicRequest;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import java.util.List;
+import java.util.Map;
 
 public class TopicServicesRequest<T> extends CommonTopicRequest<T> {
 
     private String method;
+
+    @JsonProperty("device_list")
+    private List<Map<String, String>> deviceList;
 
     public TopicServicesRequest() {
     }
@@ -17,6 +24,7 @@ public class TopicServicesRequest<T> extends CommonTopicRequest<T> {
                 ", tid='" + tid + '\'' +
                 ", bid='" + bid + '\'' +
                 ", timestamp=" + timestamp +
+                ", deviceList=" + deviceList +
                 ", data=" + data +
                 '}';
     }
@@ -27,6 +35,15 @@ public class TopicServicesRequest<T> extends CommonTopicRequest<T> {
 
     public TopicServicesRequest<T> setMethod(String method) {
         this.method = method;
+        return this;
+    }
+
+    public List<Map<String, String>> getDeviceList() {
+        return deviceList;
+    }
+
+    public TopicServicesRequest<T> setDeviceList(List<Map<String, String>> deviceList) {
+        this.deviceList = deviceList;
         return this;
     }
 

@@ -6,15 +6,15 @@ import lombok.Getter;
 @Getter
 public enum MqttAclAccessEnum {
 
-    SUB(1),
+    SUB("subscribe"),
 
-    PUB(2),
+    PUB("publish"),
 
-    ALL(3);
+    ALL("all");
 
-    int value;
+    private final String value;
 
-    MqttAclAccessEnum(int value) {
+    MqttAclAccessEnum(String value) {
         this.value = value;
     }
 }

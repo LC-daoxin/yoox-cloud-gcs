@@ -315,7 +315,7 @@ CREATE TABLE `manage_user` (
   `workspace_id` varchar(64) CHARACTER SET utf8 COLLATE utf8_general_ci NOT NULL DEFAULT '' COMMENT 'Which workspace the current account belongs to.',
   `user_type` smallint NOT NULL COMMENT 'The type of account. Different sides need to be logged in with the corresponding type of account. 1: web; 2: pilot.',
   `mqtt_username` varchar(32) CHARACTER SET utf8 COLLATE utf8_general_ci NOT NULL DEFAULT '' COMMENT 'The account name used by the current account when logging into the emqx server.',
-  `mqtt_password` varchar(32) CHARACTER SET utf8 COLLATE utf8_general_ci NOT NULL DEFAULT '' COMMENT 'The account password used by the current account when logging into the emqx server.',
+  `mqtt_password` varchar(128) CHARACTER SET utf8 COLLATE utf8_general_ci NOT NULL DEFAULT '' COMMENT 'The account password used by the current account when logging into the emqx server.',
   `create_time` bigint NOT NULL,
   `update_time` bigint NOT NULL,
   PRIMARY KEY (`id`),

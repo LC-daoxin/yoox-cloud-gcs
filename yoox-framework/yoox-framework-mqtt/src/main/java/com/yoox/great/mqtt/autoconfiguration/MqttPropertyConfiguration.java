@@ -15,6 +15,7 @@ import org.springframework.integration.mqtt.core.DefaultMqttPahoClientFactory;
 import org.springframework.integration.mqtt.core.MqttPahoClientFactory;
 import org.springframework.util.StringUtils;
 
+import java.util.HashMap;
 import java.util.Map;
 
 @Data
@@ -56,11 +57,26 @@ public class MqttPropertyConfiguration {
         if (!mqtt.containsKey(MqttUseEnum.DRC)) {
             throw new RuntimeException("Please configure the drc link parameters of mqtt in the backend configuration file first.");
         }
+        if (!StringUtils.hasText(clientId)) {
+            throw new IllegalArgumentException("The DRC MQTT client ID must not be blank.");
+        }
+        if (!StringUtils.hasText(username)) {
+            throw new IllegalArgumentException("The DRC MQTT username must not be blank.");
+        }
         Algorithm algorithm = JwtUtil.algorithm;
+
+        Map<String, Object> claims = new HashMap<>();
+        if (map != null) {
+            claims.putAll(map);
+        }
+        // These reserved claims are always derived from the broker credentials.
+        // Add them last so caller-supplied claims cannot impersonate another client.
+        claims.put("username", username);
+        claims.put("clientid", clientId);
 
         // The public DRC contract expresses age in seconds, while java.util.Date
         // and JwtUtil use milliseconds.
-        String token = JwtUtil.createToken(map, Math.multiplyExact(age, 1000L), algorithm, null, null);
+        String token = JwtUtil.createToken(claims, Math.multiplyExact(age, 1000L), algorithm, null, null);
 
         return new DrcModeMqttBroker()
                 .setAddress(getMqttAddress(mqtt.get(MqttUseEnum.DRC)))

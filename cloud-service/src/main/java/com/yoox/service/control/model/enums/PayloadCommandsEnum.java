@@ -21,7 +21,17 @@ public enum PayloadCommandsEnum {
 
     CAMERA_FOCAL_LENGTH_SET(PayloadControlMethodEnum.CAMERA_FOCAL_LENGTH_SET, CameraFocalLengthSetImpl.class),
 
-    GIMBAL_RESET(PayloadControlMethodEnum.GIMBAL_RESET, GimbalResetImpl.class);
+    CAMERA_FOCAL_LENGTH_DRAG(PayloadControlMethodEnum.CAMERA_FOCAL_LENGTH_DRAG, CameraFocalLengthDragImpl.class),
+
+    CAMERA_SCREEN_DRAG(PayloadControlMethodEnum.CAMERA_SCREEN_DRAG, CameraScreenDragImpl.class),
+
+    GIMBAL_RESET(PayloadControlMethodEnum.GIMBAL_RESET, GimbalResetImpl.class),
+
+    CAMERA_LOOK_AT(PayloadControlMethodEnum.CAMERA_LOOK_AT, CameraLookAtImpl.class),
+
+    PHOTO_STORAGE_SET(PayloadControlMethodEnum.PHOTO_STORAGE_SET, PhotoStorageSetImpl.class),
+
+    VIDEO_STORAGE_SET(PayloadControlMethodEnum.VIDEO_STORAGE_SET, VideoStorageSetImpl.class);
 
     PayloadControlMethodEnum cmd;
 

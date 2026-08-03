@@ -10,7 +10,9 @@ public enum HmsFaqIdEnum {
 
     DOCK_TIP("dock_tip_", DeviceDomainEnum.DOCK),
 
-    FPV_TIP("fpv_tip_", DeviceDomainEnum.DRONE);
+    FPV_TIP("fpv_tip_", DeviceDomainEnum.DRONE),
+
+    RC_TIP("rc_tip_", DeviceDomainEnum.REMOTER_CONTROL);
 
     private final String text;
 
@@ -35,4 +37,3 @@ public enum HmsFaqIdEnum {
                 .orElseThrow(() -> new CloudSDKException(HmsFaqIdEnum.class, domain));
     }
 }
-

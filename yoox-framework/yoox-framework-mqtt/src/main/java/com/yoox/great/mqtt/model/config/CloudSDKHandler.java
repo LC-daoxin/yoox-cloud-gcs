@@ -25,7 +25,7 @@ import java.util.Objects;
 @Component
 public class CloudSDKHandler {
 
-    @Before("execution(public * com.yoox.*.api.*.*(com.yoox.great.context.enums.version.GatewayManager, ..))")
+    @Before("execution(public * com.yoox.api..*.*(com.yoox.great.context.enums.version.GatewayManager, ..))")
     public void checkCloudSDK(JoinPoint point) {
         GatewayManager deviceSDK = (GatewayManager) point.getArgs()[0];
         CloudSDKVersion since = ((MethodSignature) point.getSignature()).getMethod().getDeclaredAnnotation(CloudSDKVersion.class);
@@ -40,12 +40,12 @@ public class CloudSDKHandler {
         }
     }
 
-    @Before("execution(public * com.yoox.*.api.*.*(com.yoox.great.context.enums.version.GatewayManager, com.yoox.great.context.base.BaseModel+))")
+    @Before("execution(public * com.yoox.api..*.*(com.yoox.great.context.enums.version.GatewayManager, com.yoox.great.context.base.BaseModel+))")
     public void checkRequest(JoinPoint point) {
         Common.validateModel((BaseModel) point.getArgs()[1], (GatewayManager) point.getArgs()[0]);
     }
 
-    @AfterReturning(value = "execution(public com.yoox.great.context.response.HttpResultResponse+ com.yoox.*.api.*.*(..))", returning = "response")
+    @AfterReturning(value = "execution(public com.yoox.great.context.response.HttpResultResponse+ com.yoox.api..*.*(..))", returning = "response")
     public void checkResponse(JoinPoint point, HttpResultResponse response) throws NoSuchMethodException, IllegalAccessException, InstantiationException, InvocationTargetException {
         if (null == response) {
             throw new CloudSDKException(CloudSDKErrorEnum.INVALID_PARAMETER, "The return value cannot be null.");

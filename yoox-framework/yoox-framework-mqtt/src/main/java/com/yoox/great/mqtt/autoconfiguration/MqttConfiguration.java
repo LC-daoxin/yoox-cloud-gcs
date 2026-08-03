@@ -17,6 +17,7 @@ import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageHandler;
 
 import javax.annotation.Resource;
+import java.util.Arrays;
 import java.util.UUID;
 
 @Configuration
@@ -36,7 +37,12 @@ public class MqttConfiguration {
 
     @Bean
     public MqttPahoMessageDrivenChannelAdapter mqttInbound() {
-        MqttPahoMessageDrivenChannelAdapter adapter = new MqttPahoMessageDrivenChannelAdapter(UUID.randomUUID().toString(), mqttClientFactory, inboundTopic.split(","));
+        String[] topics = Arrays.stream(inboundTopic.split(","))
+                .map(String::trim)
+                .filter(topic -> !topic.isEmpty())
+                .toArray(String[]::new);
+        MqttPahoMessageDrivenChannelAdapter adapter = new MqttPahoMessageDrivenChannelAdapter(
+                UUID.randomUUID().toString(), mqttClientFactory, topics);
         DefaultPahoMessageConverter converter = new DefaultPahoMessageConverter();
         converter.setPayloadAsBytes(true);
         adapter.setConverter(converter);

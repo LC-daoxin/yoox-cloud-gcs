@@ -11,7 +11,7 @@ playback: false
 authMethod: internal
 authInternalUsers:
   - user: yoox-publisher
-    pass: yoox_rtsp_change_me
+    pass: yoox_rtsp_local_dev
     ips: []
     permissions:
       - action: publish
@@ -39,8 +39,14 @@ authInternalUsers:
 rtsp: true
 rtspAddress: :8554
 rtspTransports: [tcp]
+rtpAddress: :8188
+rtcpAddress: :8189
 rtmp: false
-hls: false
+rtmpAddress: :1935
+hls: true
+hlsAddress: :8888
+hlsAlwaysRemux: false
+hlsVariant: lowLatency
 srt: false
 moq: false
 
@@ -49,7 +55,7 @@ moq: false
 webrtc: true
 webrtcAddress: :8889
 webrtcEncryption: false
-webrtcLocalUDPAddress: :8189
+webrtcLocalUDPAddress: :8000
 webrtcIPsFromInterfaces: true
 
 pathDefaults:

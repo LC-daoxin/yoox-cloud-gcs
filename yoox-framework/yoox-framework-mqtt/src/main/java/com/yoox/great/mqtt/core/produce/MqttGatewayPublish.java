@@ -75,9 +75,10 @@ public class MqttGatewayPublish {
         boolean hasBid = StringUtils.hasText(request.getBid());
         request.setBid(hasBid ? request.getBid() : UUID.randomUUID().toString());
         while (time.getAndIncrement() <= retryCount) {
+            Chan chan = Chan.getInstance(request.getTid(), true).setRequest(request);
             this.publish(topic, request);
 
-            CommonTopicResponse<T> receiver = Chan.getInstance(request.getTid(), true).get(request.getTid(), timeout);
+            CommonTopicResponse<T> receiver = chan.get(request.getTid(), timeout);
             if (Objects.nonNull(receiver)
                     && receiver.getTid().equals(request.getTid())
                     && receiver.getBid().equals(request.getBid())) {

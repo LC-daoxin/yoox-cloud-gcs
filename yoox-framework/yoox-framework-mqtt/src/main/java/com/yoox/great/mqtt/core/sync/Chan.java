@@ -1,6 +1,7 @@
 package com.yoox.great.mqtt.core.sync;
 
 import com.yoox.great.mqtt.core.CommonTopicResponse;
+import com.yoox.great.mqtt.core.CommonTopicRequest;
 
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +17,8 @@ public class Chan {
     private static final int UNIT = 1000_000;
 
     private volatile CommonTopicResponse data;
+
+    private volatile CommonTopicRequest<?> request;
 
     private volatile Thread t;
 
@@ -38,10 +41,21 @@ public class Chan {
             return null;
         }
         chan.t = Thread.currentThread();
-        LockSupport.parkNanos(chan.t, timeout * UNIT);
+        if (chan.data == null) {
+            LockSupport.parkNanos(chan.t, timeout * UNIT);
+        }
         chan.t = null;
         CHANNEL.remove(tid);
         return chan.data;
+    }
+
+    public Chan setRequest(CommonTopicRequest<?> request) {
+        this.request = request;
+        return this;
+    }
+
+    public CommonTopicRequest<?> getRequest() {
+        return request;
     }
 
     public void put(CommonTopicResponse response) {

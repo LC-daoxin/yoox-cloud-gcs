@@ -20,9 +20,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 @Configuration
 public class OsdRouter {
+
+    private static final Pattern PAYLOAD_INDEX_PATTERN = Pattern.compile("^\\d+-\\d+-\\d+$");
 
     @Bean
     public IntegrationFlow osdRouterFlow() {
@@ -43,7 +46,14 @@ public class OsdRouter {
                     Map<String, Object> data = (Map<String, Object>) response.getData();
                     if (!typeEnum.isGateway()) {
                         List payloadData = (List) data.getOrDefault(PayloadModelConst.PAYLOAD_KEY, new ArrayList<>());
-                        PayloadModelConst.getAllIndexWithPosition().stream().filter(data::containsKey).map(data::get).forEach(payloadData::add);
+                        // 部分 Autel 负载型号尚未收录在 DeviceEnum 中，但同样按
+                        // type-subtype-position 作为 OSD 节点键。按协议格式识别，避免云台等
+                        // 实时数据在转换成强类型 OSD 前被遗漏。
+                        data.entrySet().stream()
+                                .filter(entry -> PAYLOAD_INDEX_PATTERN.matcher(entry.getKey()).matches())
+                                .map(Map.Entry::getValue)
+                                .filter(Map.class::isInstance)
+                                .forEach(payloadData::add);
                         data.put(PayloadModelConst.PAYLOAD_KEY, payloadData);
                     }
                     return response.setData(Common.getObjectMapper().convertValue(data, typeEnum.getClassType()));

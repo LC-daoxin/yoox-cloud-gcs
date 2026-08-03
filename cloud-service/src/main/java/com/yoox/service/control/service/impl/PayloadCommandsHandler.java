@@ -3,11 +3,13 @@ package com.yoox.service.control.service.impl;
 import com.yoox.great.context.utils.SpringBeanUtilsTest;
 import com.yoox.great.mqtt.model.device.OsdCamera;
 import com.yoox.great.mqtt.model.device.OsdDockDrone;
+import com.yoox.great.mqtt.model.device.OsdRcDrone;
 import com.yoox.service.control.model.param.DronePayloadParam;
 import com.yoox.service.manage.model.dto.DeviceDTO;
 import com.yoox.service.manage.service.IDevicePayloadService;
 import com.yoox.service.manage.service.IDeviceRedisService;
 
+import java.util.List;
 import java.util.Optional;
 
 public abstract class PayloadCommandsHandler {
@@ -25,16 +27,34 @@ public abstract class PayloadCommandsHandler {
     }
 
     public boolean canPublish(String deviceSn) {
-        Optional<OsdDockDrone> deviceOpt = SpringBeanUtilsTest.getBean(IDeviceRedisService.class)
-                .getDeviceOsd(deviceSn, OsdDockDrone.class);
-        if (deviceOpt.isEmpty()) {
-            throw new RuntimeException("The device is offline.");
+        Object deviceOsd = SpringBeanUtilsTest.getBean(IDeviceRedisService.class)
+                .getDeviceOsd(deviceSn)
+                .orElseThrow(() -> new RuntimeException("The device is offline."));
+        List<OsdCamera> cameras;
+        if (deviceOsd instanceof OsdDockDrone) {
+            cameras = ((OsdDockDrone) deviceOsd).getCameras();
+        } else if (deviceOsd instanceof OsdRcDrone) {
+            cameras = ((OsdRcDrone) deviceOsd).getCameras();
+        } else {
+            throw new RuntimeException("Unsupported aircraft OSD type: " +
+                    deviceOsd.getClass().getSimpleName());
         }
-        osdCamera = deviceOpt.get().getCameras().stream()
+        if (cameras == null) {
+            throw new RuntimeException("Did not receive osd information about the camera, please check the cache data.");
+        }
+        osdCamera = cameras.stream()
                 .filter(osdCamera -> param.getPayloadIndex().equals(osdCamera.getPayloadIndex().toString()))
                 .findAny()
                 .orElseThrow(() -> new RuntimeException("Did not receive osd information about the camera, please check the cache data."));
         return true;
+    }
+
+    /**
+     * Whether the requested state is already reflected by the latest OSD.
+     * Idempotent commands should succeed without publishing another MQTT message.
+     */
+    public boolean isNoOp() {
+        return false;
     }
 
     private String checkDockOnline(String dockSn) {
@@ -60,7 +80,7 @@ public abstract class PayloadCommandsHandler {
         }
     }
 
-    public final void checkCondition(String dockSn) {
+    public final boolean checkCondition(String dockSn) {
         if (!valid()) {
             throw new RuntimeException("illegal argument");
         }
@@ -70,8 +90,12 @@ public abstract class PayloadCommandsHandler {
         checkAuthority(deviceSn);
 
         if (!canPublish(deviceSn)) {
+            if (isNoOp()) {
+                return false;
+            }
             throw new RuntimeException("The current state of the drone does not support this function, please try again later.");
         }
+        return true;
     }
 
 }

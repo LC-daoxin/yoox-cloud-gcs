@@ -2,6 +2,7 @@ package com.yoox.great.mqtt.model.control;
 
 import com.yoox.great.mqtt.enums.wayline.WaylineErrorCodeEnum;
 import com.yoox.great.mqtt.enums.control.FlyToStatusEnum;
+import java.util.List;
 
 public class FlyToPointProgress {
 
@@ -12,6 +13,12 @@ public class FlyToPointProgress {
     private String flyToId;
 
     private Integer wayPointIndex;
+
+    private Float remainingDistance;
+
+    private Float remainingTime;
+
+    private List<Point> plannedPathPoints;
 
     public FlyToPointProgress() {
     }
@@ -59,6 +66,33 @@ public class FlyToPointProgress {
 
     public FlyToPointProgress setWayPointIndex(Integer wayPointIndex) {
         this.wayPointIndex = wayPointIndex;
+        return this;
+    }
+
+    public Float getRemainingDistance() {
+        return remainingDistance;
+    }
+
+    public FlyToPointProgress setRemainingDistance(Float remainingDistance) {
+        this.remainingDistance = remainingDistance;
+        return this;
+    }
+
+    public Float getRemainingTime() {
+        return remainingTime;
+    }
+
+    public FlyToPointProgress setRemainingTime(Float remainingTime) {
+        this.remainingTime = remainingTime;
+        return this;
+    }
+
+    public List<Point> getPlannedPathPoints() {
+        return plannedPathPoints;
+    }
+
+    public FlyToPointProgress setPlannedPathPoints(List<Point> plannedPathPoints) {
+        this.plannedPathPoints = plannedPathPoints;
         return this;
     }
 }

@@ -31,7 +31,7 @@ public class TakeoffToPointProgress {
      * unit: s
      */
     @CloudSDKVersion(since = CloudSDKVersionEnum.V1_0_0)
-    private Integer remainingTime;
+    private Float remainingTime;
 
     /**
      * Planned trajectory point list
@@ -111,11 +111,11 @@ public class TakeoffToPointProgress {
         return this;
     }
 
-    public Integer getRemainingTime() {
+    public Float getRemainingTime() {
         return remainingTime;
     }
 
-    public TakeoffToPointProgress setRemainingTime(Integer remainingTime) {
+    public TakeoffToPointProgress setRemainingTime(Float remainingTime) {
         this.remainingTime = remainingTime;
         return this;
     }

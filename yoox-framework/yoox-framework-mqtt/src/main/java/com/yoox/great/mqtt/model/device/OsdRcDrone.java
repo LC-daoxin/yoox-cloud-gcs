@@ -2,6 +2,7 @@ package com.yoox.great.mqtt.model.device;
 
 import com.yoox.great.mqtt.enums.device.DroneModeCodeEnum;
 import com.yoox.great.mqtt.enums.device.GearEnum;
+import com.yoox.great.mqtt.enums.device.RcLostActionEnum;
 import com.yoox.great.mqtt.enums.device.WindDirectionEnum;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -29,11 +30,14 @@ public class OsdRcDrone {
 
     private Float horizontalSpeed;
 
-    private Float latitude;
+    private Double latitude;
 
-    private Float longitude;
+    private Double longitude;
     @JsonProperty(value = "mode_code")
     private DroneModeCodeEnum modeCode;
+
+    @JsonProperty(value = "rc_lost_action")
+    private RcLostActionEnum rcLostAction;
 
     private Double totalFlightDistance;
 
@@ -46,6 +50,12 @@ public class OsdRcDrone {
     private Float windSpeed;
 
     private DronePositionState positionState;
+
+    /**
+     * Camera state reported by RC-connected aircraft. This carries the
+     * lens-specific zoom_factor and ir_zoom_factor values used by the cockpit.
+     */
+    private List<OsdCamera> cameras;
 
     @JsonProperty(PayloadModelConst.PAYLOAD_KEY)
     private List<RcDronePayload> payloads;
@@ -77,12 +87,14 @@ public class OsdRcDrone {
                 ", latitude=" + latitude +
                 ", longitude=" + longitude +
                 ", modeCode=" + modeCode +
+                ", rcLostAction=" + rcLostAction +
                 ", totalFlightDistance=" + totalFlightDistance +
                 ", totalFlightTime=" + totalFlightTime +
                 ", verticalSpeed=" + verticalSpeed +
                 ", windDirection=" + windDirection +
                 ", windSpeed=" + windSpeed +
                 ", positionState=" + positionState +
+                ", cameras=" + cameras +
                 ", payloads=" + payloads +
                 ", storage=" + storage +
                 ", heightLimit=" + heightLimit +
@@ -181,20 +193,20 @@ public class OsdRcDrone {
         return this;
     }
 
-    public Float getLatitude() {
+    public Double getLatitude() {
         return latitude;
     }
 
-    public OsdRcDrone setLatitude(Float latitude) {
+    public OsdRcDrone setLatitude(Double latitude) {
         this.latitude = latitude;
         return this;
     }
 
-    public Float getLongitude() {
+    public Double getLongitude() {
         return longitude;
     }
 
-    public OsdRcDrone setLongitude(Float longitude) {
+    public OsdRcDrone setLongitude(Double longitude) {
         this.longitude = longitude;
         return this;
     }
@@ -205,6 +217,15 @@ public class OsdRcDrone {
 
     public OsdRcDrone setModeCode(DroneModeCodeEnum modeCode) {
         this.modeCode = modeCode;
+        return this;
+    }
+
+    public RcLostActionEnum getRcLostAction() {
+        return rcLostAction;
+    }
+
+    public OsdRcDrone setRcLostAction(RcLostActionEnum rcLostAction) {
+        this.rcLostAction = rcLostAction;
         return this;
     }
 
@@ -259,6 +280,15 @@ public class OsdRcDrone {
 
     public OsdRcDrone setPositionState(DronePositionState positionState) {
         this.positionState = positionState;
+        return this;
+    }
+
+    public List<OsdCamera> getCameras() {
+        return cameras;
+    }
+
+    public OsdRcDrone setCameras(List<OsdCamera> cameras) {
+        this.cameras = cameras;
         return this;
     }
 

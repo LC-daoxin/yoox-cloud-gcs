@@ -26,6 +26,8 @@ export interface Device {
   device_sn: string
   device_name?: string
   nickname?: string
+  child_device_sn?: string
+  /** Legacy alias retained for compatibility with older API responses. */
   child_sn?: string
   aircraft_sn?: string
   remote_controller_sn?: string
@@ -70,9 +72,17 @@ export interface OsdHost {
   height?: number
   elevation?: number
   attitude_head?: number
+  attitude_pitch?: number
+  attitude_roll?: number
   horizontal_speed?: number
   vertical_speed?: number
   home_distance?: number
+  position_state?: {
+    gps_number?: number
+    rtk_number?: number
+    quality?: number
+    is_fixed?: number
+  }
   capacity_percent?: number
   battery?: { capacity_percent?: number }
   [key: string]: unknown

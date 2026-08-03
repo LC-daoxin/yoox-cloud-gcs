@@ -11,6 +11,8 @@ public class TopicStateRequest<T> extends CommonTopicRequest<T> {
 
     private boolean needReply;
 
+    private String method;
+
     public TopicStateRequest() {
     }
 
@@ -83,6 +85,15 @@ public class TopicStateRequest<T> extends CommonTopicRequest<T> {
 
     public boolean isNeedReply() {
         return needReply;
+    }
+
+    public String getMethod() {
+        return method;
+    }
+
+    public TopicStateRequest<T> setMethod(String method) {
+        this.method = method;
+        return this;
     }
 
     public TopicStateRequest<T> setNeedReply(boolean needReply) {

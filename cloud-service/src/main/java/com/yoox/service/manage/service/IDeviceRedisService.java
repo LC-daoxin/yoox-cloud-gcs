@@ -19,6 +19,8 @@ public interface IDeviceRedisService {
 
     void setDeviceOsd(String sn, Object data);
 
+    Optional<Object> getDeviceOsd(String sn);
+
     <T> Optional<T> getDeviceOsd(String sn, Class<T> clazz);
 
     Boolean delDeviceOsd(String sn);

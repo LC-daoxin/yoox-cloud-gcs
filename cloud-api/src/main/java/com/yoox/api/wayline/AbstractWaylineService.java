@@ -94,7 +94,9 @@ public abstract class AbstractWaylineService {
                 WaylineMethodEnum.FLIGHTTASK_RECOVERY.getMethod());
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
+    // RC/App gateways also implement return_home on the gateway services topic.
+    // A result=0 services_reply only confirms invocation; flight completion is
+    // reported separately by aircraft state/events.
     public TopicServicesResponse<ServicesReplyData> returnHome(GatewayManager gateway) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),

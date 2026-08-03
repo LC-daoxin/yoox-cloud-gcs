@@ -1,4 +1,352 @@
 {
+  "dock_tip_0X0B01": {
+    "en": "Insufficient system memory",
+    "zh": "系统内存不足"
+  },
+  "dock_tip_0X0B02": {
+    "en": "Overload of CPU",
+    "zh": "CPU负载过高"
+  },
+  "dock_tip_0X0B03": {
+    "en": "Over low of disk IO rate",
+    "zh": "磁盘IO速率过低"
+  },
+  "dock_tip_0X0B04": {
+    "en": "Overtemperature of CPU",
+    "zh": "CPU温度过高"
+  },
+  "dock_tip_0X0B05": {
+    "en": "Abnormal of CPU scheduling",
+    "zh": "CPU调度异常"
+  },
+  "dock_tip_0X0B09": {
+    "en": "1881 abnormal restart",
+    "zh": "1881异常重启"
+  },
+  "dock_tip_0X0B0A": {
+    "en": "Overtemperature of 1881 CPU",
+    "zh": "1881 CPU温度过高"
+  },
+  "dock_tip_0X0B0B": {
+    "en": "Overload of 1881 CPU",
+    "zh": "1881 CPU负载过高"
+  },
+  "dock_tip_0X0B0C": {
+    "en": "Overuse of 1881 memory",
+    "zh": "1881 内存使用过高"
+  },
+  "dock_tip_0X1001": {
+    "en": "Abnormal motor power supply",
+    "zh": "电机电源异常"
+  },
+  "dock_tip_0X1002": {
+    "en": "Abnormal servo power supply",
+    "zh": "舵机电源异常"
+  },
+  "dock_tip_0X2001": {
+    "en": "Airconditioning 1 abnormal",
+    "zh": "空调1异常"
+  },
+  "dock_tip_0X2002": {
+    "en": "Airconditioning 2 abnormal",
+    "zh": "空调2异常"
+  },
+  "dock_tip_0X2003": {
+    "en": "Abnormal communicate of upper cabin temperature and humidity sensor",
+    "zh": "上舱温湿度传感器通讯异常"
+  },
+  "dock_tip_0X2004": {
+    "en": "Abnormal of lower cabin water immersion sensor",
+    "zh": "下舱水浸传感器异常"
+  },
+  "dock_tip_0X2005": {
+    "en": "Abnormal of vibration sensor",
+    "zh": "振动传感器异常"
+  },
+  "dock_tip_0X2006": {
+    "en": "Abnormal communicate of backup battery",
+    "zh": "备用电池通讯异常"
+  },
+  "dock_tip_0X2007": {
+    "en": "Abnormal communicate of weather station",
+    "zh": "气象站通讯异常"
+  },
+  "dock_tip_0X2008": {
+    "en": "Abnormal communicate of charging main module",
+    "zh": "充电主模块通讯异常"
+  },
+  "dock_tip_0X2009": {
+    "en": "Abnormal communicate of charging sub-module",
+    "zh": "充电副模块通讯异常"
+  },
+  "dock_tip_0X200A": {
+    "en": "Abnormal cooling fan 1 of rotating speed",
+    "zh": "散热风扇1转速异常"
+  },
+  "dock_tip_0X200B": {
+    "en": "Abnormal cooling fan 2 of rotating speed",
+    "zh": "散热风扇2转速异常"
+  },
+  "dock_tip_0X200C": {
+    "en": "Abnormal cooling fan 3 of rotating speed",
+    "zh": "散热风扇3转速异常"
+  },
+  "dock_tip_0X200D": {
+    "en": "Abnormal cooling fan 4 of rotating speed",
+    "zh": "散热风扇4转速异常"
+  },
+  "dock_tip_0X200E": {
+    "en": "Abnormal airconditioning 1 and fan 5 of rotating speed",
+    "zh": "空调1风扇5转速异常"
+  },
+  "dock_tip_0X200F": {
+    "en": "Abnormal airconditioning 1 and fan 6 of rotating speed",
+    "zh": "空调1风扇6转速异常"
+  },
+  "dock_tip_0X2010": {
+    "en": "Abnormal airconditioning 2 and fan 7 of rotating speed",
+    "zh": "空调2风扇7转速异常"
+  },
+  "dock_tip_0X2011": {
+    "en": "Abnormal airconditioning 2 and fan 8 of rotating speed",
+    "zh": "空调2风扇8转速异常"
+  },
+  "dock_tip_0X2012": {
+    "en": "Abnormal communicate of Nest-Aircraft Battery",
+    "zh": "机巢-飞机 电池通讯异常"
+  },
+  "dock_tip_0X2013": {
+    "en": "Warning of water immersion",
+    "zh": "水浸告警"
+  },
+  "dock_tip_0X2014": {
+    "en": "Abnormal vibration alarm of machine nest",
+    "zh": "机巢异常振动告警"
+  },
+  "dock_tip_0X2015": {
+    "en": "Abnormal landing lights",
+    "zh": "着陆灯异常"
+  },
+  "dock_tip_0X2016": {
+    "en": "Abnormal communicate of UPS power",
+    "zh": "UPS电源通讯异常"
+  },
+  "dock_tip_0X2017": {
+    "en": "Abnormal of UPS power supply",
+    "zh": "UPS电源异常"
+  },
+  "dock_tip_0X2018": {
+    "en": "Abnormal communicate of power adapter",
+    "zh": "电源适配器通讯异常"
+  },
+  "dock_tip_0X2019": {
+    "en": "Abnormal of power adapter",
+    "zh": "电源适配器异常"
+  },
+  "dock_tip_0X201A": {
+    "en": "Failed to communicate of motor driver board",
+    "zh": "电机驱动板通讯失败"
+  },
+  "dock_tip_0X201B": {
+    "en": "Motor driver board abnormal reset",
+    "zh": "电机驱动板异常复位"
+  },
+  "dock_tip_0X3001": {
+    "en": "Blocked when opening hatch",
+    "zh": "开门时舱门阻塞"
+  },
+  "dock_tip_0X3002": {
+    "en": "Blocked when closing hatch",
+    "zh": "关门时舱门阻塞"
+  },
+  "dock_tip_0X3003": {
+    "en": "Abnormal opening door",
+    "zh": "开门异常"
+  },
+  "dock_tip_0X3004": {
+    "en": "Abnormal closing door",
+    "zh": "关门异常"
+  },
+  "dock_tip_0X3005": {
+    "en": "Blocked when X-rod returns to center",
+    "zh": "X杆归中时阻塞"
+  },
+  "dock_tip_0X3006": {
+    "en": "Blocked when X-rod released",
+    "zh": "X杆释放时阻塞"
+  },
+  "dock_tip_0X3007": {
+    "en": "Abnormal of X-rod returns to center",
+    "zh": "X杆归中异常"
+  },
+  "dock_tip_0X3008": {
+    "en": "Abnormal of X-rod released",
+    "zh": "X杆释放异常"
+  },
+  "dock_tip_0X3009": {
+    "en": "Blocked when Y-rod returns to center",
+    "zh": "Y杆归中时阻塞"
+  },
+  "dock_tip_0X300A": {
+    "en": "Blocked when Y-rod released",
+    "zh": "Y杆释放时阻塞"
+  },
+  "dock_tip_0X300B": {
+    "en": "Abnormal of Y-rod returns to center",
+    "zh": "Y杆归中异常"
+  },
+  "dock_tip_0X300C": {
+    "en": "Abnormal of Y-rod released",
+    "zh": "Y杆释放异常"
+  },
+  "dock_tip_0X300D": {
+    "en": "Abnormal of Z-rod raised",
+    "zh": "Z杆竖起异常"
+  },
+  "dock_tip_0X300E": {
+    "en": "Abnormal of Z-rod fall down",
+    "zh": "Z杆倒下异常"
+  },
+  "dock_tip_0X300F": {
+    "en": "Abnormal of limit switch",
+    "zh": "限位开关异常"
+  },
+  "dock_tip_0X3010": {
+    "en": "Abnormal of motor hatch",
+    "zh": "舱门电机异常"
+  },
+  "dock_tip_0X3011": {
+    "en": "Abnormal of X-rod motor",
+    "zh": "X杆电机异常"
+  },
+  "dock_tip_0X3012": {
+    "en": "Abnormal of Y-rod motor",
+    "zh": "Y杆电机异常"
+  },
+  "dock_tip_0X3013": {
+    "en": "Abnormal servo 1 of Z-rod (paddle rod)",
+    "zh": "Z杆(拨桨杆)舵机1异常"
+  },
+  "dock_tip_0X3014": {
+    "en": "Abnormal servo 2 of Z-rod (paddle rod)",
+    "zh": "Z杆(拨桨杆)舵机2异常"
+  },
+  "dock_tip_0X3015": {
+    "en": "Abnormal servo 3 of Z-rod (paddle rod)",
+    "zh": "Z杆(拨桨杆)舵机3异常"
+  },
+  "dock_tip_0X3016": {
+    "en": "Abnormal servo 4 of Z-rod (paddle rod)",
+    "zh": "Z杆(拨桨杆)舵机4异常"
+  },
+  "dock_tip_0X3020": {
+    "en": "Reset of motor driver board",
+    "zh": "电机驱动板复位"
+  },
+  "dock_tip_0X4001": {
+    "en": "Overtemperature of charging",
+    "zh": "充电过温"
+  },
+  "dock_tip_0X4002": {
+    "en": "Low temperature of charging",
+    "zh": "充电欠温"
+  },
+  "dock_tip_0X4003": {
+    "en": "Overcurrent of charging",
+    "zh": "充电过流"
+  },
+  "dock_tip_0X4004": {
+    "en": "Abnormal of drone charging",
+    "zh": "无人机充电异常"
+  },
+  "dock_tip_0X5001": {
+    "en": "Abnormal of U-disk reading and writing",
+    "zh": "U盘读写异常"
+  },
+  "dock_tip_0X5002": {
+    "en": "Abnormal of WIFI startup",
+    "zh": "WIFI启动异常"
+  },
+  "dock_tip_0X5003": {
+    "en": "Abnormal communicate of RTK",
+    "zh": "RTK通信异常"
+  },
+  "dock_tip_0X5004": {
+    "en": "Abnormal communicate of power board",
+    "zh": "电源板通信异常"
+  },
+  "dock_tip_0X5005": {
+    "en": "Abnormal of 1000M network card",
+    "zh": "千兆网卡异常"
+  },
+  "dock_tip_0X5006": {
+    "en": "Abnormal of 100M network card",
+    "zh": "百兆网卡异常"
+  },
+  "dock_tip_0X5007": {
+    "en": "Abnormal of monitor camera (connected to 100M network card)",
+    "zh": "监控摄像头异常(接百兆网卡)"
+  },
+  "dock_tip_0X5008": {
+    "en": "System abnormal restart",
+    "zh": "系统异常重启"
+  },
+  "dock_tip_0X5009": {
+    "en": "Overtemperature of system",
+    "zh": "系统温度过高"
+  },
+  "dock_tip_0X5010": {
+    "en": "Overload of system CPU",
+    "zh": "系统CPU负载过高"
+  },
+  "dock_tip_0X5011": {
+    "en": "Overoccupy of system memory",
+    "zh": "系统内存占用过高"
+  },
+  "dock_tip_0X5012": {
+    "en": "Overuse of system storage space",
+    "zh": "系统存储空间使用过高"
+  },
+  "dock_tip_0X5013": {
+    "en": "APK application abnormal restarts",
+    "zh": "APK应用异常重启"
+  },
+  "dock_tip_0X5014": {
+    "en": "Abnormal of network",
+    "zh": "网络异常"
+  },
+  "dock_tip_0X5015": {
+    "en": "Interference of radio frequency",
+    "zh": "射频干扰"
+  },
+  "dock_tip_0X5016": {
+    "en": "Abnormal communicate of image transmission CP",
+    "zh": "图传CP通信异常"
+  },
+  "dock_tip_0X5017": {
+    "en": "Delay overhigh of air interface network",
+    "zh": "空口网络延时过高"
+  },
+  "dock_tip_0X6001": {
+    "en": "Abnormal of video codec",
+    "zh": "视频编解码异常"
+  },
+  "dock_tip_0X6002": {
+    "en": "Failed downloading file from camera",
+    "zh": "从相机下载文件失败"
+  },
+  "dock_tip_0X6003": {
+    "en": "Failed to upload files to command center",
+    "zh": "上传文件到指挥中心失败"
+  },
+  "dock_tip_0X6004": {
+    "en": "Abnormal login of camera outside the nest",
+    "zh": "巢外摄像头登录异常"
+  },
+  "dock_tip_0X6005": {
+    "en": "Abnormal of webrtc connection",
+    "zh": "webrtc连接异常"
+  },
   "dock_tip_0x12040000": {
     "en": "Dock RTK device disconnected",
     "zh": "机巢RTK设备断连"
@@ -1006,6 +1354,883 @@
   "dock_tip_0x191174D2": {
     "en": "Temperature sensor of aircraft charging module coil error",
     "zh": "飞行器充电模块线圈温度传感器异常"
+  },
+  "dock_tip_0x30900001": {
+    "en": "The mechanical arm X-axis motor 6 abnormal. Contact after-sales service for assistance.",
+    "zh": "机械臂X轴6号电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900002": {
+    "en": "The mechanical arm Y-axis motor 7 abnormal. Contact after-sales service for assistance.",
+    "zh": "机械臂Y轴7号电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900003": {
+    "en": "The mechanical arm Z-axis motor 8 abnormal. Contact after-sales service for assistance.",
+    "zh": "机械臂Z轴8号电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900004": {
+    "en": "The platform reports motor abnormalities. Contact after-sales service for assistance.",
+    "zh": "平台推出电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900005": {
+    "en": "Left door motor abnormality. Contact after-sales service for assistance.",
+    "zh": "左门电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900006": {
+    "en": "Platform lift left motor abnormality. Contact after-sales service for assistance.",
+    "zh": "平台升降左电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900007": {
+    "en": "Lift platform abnormality. Contact after-sales service for assistance.",
+    "zh": "升降平台异常，请联系售后处理"
+  },
+  "dock_tip_0x30900008": {
+    "en": "Robotic arm gripper abnormality. Contact after-sales service for assistance.",
+    "zh": "机械臂爪手异常，请联系售后处理"
+  },
+  "dock_tip_0x30900009": {
+    "en": "Motor abnormality. Contact after-sales service for assistance.",
+    "zh": "电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900010": {
+    "en": "Right door motor abnormality. Contact after-sales service for assistance.",
+    "zh": "右门电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900011": {
+    "en": "Platform lift right motor abnormality. Contact after-sales service for assistance.",
+    "zh": "平台升降右电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900012": {
+    "en": "Robotic arm X-axis abnormality. Contact after-sales service for assistance.",
+    "zh": "机械臂X轴异常，请联系售后处理"
+  },
+  "dock_tip_0x30900013": {
+    "en": "Robotic arm Y-axis abnormality. Contact after-sales service for assistance.",
+    "zh": "机械臂Y轴异常，请联系售后处理"
+  },
+  "dock_tip_0x30900014": {
+    "en": "Robotic arm Z-axis abnormality. Contact after-sales service for assistance.",
+    "zh": "机械臂Z轴异常，请联系售后处理"
+  },
+  "dock_tip_0x30900015": {
+    "en": "Servo communication error. Contact after-sales service for assistance.",
+    "zh": "舵机通讯错误，请联系售后处理"
+  },
+  "dock_tip_0x30900016": {
+    "en": "The machine nest is in emergency stop. Reset the software emergency stop button before operating the device. Contact after-sales service for assistance.",
+    "zh": "机巢急停中,请复位软件急停按钮后再操作设备，请联系售后处理"
+  },
+  "dock_tip_0x30900017": {
+    "en": "X-axis home positioning rod abnormality. Contact after-sales service for assistance.",
+    "zh": "X轴归中杆异常，请联系售后处理"
+  },
+  "dock_tip_0x30900018": {
+    "en": "Platform Y-axis motor 5 abnormality. Contact after-sales service for assistance.",
+    "zh": "平台Y轴5号电机异常，请联系售后处理"
+  },
+  "dock_tip_0x30900019": {
+    "en": "Y-axis home positioning rod abnormality. Contact after-sales service for assistance.",
+    "zh": "Y轴归中杆异常，请联系售后处理"
+  },
+  "dock_tip_0x30900020": {
+    "en": "Z2 load limit abnormality. Contact after-sales service for assistance.",
+    "zh": "Z2负载限制异常，请联系售后处理"
+  },
+  "dock_tip_0x30900021": {
+    "en": "Robotic arm Z2 axis abnormality. Contact after-sales service for assistance.",
+    "zh": "机械臂Z2轴异常，请联系售后处理"
+  },
+  "dock_tip_0x30900022": {
+    "en": "Z1 load limit abnormality. Contact after-sales service for assistance.",
+    "zh": "Z1负载限制异常，请联系售后处理"
+  },
+  "dock_tip_0x30900023": {
+    "en": "The machine nest is in emergency stop. Reset the hardware emergency stop button before operating the device. Contact after-sales service for assistance.",
+    "zh": "机巢急停中,请复位硬件急停按钮后再操作设备，请联系售后处理"
+  },
+  "dock_tip_0x30900024": {
+    "en": "Combined instruction status abnormality. Contact after-sales service for assistance.",
+    "zh": "组合指令状态异常，请联系售后处理"
+  },
+  "dock_tip_0x30900025": {
+    "en": "Machine nest motion timeout. Contact after-sales service for assistance.",
+    "zh": "机巢运动超时，请联系售后处理"
+  },
+  "dock_tip_0x30900026": {
+    "en": "Hatch door abnormality. Contact after-sales service for assistance.",
+    "zh": "舱门异常，请联系售后处理"
+  },
+  "dock_tip_0x30900027": {
+    "en": "Battery abnormality. Contact after-sales service for assistance.",
+    "zh": "电池异常，请联系售后处理"
+  },
+  "dock_tip_0x30900028": {
+    "en": "Battery 1 empty slot insertion/removal abnormality. Contact after-sales service for assistance.",
+    "zh": "电池1空槽插拔异常，请联系售后处理"
+  },
+  "dock_tip_0x30900029": {
+    "en": "Battery 2 empty slot insertion/removal abnormality. Contact after-sales service for assistance.",
+    "zh": "电池2空槽插拔异常，请联系售后处理"
+  },
+  "dock_tip_0x30900030": {
+    "en": "Battery 3 empty slot insertion/removal abnormality. Contact after-sales service for assistance.",
+    "zh": "电池3空槽插拔异常，请联系售后处理"
+  },
+  "dock_tip_0x30900031": {
+    "en": "Battery 4 empty slot insertion/removal abnormality. Contact after-sales service for assistance.",
+    "zh": "电池4空槽插拔异常，请联系售后处理"
+  },
+  "dock_tip_0x30900032": {
+    "en": "Battery 5 empty slot insertion/removal abnormality. Contact after-sales service for assistance.",
+    "zh": "电池5空槽插拔异常，请联系售后处理"
+  },
+  "dock_tip_0x30900033": {
+    "en": "Battery 6 empty slot insertion/removal abnormality. Contact after-sales service for assistance.",
+    "zh": "电池6空槽插拔异常，请联系售后处理"
+  },
+  "dock_tip_0x30900034": {
+    "en": "Battery 1 cycle count abnormality. Contact after-sales service for assistance.",
+    "zh": "电池1循环次数异常，请联系售后处理"
+  },
+  "dock_tip_0x30900035": {
+    "en": "Battery 2 cycle count abnormality. Contact after-sales service for assistance.",
+    "zh": "电池2循环次数异常，请联系售后处理"
+  },
+  "dock_tip_0x30900036": {
+    "en": "Battery 3 cycle count abnormality. Contact after-sales service for assistance.",
+    "zh": "电池3循环次数异常，请联系售后处理"
+  },
+  "dock_tip_0x30900037": {
+    "en": "Battery 4 cycle count abnormality. Contact after-sales service for assistance.",
+    "zh": "电池4循环次数异常，请联系售后处理"
+  },
+  "dock_tip_0x30900038": {
+    "en": "Battery 5 cycle count abnormality. Contact after-sales service for assistance.",
+    "zh": "电池5循环次数异常，请联系售后处理"
+  },
+  "dock_tip_0x30900039": {
+    "en": "Battery 6 cycle count abnormality. Contact after-sales service for assistance.",
+    "zh": "电池6循环次数异常，请联系售后处理"
+  },
+  "dock_tip_0x30900100": {
+    "en": "The aircraft's attitude deviation from the machine nest is too large, and recovery has been suspended. Contact after-sales service for assistance.",
+    "zh": "飞机姿态与机巢偏差过大,已暂停回收，请联系售后处理"
+  },
+  "fpv_tip_0X0D18": {
+    "en": "Aircraft entering warning zone",
+    "zh": "飞机进入警示区"
+  },
+  "fpv_tip_0X0D19": {
+    "en": "Aircraft entering enhanced warning zone",
+    "zh": "飞机进入增强警示区"
+  },
+  "fpv_tip_0x0001": {
+    "en": "Aircraft attitude error. Land immediately.",
+    "zh": "飞机姿态异常，请尽快降落"
+  },
+  "fpv_tip_0x0002": {
+    "en": "Flight control error. Land immediately.",
+    "zh": "飞行控制异常，请尽快降落"
+  },
+  "fpv_tip_0x0003": {
+    "en": "Flight control error. Land immediately.",
+    "zh": "飞行控制异常，请尽快降落"
+  },
+  "fpv_tip_0x0004": {
+    "en": "Flight control error. Land immediately.",
+    "zh": "飞行控制异常，请尽快降落"
+  },
+  "fpv_tip_0x0005": {
+    "en": "Flight control error. Land immediately.",
+    "zh": "飞行控制异常，请尽快降落"
+  },
+  "fpv_tip_0x0006": {
+    "en": "Flight control error. Land immediately.",
+    "zh": "飞行控制异常，请尽快降落"
+  },
+  "fpv_tip_0x0007": {
+    "en": "Flight control error. Land immediately.",
+    "zh": "飞行控制异常，请尽快降落"
+  },
+  "fpv_tip_0x0008": {
+    "en": "Flight control error. Land immediately.",
+    "zh": "飞行控制异常，请尽快降落"
+  },
+  "fpv_tip_0x0101": {
+    "en": "Battery voltage error. Land immediately.",
+    "zh": "电池电压异常，请尽快返航或降落"
+  },
+  "fpv_tip_0x0102": {
+    "en": "Battery error. Check or replace the battery.",
+    "zh": "电池异常，请检查或更换电池"
+  },
+  "fpv_tip_0x0103": {
+    "en": "Battery error. Check or replace the battery.",
+    "zh": "电池异常，请检查或更换电池"
+  },
+  "fpv_tip_0x0104": {
+    "en": "Battery powered-off, please long press the power button to power on!",
+    "zh": "电池关机，请长按电源键开机"
+  },
+  "fpv_tip_0x0105": {
+    "en": "The battery temperature is too low. Wait until self-heating is completed.",
+    "zh": "电池温度过低，请稍等待预热成功"
+  },
+  "fpv_tip_0x0106": {
+    "en": "The battery temperature is too high. Wait until battery cools down.",
+    "zh": "电池温度过高，请降温后使用"
+  },
+  "fpv_tip_0x0107": {
+    "en": "The aircraft battery is critically low.",
+    "zh": "飞机电量严重低"
+  },
+  "fpv_tip_0x0108": {
+    "en": "Aircraft battery is low.",
+    "zh": "飞机电量低"
+  },
+  "fpv_tip_0x0109": {
+    "en": "Intelligent low power return",
+    "zh": "智能低电返航"
+  },
+  "fpv_tip_0x010A": {
+    "en": "Battery voltage difference is too large, please replace the battery.",
+    "zh": "电池压差过大，请更换电池"
+  },
+  "fpv_tip_0x010B": {
+    "en": "Battery overdischarged, please replace the battery.",
+    "zh": "电池过放，请更换电池"
+  },
+  "fpv_tip_0x010C": {
+    "en": "Battery voltage error, please restart the aircraft.",
+    "zh": "电池电压不更新，请重启飞机"
+  },
+  "fpv_tip_0x010D": {
+    "en": "The flight speed is limited due to the low battery voltage.",
+    "zh": "电池电压低，飞行速度受限"
+  },
+  "fpv_tip_0x010E": {
+    "en": "The payload exceeds the weight limit, please check the payload and try again.",
+    "zh": "负载过重，请检查飞机负载"
+  },
+  "fpv_tip_0x010F": {
+    "en": "The payload exceeds the weight limit, please check the payload and try again.",
+    "zh": "飞行功率过大，请检查负载"
+  },
+  "fpv_tip_0x0110": {
+    "en": "Model H/M H: Overtemperature of left side battery  M: Overtemperature of front battery",
+    "zh": "Model H/M  H:左电池温度过高  M:前电池温度过高"
+  },
+  "fpv_tip_0x0111": {
+    "en": "Model H/M H: Overtemperature of right side battery M: Overtemperature of back battery",
+    "zh": "Model H/M  H:右电池温度过高  M:后电池温度过高"
+  },
+  "fpv_tip_0x0112": {
+    "en": "Model H/M H: Upper limit reached of left side battery life M: Upper limit reached of front battery life",
+    "zh": "Model H/M  H:左电池寿命已达上限 M:前电池寿命已达上限"
+  },
+  "fpv_tip_0x0113": {
+    "en": "Model H/M H: Upper limit reached of right side battery life M: Upper limit reached of back battery life",
+    "zh": "Model H/M  H:右电池寿命已达上限 M:后电池寿命已达上限"
+  },
+  "fpv_tip_0x0114": {
+    "en": "Model H/M H: Over low temperature of left side battery M: Over low temperature of front battery",
+    "zh": "Model H/M  H:左电池温度过低 M:前电池温度过低"
+  },
+  "fpv_tip_0x0115": {
+    "en": "Model H/M H: Over low temperature of right side battery M: Over low temperature of back battery",
+    "zh": "Model H/M  H:右电池温度过低 M:后电池温度过低"
+  },
+  "fpv_tip_0x0116": {
+    "en": "Model H/M H: High temperature of left side battery M: High temperature of front battery",
+    "zh": "Model H/M  H:左电池温度偏高  M:前电池温度偏高"
+  },
+  "fpv_tip_0x0117": {
+    "en": "Model H/M H: High temperature of right side battery M: High temperature of back battery",
+    "zh": "Model H/M  H:右电池温度偏高  M:后电池温度偏高"
+  },
+  "fpv_tip_0x0118": {
+    "en": "Model H/M H: Automatically heated of left side battery M: Automatically heated of front battery",
+    "zh": "Model H/M  H:左电池自动加热中 M:前电池自动加热中"
+  },
+  "fpv_tip_0x0119": {
+    "en": "Model H/M H: Automatically heated of right side battery M: Automatically heated of back battery",
+    "zh": "Model H/M  H:右电池自动加热中 M:后电池自动加热中"
+  },
+  "fpv_tip_0x011A": {
+    "en": "Model H/M H: Low temperature of left side battery M: Low temperature of front battery",
+    "zh": "Model H/M  H:左电池温度偏低 M:前电池温度偏低"
+  },
+  "fpv_tip_0x011B": {
+    "en": "Model H/M H: Low temperature of right side battery M: Low temperature of back battery",
+    "zh": "Model H/M  H:右电池温度偏低 M:后电池温度偏低"
+  },
+  "fpv_tip_0x011C": {
+    "en": "Model H/M H: Low temperature and low power of left side battery M:  Low temperature and low power of front battery",
+    "zh": "Model H/M  H:左电池低温低电 M:前电池低温低电"
+  },
+  "fpv_tip_0x011D": {
+    "en": "Model H/M H: Low temperature and low power of right side battery  M: Low temperature and low power of back battery",
+    "zh": "Model H/M  H:右电池低温低电 M:后电池低温低电"
+  },
+  "fpv_tip_0x011E": {
+    "en": "Model H/M H: Overlarge of left side battery pressure difference M: Overlarge of front battery pressure difference",
+    "zh": "Model H/M  H:左电池压差过大 M:前电池压差过大"
+  },
+  "fpv_tip_0x011F": {
+    "en": "Model H/M H: Overlarge of right side battery pressure difference M: Overlarge of back battery pressure difference",
+    "zh": "Model H/M  H:右电池压差过大 M:后电池压差过大"
+  },
+  "fpv_tip_0x0201": {
+    "en": "One or more propeller(s) stopped during flight",
+    "zh": "空中部分停桨"
+  },
+  "fpv_tip_0x0202": {
+    "en": "All propellers stopped during flight",
+    "zh": "空中全部停桨"
+  },
+  "fpv_tip_0x0203": {
+    "en": "ESC Error",
+    "zh": "电调异常"
+  },
+  "fpv_tip_0x0204": {
+    "en": "Please confirm whether the propellers are well installed.",
+    "zh": "请确认桨叶是否安装正常"
+  },
+  "fpv_tip_0x0205": {
+    "en": "Approaching Max. motor limit",
+    "zh": "接近动力上限"
+  },
+  "fpv_tip_0x0206": {
+    "en": "Approaching Min. motor limit",
+    "zh": "接近动力下限"
+  },
+  "fpv_tip_0x0207": {
+    "en": "Please check if the propellers are properly installed.",
+    "zh": "桨叶未安装，请确认桨页是否安装正常"
+  },
+  "fpv_tip_0x0208": {
+    "zh": "电机堵转"
+  },
+  "fpv_tip_0x0209": {
+    "zh": "电调未就绪"
+  },
+  "fpv_tip_0x0301": {
+    "en": "Cannot take off due to IMU error. Calibrate IMU first.",
+    "zh": "IMU异常无法起飞，请先校准IMU"
+  },
+  "fpv_tip_0x0302": {
+    "en": "Barometer error. Cannot take off",
+    "zh": "气压计异常，禁止起飞"
+  },
+  "fpv_tip_0x0303": {
+    "en": "Compass error. Cannot take off",
+    "zh": "指南针异常，请注意安全"
+  },
+  "fpv_tip_0x0304": {
+    "en": "Non-GNSS environment. Turn off Novice Mode to take off.",
+    "zh": "无GNSS，如要起飞，请先关闭新手模式"
+  },
+  "fpv_tip_0x0305": {
+    "en": "Please calibrate IMU",
+    "zh": "请校准IMU"
+  },
+  "fpv_tip_0x0306": {
+    "en": "Please calibrate compass",
+    "zh": "请校准指南针"
+  },
+  "fpv_tip_0x0307": {
+    "en": "RTK is not ready, please take off later.",
+    "zh": "RTK未就绪，请稍后起飞"
+  },
+  "fpv_tip_0x0308": {
+    "en": "Gimbal is not ready, please take off later.",
+    "zh": "云台未就绪，请稍后起飞"
+  },
+  "fpv_tip_0x0309": {
+    "en": "Calibrating compass",
+    "zh": "正在校准磁力计"
+  },
+  "fpv_tip_0x030A": {
+    "en": "Imu heating",
+    "zh": "IMU 加热中"
+  },
+  "fpv_tip_0x030B": {
+    "en": "The motor temperature is too high. Please lower the flight speed.",
+    "zh": "电调板温度过高，请降低飞行速度"
+  },
+  "fpv_tip_0x0401": {
+    "en": "Aircraft is tilted, please place it on a flat surface.",
+    "zh": "飞机倾角过大，请放置在平坦地面"
+  },
+  "fpv_tip_0x0402": {
+    "en": "Aircraft is disconnected from the remote controller",
+    "zh": "飞机与遥控断开连接"
+  },
+  "fpv_tip_0x0403": {
+    "en": "Aircraft Impact detected",
+    "zh": "检测到撞击"
+  },
+  "fpv_tip_0x0404": {
+    "en": "Aircraft is in No-Fly Zone, cannot take off.",
+    "zh": "当前位于禁飞区，禁止起飞"
+  },
+  "fpv_tip_0x0405": {
+    "en": "Maximum Altitude reached",
+    "zh": "已到达限高高度"
+  },
+  "fpv_tip_0x0406": {
+    "en": "Aircraft reached the maximum preset distance.",
+    "zh": "飞机已到达设置最远距离"
+  },
+  "fpv_tip_0x0407": {
+    "en": "Aircraft reached the maximum preset altitude.",
+    "zh": "飞机已到达设置最高高度"
+  },
+  "fpv_tip_0x0408": {
+    "en": "Updating, please wait…",
+    "zh": "升级中，请稍候"
+  },
+  "fpv_tip_0x0409": {
+    "en": "Aircraft attitude initializing…",
+    "zh": "飞机姿态初始化中"
+  },
+  "fpv_tip_0x040A": {
+    "en": "Aircraft is not activated",
+    "zh": "飞机未激活"
+  },
+  "fpv_tip_0x040B": {
+    "en": "The aircraft cannot fly steadily due to strong wind. Fly with caution.",
+    "zh": "风速过高飞机无法稳定飞行，请注意安全"
+  },
+  "fpv_tip_0x040C": {
+    "en": "GNSS signal is weak. The landing point may deviate.",
+    "zh": "GNSS信号弱返航点可能存在偏差"
+  },
+  "fpv_tip_0x040D": {
+    "en": "GNSS signal is weak. Move the aircraft to an open area.",
+    "zh": "GNSS信号弱请远离建筑群"
+  },
+  "fpv_tip_0x040E": {
+    "en": "GNSS Spoofing",
+    "zh": "飞机遭受GNSS诱骗"
+  },
+  "fpv_tip_0x040F": {
+    "en": "Battery not installed properly. Takeoff is forbidden.",
+    "zh": "电池未安装到位，禁止起飞"
+  },
+  "fpv_tip_0x0410": {
+    "en": "Left front arm not unfolded properly. Takeoff is forbidden.",
+    "zh": "左前机臂未展开到位，禁止起飞"
+  },
+  "fpv_tip_0x0411": {
+    "en": "Right front arm not unfolded properly. Takeoff is forbidden.",
+    "zh": "右前机臂未展开到位，禁止起飞"
+  },
+  "fpv_tip_0x0412": {
+    "en": "Left rear arm not unfolded properly. Takeoff is forbidden.",
+    "zh": "左后机臂未展开到位，禁止起飞"
+  },
+  "fpv_tip_0x0413": {
+    "en": "Right rear arm not unfolded properly. Takeoff is forbidden.",
+    "zh": "右后机臂未展开到位，禁止起飞"
+  },
+  "fpv_tip_0x0414": {
+    "en": "Disconnect of model H RTK antenna No. 1",
+    "zh": "ModelH 1号RTK天线未连接"
+  },
+  "fpv_tip_0x0415": {
+    "en": "Disconnect of model H RTK antenna No. 2",
+    "zh": "ModelH 2号RTK天线未连接"
+  },
+  "fpv_tip_0x0416": {
+    "en": "Short circuit of model H No. 1 RTK antenna",
+    "zh": "ModelH 1号RTK天线短路"
+  },
+  "fpv_tip_0x0417": {
+    "en": "Short circuit of model H No. 2 RTK antenna",
+    "zh": "ModelH 2号RTK天线短路"
+  },
+  "fpv_tip_0x041B": {
+    "en": "Remote ID information is not entered, can not take off.",
+    "zh": "未填写Remote ID信息，禁止起飞"
+  },
+  "fpv_tip_0x041D": {
+    "zh": "无法解锁：飞行任务异常（无心跳或者禁止解锁）"
+  },
+  "fpv_tip_0x041E": {
+    "zh": "无法解锁：UOM未激活（UOM未注册）"
+  },
+  "fpv_tip_0x041F": {
+    "zh": "飞机震动过大(结构异常或者动力平衡差异导致共振)"
+  },
+  "fpv_tip_0x0451": {
+    "en": "Unstable RTK signal. Fly with caution.",
+    "zh": "RTK信号不稳定，请注意安全"
+  },
+  "fpv_tip_0x0501": {
+    "en": "Aircraft Disconnected",
+    "zh": "遥控器与飞机未连接"
+  },
+  "fpv_tip_0x0502": {
+    "en": "Aircraft Disconnected",
+    "zh": "遥控器与飞机未连接"
+  },
+  "fpv_tip_0x0503": {
+    "en": "Low battery, returning to home.",
+    "zh": "低电返航"
+  },
+  "fpv_tip_0x0504": {
+    "en": "Heading to home point",
+    "zh": "正在飞向备降点"
+  },
+  "fpv_tip_0x0505": {
+    "en": "Returning to Home",
+    "zh": "飞机开始返航"
+  },
+  "fpv_tip_0x0506": {
+    "en": "Returning to Home",
+    "zh": "飞机开始返航"
+  },
+  "fpv_tip_0x0507": {
+    "en": "Returning to Home",
+    "zh": "飞机开始返航"
+  },
+  "fpv_tip_0x0508": {
+    "en": "Returning to Home",
+    "zh": "飞机开始返航"
+  },
+  "fpv_tip_0x0509": {
+    "en": "Returning to Home",
+    "zh": "飞机开始返航"
+  },
+  "fpv_tip_0x050A": {
+    "en": "The aircraft is close to the no-fly zone.",
+    "zh": "飞机靠近禁飞区"
+  },
+  "fpv_tip_0x050B": {
+    "en": "Mission completed, returning to home.",
+    "zh": "任务已完成，开始返航"
+  },
+  "fpv_tip_0x050C": {
+    "en": "Unable to exit",
+    "zh": "未触发"
+  },
+  "fpv_tip_0x050D": {
+    "en": "The mission has been completed.",
+    "zh": "航线任务已完成"
+  },
+  "fpv_tip_0x050E": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x050F": {
+    "en": "Target lost. Mission exited.",
+    "zh": "丢失目标退出任务"
+  },
+  "fpv_tip_0x0510": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x0511": {
+    "en": "Mission has been aborted due to remote control input.",
+    "zh": "用户遥控器退出任务"
+  },
+  "fpv_tip_0x0512": {
+    "en": "Mission has been aborted due to app operation.",
+    "zh": "app操作退出"
+  },
+  "fpv_tip_0x0513": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x0514": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x0515": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x0516": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x0517": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x0518": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x0519": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x051A": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x051B": {
+    "en": "Exit mission",
+    "zh": "退出任务"
+  },
+  "fpv_tip_0x0544": {
+    "zh": "任务文件航点有超出限高限远"
+  },
+  "fpv_tip_0x0545": {
+    "zh": "任务文件航点总航程，超出作业能力范围"
+  },
+  "fpv_tip_0x0546": {
+    "zh": "任务文件任务起点距离当前位置太远"
+  },
+  "fpv_tip_0x0547": {
+    "zh": "任务文件任务作业总时长太长"
+  },
+  "fpv_tip_0x0548": {
+    "zh": "飞控没有响应起飞指令"
+  },
+  "fpv_tip_0x0549": {
+    "zh": "经纬度非法"
+  },
+  "fpv_tip_0x0601": {
+    "en": "Gimbal stuck error, please check",
+    "zh": "云台堵转，请检查云台"
+  },
+  "fpv_tip_0x0602": {
+    "en": "Please calibrate IMU",
+    "zh": "请校准IMU"
+  },
+  "fpv_tip_0x0603": {
+    "en": "Gimbal failed",
+    "zh": "云台故障"
+  },
+  "fpv_tip_0x0604": {
+    "en": "Gimbal overheated, please check",
+    "zh": "云台过热，请检查云台"
+  },
+  "fpv_tip_0x0605": {
+    "en": "Gimbal and flight control communication disconnected",
+    "zh": "云台与飞控通信中断"
+  },
+  "fpv_tip_0x0606": {
+    "en": "Gimbal calibration failed, please check",
+    "zh": "云台自检失败，请检查云台"
+  },
+  "fpv_tip_0x0607": {
+    "en": "Laser rangefinder error.",
+    "zh": "激光模块故障"
+  },
+  "fpv_tip_0x0608": {
+    "en": "Gimbal reached the mechanical limit. Check the gimbal or calibrate compass.",
+    "zh": "云台到达限位，请检查云台或校准指南针"
+  },
+  "fpv_tip_0x0609": {
+    "en": "Please calibrate the gimbal motor",
+    "zh": "请校准云台电机"
+  },
+  "fpv_tip_0x0701": {
+    "en": "Visual module error.",
+    "zh": "左右避障失效，请注意安全"
+  },
+  "fpv_tip_0x0702": {
+    "en": "Left and right OA and SLAM failed, please fly with caution.",
+    "zh": "左右避障和slam失效，请注意安全"
+  },
+  "fpv_tip_0x0703": {
+    "en": "Left and right OA and SLAM failed, please fly with caution.",
+    "zh": "左右避障和slam失效，请注意安全"
+  },
+  "fpv_tip_0x0704": {
+    "en": "Left and right OA and SLAM failed, please fly with caution.",
+    "zh": "左右避障和slam失效，请注意安全"
+  },
+  "fpv_tip_0x0705": {
+    "en": "Left and right OA and SLAM failed, please fly with caution.",
+    "zh": "左右避障和slam失效，请注意安全"
+  },
+  "fpv_tip_0x0706": {
+    "en": "Left and right OA and SLAM failed, please fly with caution.",
+    "zh": "左右避障和slam失效，请注意安全"
+  },
+  "fpv_tip_0x0707": {
+    "en": "Visual SLAM has been disabled. Fly with caution.",
+    "zh": "slam关闭，请注意安全"
+  },
+  "fpv_tip_0x0708": {
+    "en": "Both side OA sensors are invalid in current low light environment. Please fly with caution.",
+    "zh": "环境光线暗，仅雷达避障工作，左右避障失效，请注意安全"
+  },
+  "fpv_tip_0x0709": {
+    "en": "The visual sensors could be affected by rains and fogs, please disable OA and fly with caution.",
+    "zh": "雨雾环境视觉感知受影响，请暂时关闭避障并注意安全"
+  },
+  "fpv_tip_0x070A": {
+    "en": "Clean the front-view lens.",
+    "zh": "前视镜头有脏污，请清洁镜头"
+  },
+  "fpv_tip_0x070B": {
+    "en": "Clean the rear-view lens.",
+    "zh": "后视镜头有脏污，请清洁镜头"
+  },
+  "fpv_tip_0x070C": {
+    "en": "Clean the upper-view lens.",
+    "zh": "上视镜头有脏污，请清洁镜头"
+  },
+  "fpv_tip_0x070D": {
+    "en": "Clean the bottom-view lens.",
+    "zh": "下视镜头有脏污，请清洁镜头"
+  },
+  "fpv_tip_0x078F": {
+    "en": "Entering low consumption mode, and the thermal camera is turned off.",
+    "zh": "进入低功耗模式，红外镜头已关闭"
+  },
+  "fpv_tip_0x0801": {
+    "en": "SD card read error. Replace it.",
+    "zh": "SD卡错误，请更换SD卡"
+  },
+  "fpv_tip_0x0802": {
+    "en": "SD card is full. Switching to internal storage.",
+    "zh": "SD卡已满，将切换到机载闪存"
+  },
+  "fpv_tip_0x0803": {
+    "en": "Internal storage is full. Switching to SD card.",
+    "zh": "机载闪存已满，将切换到SD卡"
+  },
+  "fpv_tip_0x0804": {
+    "en": "Wide camera error",
+    "zh": "广角镜头异常"
+  },
+  "fpv_tip_0x0805": {
+    "en": "Zoom camera error",
+    "zh": "长焦镜头异常"
+  },
+  "fpv_tip_0x0806": {
+    "en": "Upward or downward OA sensor error.",
+    "zh": "上下视觉避障异常"
+  },
+  "fpv_tip_0x0807": {
+    "en": "Front or rear OA sensor error.",
+    "zh": "前后视觉避障异常"
+  },
+  "fpv_tip_0x0808": {
+    "en": "Zoom camera error",
+    "zh": "变焦功能异常"
+  },
+  "fpv_tip_0x0809": {
+    "en": "Zoom camera error",
+    "zh": "长焦镜头异常"
+  },
+  "fpv_tip_0x080A": {
+    "en": "Focus failed. Check the camera.",
+    "zh": "对焦失败，请检查镜头是否正常"
+  },
+  "fpv_tip_0x080B": {
+    "en": "Failed to update firmware F401",
+    "zh": "F401 固件升级失败"
+  },
+  "fpv_tip_0x080C": {
+    "en": "Please check the gimbal",
+    "zh": "请检查云台"
+  },
+  "fpv_tip_0x080E": {
+    "zh": "TF卡写入速度过慢（建议格式化或者更换高速卡）"
+  },
+  "fpv_tip_0x0825": {
+    "zh": "相机低功耗告警"
+  },
+  "fpv_tip_0x0826": {
+    "zh": "进入低功耗模式,云台相机已关闭"
+  },
+  "fpv_tip_0x0901": {
+    "en": "Radar overheated",
+    "zh": "雷达温度过高"
+  },
+  "fpv_tip_0x0902": {
+    "en": "Radar self-check failed, please restart the aircraft",
+    "zh": "雷达自检失败，请尝试重启飞机修复"
+  },
+  "fpv_tip_0x0903": {
+    "en": "Radar is abnormal, please restart the aircraft",
+    "zh": "雷达异常，请尝试重启飞机修复"
+  },
+  "fpv_tip_0x0904": {
+    "en": "Radar data error. Restart the aircraft.",
+    "zh": "雷达采数异常，请尝试重启飞机修复"
+  },
+  "fpv_tip_0x0905": {
+    "en": "Radar is abnormal, please restart the aircraft",
+    "zh": "雷达异常，请尝试重启飞机修复"
+  },
+  "fpv_tip_0x0906": {
+    "en": "Signal error.",
+    "zh": "PPS信号异常"
+  },
+  "fpv_tip_0x0907": {
+    "en": "Radar hasn't been auto calibrated yet",
+    "zh": "雷达未标定，请进行标定"
+  },
+  "fpv_tip_0x0A80": {
+    "en": "Aircraft signal interference",
+    "zh": "飞机信号受到干扰"
+  },
+  "fpv_tip_0x0A81": {
+    "en": "Aircraft signal interference",
+    "zh": "飞机信号受到干扰"
+  },
+  "fpv_tip_0x0B06": {
+    "en": "Mission error. Fly with caution.",
+    "zh": "飞行任务异常，请注意安全"
+  },
+  "fpv_tip_0x0B07": {
+    "en": "Mission error. Fly with caution.",
+    "zh": "飞行任务异常，请注意安全"
+  },
+  "fpv_tip_0x0B08": {
+    "en": "Visual Positioning disabled, please fly with caution.",
+    "zh": "视觉定位关闭，请注意安全"
+  },
+  "fpv_tip_0x0D07": {
+    "en": "Status error, RTH bypass is disabled.",
+    "zh": "状态异常,返航绕障失效"
+  },
+  "fpv_tip_0x0D08": {
+    "en": "OA is abnormal and will be temporarily turned off. Please fly with caution.",
+    "zh": "避障系统异常，需要临时关闭避障系统，请注意安全"
+  },
+  "fpv_tip_0x0D09": {
+    "en": "Obstacles avoidance disabled, please fly with caution",
+    "zh": "暗光环境避障无效，请注意安全"
+  },
+  "fpv_tip_0x0D29": {
+    "en": "The aircraft is close to the no-fly zone.",
+    "zh": "飞机接近禁飞区"
+  },
+  "fpv_tip_0x0D2A": {
+    "en": "The aircraft is close to the warning area.",
+    "zh": "飞机已靠近警示区"
+  },
+  "fpv_tip_0x0D6": {
+    "zh": "触发禁飞区，退出当前自动任务"
+  },
+  "fpv_tip_0x0d01": {
+    "en": "Pin point after taking off",
+    "zh": "请起飞后打点"
+  },
+  "fpv_tip_0x0d02": {
+    "en": "Gimbal reached the mechanical limit",
+    "zh": "达到云台限位"
+  },
+  "fpv_tip_0x0d03": {
+    "en": "The PinPoint is higher than the aircraft altitude.",
+    "zh": "标记点高于飞机"
+  },
+  "fpv_tip_0x0d04": {
+    "en": "The PinPoint is in No-Fly Zone.",
+    "zh": "标记点位置处于禁飞区"
+  },
+  "fpv_tip_0x0d05": {
+    "en": "Laser rangefinder is faulty. Estimated distance is used.",
+    "zh": "激光模块失效，使用估计距离"
   },
   "fpv_tip_0x11000002": {
     "en": "Aircraft power distribution board 1 overheated. Return to home or land promptly",
@@ -28640,5 +29865,380 @@
     "vi": "",
     "zh": "未检测到账号，已限高30m，限远50m，请登录",
     "zh-Hant": ""
+  },
+  "fpv_tip_0x30000000": {
+    "en": "The aircraft attitude is abnormal, please place it on a flat site to re-check",
+    "zh": "飞机姿态异常，请放置到平坦场地重新检测"
+  },
+  "fpv_tip_0x30000001": {
+    "en": "Heading not available, please contact dealer",
+    "zh": "航向不可用，请联系经销商"
+  },
+  "fpv_tip_0x30000002": {
+    "en": "The plane has flown to the maximum height",
+    "zh": "飞机已飞到最大高度"
+  },
+  "fpv_tip_0x30000003": {
+    "en": "The plane has flown the maximum distance",
+    "zh": "飞机已飞到最远距离"
+  },
+  "fpv_tip_0x30000004": {
+    "en": "The plane is near the no-fly zone",
+    "zh": "飞机靠近禁飞区"
+  },
+  "fpv_tip_0x30000005": {
+    "en": "The aircraft is in a no-fly zone. Takeoff is prohibited",
+    "zh": "飞机在禁飞区，禁止起飞"
+  },
+  "fpv_tip_0x30000006": {
+    "en": "The plane is near the edge of the flyable zone",
+    "zh": "飞机靠近可飞区边缘"
+  },
+  "fpv_tip_0x30000007": {
+    "en": "The plane is outside the flyable area",
+    "zh": "飞机在可飞区外"
+  },
+  "fpv_tip_0x30000008": {
+    "en": "Aircraft approaching the edge of the forced flyable zone",
+    "zh": "飞机靠近强制可飞区边缘"
+  },
+  "fpv_tip_0x30000009": {
+    "en": "The flight control CPU has exceeded 80℃/176℉, which affects the safety of the aircraft. Please turn off the aircraft and move to a cool and ventilated place to cool down",
+    "zh": "飞控CPU已超过 80℃/176℉，影响飞机安全。请关闭飞机并移动到阴凉通风处进行降温"
+  },
+  "fpv_tip_0x3000000A": {
+    "en": "The temperature of the flight control board has exceeded 70℃/158℉, which affects the safety of the aircraft. Please turn off the aircraft and move to a cool and ventilated place to cool down",
+    "zh": "飞控板温度已超过 70℃/158℉，影响飞机安全。请关闭飞机并移动到阴凉通风处进行降温"
+  },
+  "fpv_tip_0x3000000B": {
+    "en": "The flight control SD card is not working properly, please contact the dealer",
+    "zh": "飞控SD卡工作异常，请联系经销商"
+  },
+  "fpv_tip_0x3000000C": {
+    "en": "The flight control fan works abnormally, please contact the dealer",
+    "zh": "飞控风扇工作异常，请联系经销商"
+  },
+  "fpv_tip_0x3000000D": {
+    "en": "Flight control software error, please contact the dealer",
+    "zh": "飞控固件版本不匹配，请联系经销商"
+  },
+  "fpv_tip_0x3000000E": {
+    "en": "The left wing is faulty, it is recommended to re-install the wing, if the re-installation fails, please contact the dealer",
+    "zh": "左侧机翼故障，建议重装机翼，重装失败请联系经销商"
+  },
+  "fpv_tip_0x3000000F": {
+    "en": "The right wing is faulty, it is recommended to re-install the wing, if the re-installation fails, please contact the dealer",
+    "zh": "右侧机翼故障，建议重装机翼，重装失败请联系经销商"
+  },
+  "fpv_tip_0x30000010": {
+    "en": "Initialization of navigation attitude is not complete",
+    "zh": "导航姿态初始化未完成"
+  },
+  "fpv_tip_0x30000011": {
+    "en": "The electronic fence was not successfully updated",
+    "zh": "未成功更新电子围栏"
+  },
+  "fpv_tip_0x30000012": {
+    "en": "The GNSS is invalid, geo-awareness may be disabled",
+    "zh": "导航位置不可用，地理感知可能会失效"
+  },
+  "fpv_tip_0x30000100": {
+    "en": "Battery unbalanced. Contact after-sales service",
+    "zh": "电池不平衡，请联系售后处理"
+  },
+  "fpv_tip_0x30000101": {
+    "en": "The front battery is missing. Install the battery in place",
+    "zh": "飞机前电池缺失，请把电池安装到位"
+  },
+  "fpv_tip_0x30000102": {
+    "en": "The battery is missing after the plane. Install the battery in place",
+    "zh": "飞机后电池缺失，请把电池安装到位"
+  },
+  "fpv_tip_0x30000103": {
+    "en": "Aircraft battery temperature is too high. Do not take off",
+    "zh": "飞机电池温度过高，请勿起飞"
+  },
+  "fpv_tip_0x30000104": {
+    "en": "Aircraft battery temperature is too low. Do not take off",
+    "zh": "飞机电池温度过低，请勿起飞"
+  },
+  "fpv_tip_0x30000105": {
+    "en": "Aircraft battery temperature is low. Take off later",
+    "zh": "飞机电池温度偏低，建议稍后起飞"
+  },
+  "fpv_tip_0x30000106": {
+    "en": "Front battery damaged. Replace the battery",
+    "zh": "飞机前电池损坏，请更换电池"
+  },
+  "fpv_tip_0x30000107": {
+    "en": "Rear battery damaged. Replace the battery",
+    "zh": "飞机后电池损坏，请更换电池"
+  },
+  "fpv_tip_0x30000108": {
+    "en": "The aircraft battery is damaged. Replace the battery",
+    "zh": "飞机电池损坏，请更换电池"
+  },
+  "fpv_tip_0x30000109": {
+    "en": "Front battery is self-heating due to its low temperature",
+    "zh": "飞机前电池正在加热"
+  },
+  "fpv_tip_0x30000110": {
+    "en": "Rear battery is self-heating due to its low temperature",
+    "zh": "飞机后电池正在加热"
+  },
+  "fpv_tip_0x30000111": {
+    "en": "Front battery temperature is below 25℃ /77℉ and battery level is lower than 60%. Do not take off",
+    "zh": "飞机前电池温度低于25℃ /77℉，且电量低于60%，请勿起飞"
+  },
+  "fpv_tip_0x30000112": {
+    "en": "Rear battery temperature is below 25℃ /77℉ and battery level is lower than 60%. Do not take off",
+    "zh": "飞机后电池温度低于25℃ /77℉，且电量低于60%，请勿起飞"
+  },
+  "fpv_tip_0x30000113": {
+    "en": "Battery temperature is below 25℃ /77℉ and battery level is lower than 60%. Do not take off",
+    "zh": "电池温度低于25℃，且电量低于60%，请勿起飞"
+  },
+  "fpv_tip_0x30000200": {
+    "en": "Elevator exception",
+    "zh": "升降舵异常"
+  },
+  "fpv_tip_0x30000201": {
+    "en": "The state of the aircraft motor ESC is abnormal",
+    "zh": "飞机电机电调状态异常"
+  },
+  "fpv_tip_0x30000300": {
+    "en": "Ultrasonic abnormalities, please contact the dealer",
+    "zh": "超声波异常，请联系经销商"
+  },
+  "fpv_tip_0x30000301": {
+    "en": "The airspeed meter is abnormal",
+    "zh": "空速计异常"
+  },
+  "fpv_tip_0x30000302": {
+    "en": "Weak GPS signal",
+    "zh": "GPS信号弱"
+  },
+  "fpv_tip_0x30000303": {
+    "en": "RTK signal weak",
+    "zh": "RTK信号弱"
+  },
+  "fpv_tip_0x30000304": {
+    "en": "Main IMU failure",
+    "zh": "主IMU故障"
+  },
+  "fpv_tip_0x30000305": {
+    "en": "Secondary IMU failure",
+    "zh": "副IMU故障"
+  },
+  "fpv_tip_0x30000306": {
+    "en": "Compass exception",
+    "zh": "指南针异常"
+  },
+  "fpv_tip_0x30000307": {
+    "en": "Secondary Compass exception",
+    "zh": "备用指南针异常"
+  },
+  "fpv_tip_0x30000308": {
+    "en": "Barometer fault, please contact dealer",
+    "zh": "气压计故障，请联系经销商"
+  },
+  "fpv_tip_0x30000309": {
+    "en": "Secondary Barometer fault, please contact dealer",
+    "zh": "备用气压计故障，请联系经销商"
+  },
+  "fpv_tip_0x3000030A": {
+    "en": "RTK heading abnormal",
+    "zh": "RTK航向异常"
+  },
+  "fpv_tip_0x3000030B": {
+    "en": "The airframe RTK antenna connection is disconnected",
+    "zh": "机身RTK天线连接断开"
+  },
+  "fpv_tip_0x3000030C": {
+    "en": "The tail RTK antenna connection is disconnected",
+    "zh": "机尾RTK天线连接断开"
+  },
+  "fpv_tip_0x3000030D": {
+    "en": "The fuselage RTK antenna is short-circuited",
+    "zh": "机身RTK天线短路"
+  },
+  "fpv_tip_0x3000030E": {
+    "en": "The tail RTK antenna is short-circuited",
+    "zh": "机尾RTK天线短路"
+  },
+  "fpv_tip_0x3000030F": {
+    "en": "Forward sensing failure, please contact the dealer",
+    "zh": "前向感知故障，请联系经销商"
+  },
+  "fpv_tip_0x30000310": {
+    "en": "RTK communication exception",
+    "zh": "RTK通讯异常"
+  },
+  "fpv_tip_0x30000311": {
+    "en": "GPS communication abnormal",
+    "zh": "GPS通讯异常"
+  },
+  "fpv_tip_0x30000312": {
+    "en": "Basestation RTK information is invalid",
+    "zh": "基站RTK信息无效"
+  },
+  "fpv_tip_0x30000313": {
+    "en": "Basestation RTK heading information is invalid",
+    "zh": "基站RTK航向信息无效"
+  },
+  "fpv_tip_0x30000314": {
+    "en": "Base station RTKHeading2 information is invalid",
+    "zh": "基站RTKHeading2信息无效"
+  },
+  "fpv_tip_0x30000315": {
+    "en": "Basestation location information is abnormal",
+    "zh": "基站位置信息异常"
+  },
+  "fpv_tip_0x30000316": {
+    "en": "Basestation speed information is abnormal",
+    "zh": "基站速度信息异常"
+  },
+  "fpv_tip_0x30000317": {
+    "en": "The base station attitude information is abnormal",
+    "zh": "基站姿态信息异常"
+  },
+  "fpv_tip_0x30000318": {
+    "en": "Mobile home point information is abnormal",
+    "zh": "移动返航点信息异常"
+  },
+  "fpv_tip_0x30000319": {
+    "en": "Invalid accuracy of moving home point information",
+    "zh": "移动返航点信息精度差"
+  },
+  "fpv_tip_0x3000031A": {
+    "en": "Magnetic heading deviation, please calibrate the compass away from strong magnetic fields",
+    "zh": "磁航向出现偏差，请远离强磁场环境进行指南针校准"
+  },
+  "fpv_tip_0x3000031B": {
+    "en": "Compass communication abnormal",
+    "zh": "磁力计通讯异常"
+  },
+  "fpv_tip_0x3000031C": {
+    "en": "Compass parameter update failed, please update again",
+    "zh": "指南针参数更新失败，请重新更新"
+  },
+  "fpv_tip_0x30000400": {
+    "en": "Picture transmission disconnected",
+    "zh": "图传断开连接"
+  },
+  "fpv_tip_0x30000402": {
+    "en": "Actuator communication failure, please contact the dealer",
+    "zh": "执行器通讯故障，请联系经销商"
+  },
+  "fpv_tip_0x30000403": {
+    "en": "The aircraft flying height is too low, it will automatically adjust to a safe height",
+    "zh": "飞机飞行高度过低，将自动调整到安全高度"
+  },
+  "fpv_tip_0x30000404": {
+    "en": "The left wing has to be calibrated",
+    "zh": "飞机与左机翼未配置"
+  },
+  "fpv_tip_0x30000405": {
+    "en": "The left wing is not compatible with the current fuselage. Please install the correct left wing. If the left wing is already correct, please contact your dealer.",
+    "zh": "左机翼与当前机身无法配合使用，请安装正确的左机翼。若左机翼正确，请联系售后支持；"
+  },
+  "fpv_tip_0x30000406": {
+    "en": "There is an error in the connection to the left wing. Please ensure the left wing is installed properly and restart the aircraft. If the error persists after multiple restarts, please contact your dealer.",
+    "zh": "左机翼连接出错，请先确认左机翼正确，再重启飞机。若多次重启仍出错，请联系售后支持"
+  },
+  "fpv_tip_0x30000407": {
+    "en": "The right wingl has to be calibrated",
+    "zh": "飞机与右机翼未配置"
+  },
+  "fpv_tip_0x30000408": {
+    "en": "The right wing is not compatible with the current fuselage. Please install the correct right wing. If the right wing is already correct, please contact your dealer.",
+    "zh": "右机翼与当前机身无法配合使用，请安装正确的右机翼。若右机翼正确，请联系售后支持；"
+  },
+  "fpv_tip_0x30000409": {
+    "en": "The right wing is not compatible with the current fuselage. Please install the correct right wing. If the right wing is already correct, please contact your dealer.",
+    "zh": "右机翼连接出错，请先确认右机翼正确，再重启飞机。若多次重启仍出错，请联系售后支持"
+  },
+  "fpv_tip_0x3000040A": {
+    "en": "The tail has to be calibrated",
+    "zh": "飞机与尾翼未配置"
+  },
+  "fpv_tip_0x3000040B": {
+    "en": "The tail is not compatible with the current fuselage. Please install the correct tail. If the tail is already correct, please contact your dealer.",
+    "zh": "尾翼与当前机身无法配合使用，请安装正确的尾翼。若尾翼正确，请联系售后支持；"
+  },
+  "fpv_tip_0x3000040C": {
+    "en": "There is an error in the connection to the tail. Please ensure the tail is installed properly and restart the aircraft. If the error persists after multiple restarts, please contact your dealer.",
+    "zh": "尾翼连接出错，请先确认尾翼正确，再重启飞机。若多次重启仍出错，请联系售后支持"
+  },
+  "fpv_tip_0x30000500": {
+    "en": "Aircraft battery is low, returning to home",
+    "zh": "飞机电池电量低，正在返航"
+  },
+  "fpv_tip_0x30000501": {
+    "en": "The aircraft is not in the designated country, returning to take off point",
+    "zh": "飞机不在可飞区内，正飞往起飞点备降"
+  },
+  "fpv_tip_0x30000502": {
+    "zh": "飞行器电量过低，将自动降低高度后降落，可手动接管飞机"
+  },
+  "fpv_tip_0x30000600": {
+    "en": "Gimbal and flight control communication disconnected. Contact after-sales service for assistance.",
+    "zh": "云台与飞控通信断开，请联系售后处理"
+  },
+  "fpv_tip_0x30000800": {
+    "en": "No SD card detected, insert SD card",
+    "zh": "无SD卡，请插入SD卡"
+  },
+  "fpv_tip_0x30000801": {
+    "en": "SD card full, replace with new",
+    "zh": "SD卡已满，请更换SD卡"
+  },
+  "fpv_tip_0x30000802": {
+    "en": "SD card error, replace with new",
+    "zh": "SD卡错误，请更换SD卡"
+  },
+  "fpv_tip_0x30000803": {
+    "en": "SD card writing is slow. Format the SD card or replace it with a high-speed card",
+    "zh": "SD卡写入慢，请格式化SD卡或更换高速卡"
+  },
+  "fpv_tip_0x30000804": {
+    "en": "The onboard flash memory is full. Switch the storage location to the SD card",
+    "zh": "机载闪存已满，请切换存储位置到SD卡"
+  },
+  "fpv_tip_0x30000805": {
+    "en": "The onboard flash memory is abnormal. Format it or contact after-sales service.",
+    "zh": "机载闪存异常，请格式化或联系售后处理"
+  },
+  "fpv_tip_0x30000806": {
+    "en": "Unknown SD card file system. Format the SD card",
+    "zh": "未知的SD卡文件系统，请格式化SD卡"
+  },
+  "fpv_tip_0x30000807": {
+    "en": "The onboard flash memory is full. Clear the storage space",
+    "zh": "机载闪存已满，请清理存储空间"
+  },
+  "rc_tip_0x00010000": {
+    "en": "Abnormal RC sticks. Calibrate them before takeoff.",
+    "zh": "遥控器摇杆异常，为保证飞行安全请先校准后起飞"
+  },
+  "rc_tip_0x00010001": {
+    "en": "Abnormal right stick. Release or calibrate it.",
+    "zh": "右摇杆异常，请松开摇杆或校准遥控器"
+  },
+  "rc_tip_0x00010002": {
+    "en": "Abnormal left stick. Release or calibrate it.",
+    "zh": "左摇杆异常，请松开摇杆或校准遥控器"
+  },
+  "rc_tip_0x00010003": {
+    "en": "Abnormal right dial wheel. Release or calibrate it.",
+    "zh": "右波轮异常，请松开波轮或校准遥控器"
+  },
+  "rc_tip_0x00010004": {
+    "en": "Abnormal left dial wheel. Release or calibrate it.",
+    "zh": "左波轮异常，请松开波轮或校准遥控器"
+  },
+  "rc_tip_0x00010005": {
+    "en": "The RC battery temperature is too high. Wait until the battery cools down.",
+    "zh": "遥控器电池温度过高，请降温后充电"
   }
 }

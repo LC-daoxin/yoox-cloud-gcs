@@ -25,6 +25,7 @@ import com.yoox.great.mqtt.model.device.DeviceOsdHost;
 import com.yoox.great.mqtt.model.device.DeviceOsdWsResponse;
 import com.yoox.great.mqtt.model.device.OsdDock;
 import com.yoox.great.mqtt.model.device.OsdDockDrone;
+import com.yoox.great.mqtt.model.device.OsdRcDrone;
 import com.yoox.great.mqtt.model.firmware.OtaCreateDevice;
 import com.yoox.great.mqtt.model.firmware.OtaCreateRequest;
 import com.yoox.great.mqtt.model.firmware.OtaCreateResponse;
@@ -68,6 +69,7 @@ import org.springframework.util.StringUtils;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -273,8 +275,36 @@ public class DeviceServiceImpl implements IDeviceService {
         gateway.setChildren(subDevice);
         gateway.setAircraftSn(subDevice.getDeviceSn());
 
-        // payloads
-        subDevice.setPayloadsList(payloadService.getDevicePayloadEntitiesByDeviceSn(gateway.getChildDeviceSn()));
+        // Payload metadata comes from the database, while the current control
+        // source is updated in the online Redis snapshot as soon as the device
+        // confirms payload_authority_grab. Merge the live value so a browser
+        // refresh does not make an authority that is still active look lost.
+        List<DevicePayloadDTO> payloads = new ArrayList<>(
+                payloadService.getDevicePayloadEntitiesByDeviceSn(gateway.getChildDeviceSn()));
+        deviceRedisService.getDeviceOnline(gateway.getChildDeviceSn())
+                .map(DeviceDTO::getPayloadsList)
+                .ifPresent(livePayloads -> mergeLivePayloadAuthority(payloads, livePayloads));
+        subDevice.setPayloadsList(payloads);
+    }
+
+    void mergeLivePayloadAuthority(
+            List<DevicePayloadDTO> payloads, List<DevicePayloadDTO> livePayloads) {
+        for (DevicePayloadDTO livePayload : livePayloads) {
+            if (livePayload == null || livePayload.getPayloadIndex() == null
+                    || livePayload.getControlSource() == null) {
+                continue;
+            }
+            String liveIndex = livePayload.getPayloadIndex().toString();
+            Optional<DevicePayloadDTO> persisted = payloads.stream()
+                    .filter(payload -> payload != null && payload.getPayloadIndex() != null)
+                    .filter(payload -> liveIndex.equals(payload.getPayloadIndex().toString()))
+                    .findFirst();
+            if (persisted.isPresent()) {
+                persisted.get().setControlSource(livePayload.getControlSource());
+            } else {
+                payloads.add(livePayload);
+            }
+        }
     }
 
     @Override
@@ -640,8 +670,22 @@ public class DeviceServiceImpl implements IDeviceService {
 
     @Override
     public DroneModeCodeEnum getDeviceMode(String deviceSn) {
-        return deviceRedisService.getDeviceOsd(deviceSn, OsdDockDrone.class)
-                .map(OsdDockDrone::getModeCode).orElse(DroneModeCodeEnum.DISCONNECTED);
+        if (deviceRedisService.getDeviceOnline(deviceSn).isEmpty()) {
+            return DroneModeCodeEnum.DISCONNECTED;
+        }
+        return deviceRedisService.getDeviceOsd(deviceSn)
+                .map(osd -> {
+                    if (osd instanceof OsdRcDrone) {
+                        return ((OsdRcDrone) osd).getModeCode();
+                    }
+                    if (osd instanceof OsdDockDrone) {
+                        return ((OsdDockDrone) osd).getModeCode();
+                    }
+                    log.warn("Unsupported drone OSD type for device {}: {}", deviceSn,
+                            osd.getClass().getName());
+                    return DroneModeCodeEnum.DISCONNECTED;
+                })
+                .orElse(DroneModeCodeEnum.DISCONNECTED);
     }
 
     @Override
@@ -653,11 +697,11 @@ public class DeviceServiceImpl implements IDeviceService {
 
     @Override
     public Boolean checkAuthorityFlight(String gatewaySn) {
-        return deviceRedisService.getDeviceOnline(gatewaySn).flatMap(gateway ->
-                        Optional.of((DeviceDomainEnum.DOCK == gateway.getDomain()
+        return deviceRedisService.getDeviceOnline(gatewaySn)
+                .map(gateway -> (DeviceDomainEnum.DOCK == gateway.getDomain()
                                 || DeviceDomainEnum.REMOTER_CONTROL == gateway.getDomain())
-                                && ControlSourceEnum.A == gateway.getControlSource()))
-                .orElse(true);
+                        && ControlSourceEnum.A == gateway.getControlSource())
+                .orElse(false);
     }
 
     @Override

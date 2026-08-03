@@ -2,6 +2,7 @@ package com.yoox.great.mqtt.model.device;
 
 
 import com.yoox.great.mqtt.enums.livestream.VideoQualityEnum;
+import com.yoox.great.mqtt.enums.livestream.VideoTypeEnum;
 
 public class RcLiveStatusData {
 
@@ -10,6 +11,10 @@ public class RcLiveStatusData {
     private VideoId videoId;
 
     private VideoQualityEnum videoQuality;
+
+    private VideoTypeEnum videoType;
+
+    private DockLiveErrorStatus errorStatus;
 
     public RcLiveStatusData() {
     }
@@ -20,6 +25,8 @@ public class RcLiveStatusData {
                 "status=" + status +
                 ", videoId=" + videoId +
                 ", videoQuality=" + videoQuality +
+                ", videoType=" + videoType +
+                ", errorStatus=" + errorStatus +
                 '}';
     }
 
@@ -47,6 +54,24 @@ public class RcLiveStatusData {
 
     public RcLiveStatusData setVideoQuality(VideoQualityEnum videoQuality) {
         this.videoQuality = videoQuality;
+        return this;
+    }
+
+    public VideoTypeEnum getVideoType() {
+        return videoType;
+    }
+
+    public RcLiveStatusData setVideoType(VideoTypeEnum videoType) {
+        this.videoType = videoType;
+        return this;
+    }
+
+    public DockLiveErrorStatus getErrorStatus() {
+        return errorStatus;
+    }
+
+    public RcLiveStatusData setErrorStatus(DockLiveErrorStatus errorStatus) {
+        this.errorStatus = errorStatus;
         return this;
     }
 }

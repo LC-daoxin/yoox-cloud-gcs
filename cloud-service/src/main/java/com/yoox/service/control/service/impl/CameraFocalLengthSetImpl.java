@@ -14,9 +14,17 @@ public class CameraFocalLengthSetImpl extends PayloadCommandsHandler {
 
     @Override
     public boolean valid() {
-        return Objects.nonNull(param.getCameraType()) && Objects.nonNull(param.getZoomFactor())
-                && (CameraTypeEnum.ZOOM == param.getCameraType()
-                || CameraTypeEnum.IR == param.getCameraType());
+        if (Objects.isNull(param.getCameraType()) || Objects.isNull(param.getZoomFactor())) {
+            return false;
+        }
+        float zoomFactor = param.getZoomFactor();
+        if (CameraTypeEnum.ZOOM == param.getCameraType()) {
+            return zoomFactor >= 1 && zoomFactor <= 160;
+        }
+        if (CameraTypeEnum.IR == param.getCameraType()) {
+            return zoomFactor >= 1 && zoomFactor <= 16;
+        }
+        return false;
     }
 
     @Override
@@ -28,10 +36,31 @@ public class CameraFocalLengthSetImpl extends PayloadCommandsHandler {
         switch (param.getCameraType()) {
             case IR:
                 return Objects.nonNull(osdCamera.getIrZoomFactor())
-                        && param.getZoomFactor().intValue() != osdCamera.getIrZoomFactor();
+                        && Math.abs(param.getZoomFactor() - osdCamera.getIrZoomFactor()) > 0.01;
             case ZOOM:
-                return param.getZoomFactor().intValue() != osdCamera.getZoomFactor();
+                return Objects.nonNull(osdCamera.getZoomFactor())
+                        && Math.abs(param.getZoomFactor() - osdCamera.getZoomFactor()) > 0.01;
         }
         return false;
+    }
+
+    @Override
+    public boolean isNoOp() {
+        if (Objects.isNull(osdCamera) || Objects.isNull(param.getZoomFactor())) {
+            return false;
+        }
+        Float reportedZoom;
+        switch (param.getCameraType()) {
+            case IR:
+                reportedZoom = osdCamera.getIrZoomFactor();
+                break;
+            case ZOOM:
+                reportedZoom = osdCamera.getZoomFactor();
+                break;
+            default:
+                return false;
+        }
+        return Objects.nonNull(reportedZoom)
+                && Math.abs(param.getZoomFactor() - reportedZoom) <= 0.01;
     }
 }

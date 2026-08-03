@@ -9,6 +9,8 @@ import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
 import java.util.Objects;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -38,11 +40,20 @@ public class ServicesPublish {
     }
 
     public TopicServicesResponse<ServicesReplyData> publish(String sn, String method) {
-        return this.publish(sn, method, null, null);
+        return this.publish(sn, method, null, (String) null);
     }
 
     public TopicServicesResponse<ServicesReplyData> publish(String sn, String method, Object data) {
-        return this.publish(sn, method, data, null);
+        return this.publish(sn, method, data, (String) null);
+    }
+
+    public TopicServicesResponse<ServicesReplyData> publish(
+            String sn, String method, Object data, List<Map<String, String>> deviceList) {
+        return (TopicServicesResponse) this.publish(
+                null, sn, method, data, null,
+                MqttGatewayPublish.DEFAULT_RETRY_COUNT,
+                MqttGatewayPublish.DEFAULT_RETRY_TIMEOUT,
+                deviceList);
     }
 
     public TopicServicesResponse<ServicesReplyData> publish(String sn, String method, Object data, int retryCount) {
@@ -75,6 +86,12 @@ public class ServicesPublish {
 
     public <T> TopicServicesResponse<ServicesReplyData<T>> publish(
             TypeReference<T> clazz, String sn, String method, Object data, String bid, int retryCount, long timeout) {
+        return publish(clazz, sn, method, data, bid, retryCount, timeout, null);
+    }
+
+    private <T> TopicServicesResponse<ServicesReplyData<T>> publish(
+            TypeReference<T> clazz, String sn, String method, Object data, String bid,
+            int retryCount, long timeout, List<Map<String, String>> deviceList) {
         String topic = TopicConst.THING_MODEL_PRE + TopicConst.PRODUCT + Objects.requireNonNull(sn) + TopicConst.SERVICES_SUF;
         TopicServicesResponse response = (TopicServicesResponse) gatewayPublish.publishWithReply(
                 ServicesReplyReceiver.class, topic, new TopicServicesRequest<>()
@@ -82,6 +99,7 @@ public class ServicesPublish {
                         .setBid(bid)
                         .setTimestamp(System.currentTimeMillis())
                         .setMethod(method)
+                        .setDeviceList(deviceList)
                         .setData(Objects.requireNonNullElse(data, "")), retryCount, timeout);
         ServicesReplyReceiver replyReceiver = (ServicesReplyReceiver) response.getData();
         ServicesReplyData<T> reply = new ServicesReplyData<T>().setResult(replyReceiver.getResult());

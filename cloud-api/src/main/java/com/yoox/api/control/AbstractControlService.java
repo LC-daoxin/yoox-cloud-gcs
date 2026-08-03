@@ -28,6 +28,9 @@ import org.springframework.messaging.MessageHeaders;
 import javax.annotation.Resource;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 
 public abstract class AbstractControlService {
@@ -58,14 +61,12 @@ public abstract class AbstractControlService {
         throw new UnsupportedOperationException("joystickInvalidNotify not implemented");
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> flightAuthorityGrab(GatewayManager gateway) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
                 ControlMethodEnum.FLIGHT_AUTHORITY_GRAB.getMethod());
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> payloadAuthorityGrab(GatewayManager gateway, PayloadAuthorityGrabRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -73,7 +74,6 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> drcModeEnter(GatewayManager gateway, DrcModeEnterRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -81,14 +81,12 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> drcModeExit(GatewayManager gateway) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
                 ControlMethodEnum.DRC_MODE_EXIT.getMethod());
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> takeoffToPoint(GatewayManager gateway, TakeoffToPointRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -96,7 +94,29 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
+    /**
+     * Enterprise/RC direct-cloud takeoff uses the compact Cloud API payload.
+     * Autel controllers require the three safety fields below, while dock-only
+     * commander and simulation fields must not leak into this request.
+     */
+    public TopicServicesResponse<ServicesReplyData> takeoffToPointRc(
+            GatewayManager gateway, TakeoffToPointRequest request) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("flight_id", request.getFlightId());
+        data.put("max_speed", request.getMaxSpeed());
+        data.put("target_height", request.getTargetHeight());
+        data.put("target_latitude", request.getTargetLatitude());
+        data.put("target_longitude", request.getTargetLongitude());
+        data.put("security_takeoff_height", request.getSecurityTakeoffHeight());
+        data.put("rth_altitude", request.getRthAltitude());
+        data.put("rc_lost_action", request.getRcLostAction());
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.TAKEOFF_TO_POINT.getMethod(),
+                data,
+                List.of(Map.of("sn", gateway.getDroneSn())));
+    }
+
     public TopicServicesResponse<ServicesReplyData> flyToPoint(GatewayManager gateway, FlyToPointRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -112,14 +132,12 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> flyToPointStop(GatewayManager gateway) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
                 ControlMethodEnum.FLY_TO_POINT_STOP.getMethod());
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> cameraModeSwitch(GatewayManager gateway, CameraModeSwitchRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -127,7 +145,6 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> cameraPhotoTake(GatewayManager gateway, CameraPhotoTakeRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -148,7 +165,6 @@ public abstract class AbstractControlService {
         throw new UnsupportedOperationException("cameraPhotoTakeProgress not implemented");
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> cameraRecordingStart(GatewayManager gateway, CameraRecordingStartRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -156,7 +172,6 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> cameraRecordingStop(GatewayManager gateway, CameraRecordingStopRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -172,7 +187,6 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> cameraFocalLengthSet(GatewayManager gateway, CameraFocalLengthSetRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -180,7 +194,20 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
+    public TopicServicesResponse<ServicesReplyData> cameraFocalLengthDrag(GatewayManager gateway, CameraFocalLengthDragRequest request) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.CAMERA_FOCAL_LENGTH_DRAG.getMethod(),
+                request);
+    }
+
+    public TopicServicesResponse<ServicesReplyData> cameraScreenDrag(GatewayManager gateway, CameraScreenDragRequest request) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.CAMERA_SCREEN_DRAG.getMethod(),
+                request);
+    }
+
     public TopicServicesResponse<ServicesReplyData> gimbalReset(GatewayManager gateway, GimbalResetRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -188,7 +215,6 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(since = CloudSDKVersionEnum.V1_0_0, exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> cameraLookAt(GatewayManager gateway, CameraLookAtRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -204,7 +230,6 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(since = CloudSDKVersionEnum.V1_0_0, exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> photoStorageSet(GatewayManager gateway, PhotoStorageSetRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -212,12 +237,24 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(since = CloudSDKVersionEnum.V1_0_0, exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> videoStorageSet(GatewayManager gateway, VideoStorageSetRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
                 ControlMethodEnum.VIDEO_STORAGE_SET.getMethod(),
                 request);
+    }
+
+    public TopicServicesResponse<ServicesReplyData> targetDetectOpen(GatewayManager gateway, TargetDetectOpenRequest request) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.TARGET_DETECT_OPEN.getMethod(),
+                request);
+    }
+
+    public TopicServicesResponse<ServicesReplyData> targetDetectClose(GatewayManager gateway) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.TARGET_DETECT_CLOSE.getMethod());
     }
 
     @CloudSDKVersion(since = CloudSDKVersionEnum.V1_0_2, include = GatewayTypeEnum.DOCK)
@@ -287,7 +324,11 @@ public abstract class AbstractControlService {
     public TopicServicesResponse<ServicesReplyData> payloadControl(GatewayManager gateway, PayloadControlMethodEnum methodEnum, BaseModel request) {
         try {
             AbstractControlService abstractControlService = SpringBeanUtils.getBean(this.getClass());
-            Method method = abstractControlService.getClass().getDeclaredMethod(
+            // Payload handlers are public methods declared on this base class.
+            // getDeclaredMethod() only inspects the concrete SDKControlService
+            // and therefore fails for inherited handlers such as
+            // cameraPhotoTake(). getMethod() resolves public inherited methods.
+            Method method = abstractControlService.getClass().getMethod(
                     Common.convertSnake(methodEnum.getPayloadMethod().getMethod()), GatewayManager.class, methodEnum.getClazz());
             return (TopicServicesResponse<ServicesReplyData>) method.invoke(abstractControlService, gateway, request);
         } catch (NoSuchMethodException | IllegalAccessException e) {

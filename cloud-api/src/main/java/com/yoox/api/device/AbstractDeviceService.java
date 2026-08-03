@@ -14,10 +14,16 @@ import com.yoox.great.mqtt.handle.state.TopicStateRequest;
 import com.yoox.great.mqtt.handle.state.TopicStateResponse;
 import com.yoox.great.mqtt.handle.status.TopicStatusRequest;
 import com.yoox.great.mqtt.handle.status.TopicStatusResponse;
+import com.yoox.great.mqtt.model.control.TargetDetectResultReport;
 import org.springframework.integration.annotation.ServiceActivator;
 import org.springframework.messaging.MessageHeaders;
 
 public class AbstractDeviceService {
+
+    @ServiceActivator(inputChannel = ChannelName.INBOUND_STATE_TARGET_DETECT_RESULT)
+    public void targetDetectResult(TopicStateRequest<TargetDetectResultReport> request, MessageHeaders headers) {
+        throw new UnsupportedOperationException("targetDetectResult not implemented");
+    }
 
     @ServiceActivator(inputChannel = ChannelName.INBOUND_OSD_DOCK)
     public void osdDock(TopicOsdRequest<OsdDock> request, MessageHeaders headers) {

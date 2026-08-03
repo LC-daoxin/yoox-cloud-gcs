@@ -68,7 +68,7 @@ public enum DroneModeCodeEnum {
 
     @JsonCreator
     public static DroneModeCodeEnum find(int code) {
-        return Arrays.stream(values()).filter(modeCodeEnum -> modeCodeEnum.ordinal() == code).findAny()
+        return Arrays.stream(values()).filter(modeCodeEnum -> modeCodeEnum.code == code).findAny()
                 .orElseThrow(() -> new CloudSDKException(DroneModeCodeEnum.class, code));
     }
 }

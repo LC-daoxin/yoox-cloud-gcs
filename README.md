@@ -79,6 +79,7 @@ docker compose --env-file .env.example config --quiet
 - [配置指南](docs/06-配置指南.md)
 - [API 指南](docs/07-API指南.md)
 - [部署与运维指南](docs/08-部署运维指南.md)
+- [遥控器云服务频繁断连排查](docs/09-遥控器云服务频繁断连排查.md)
 - [项目总体方案](docs/01-项目总体方案.md)
 - [Demo 复用与改造清单](docs/02-Demo复用与改造清单.md)
 - [实施计划与验收标准](docs/03-实施计划与验收标准.md)

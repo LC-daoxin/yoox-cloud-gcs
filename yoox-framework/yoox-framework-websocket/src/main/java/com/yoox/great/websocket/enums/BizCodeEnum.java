@@ -63,6 +63,12 @@ public enum BizCodeEnum {
 
     CONTROL_SOURCE_CHANGE("control_source_change"),
 
+    PAYLOAD_AUTHORITY_GRAB("payload_authority_grab"),
+
+    LIVE_CAPACITY("live_capacity"),
+
+    LIVE_STATUS("live_status"),
+
     FLY_TO_POINT_PROGRESS("fly_to_point_progress"),
 
     TAKE_OFF_TO_POINT_PROGRESS("takeoff_to_point_progress"),
@@ -70,6 +76,8 @@ public enum BizCodeEnum {
     DRC_STATUS_NOTIFY("drc_status_notify"),
 
     JOYSTICK_INVALID_NOTIFY("joystick_invalid_notify"),
+
+    TARGET_DETECT_RESULT_REPORT("target_detect_result_report"),
 
     FLIGHT_AREAS_SYNC_PROGRESS("flight_areas_sync_progress"),
 

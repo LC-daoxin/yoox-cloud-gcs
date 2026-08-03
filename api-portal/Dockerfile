@@ -1,5 +1,5 @@
 FROM nginx:1.27-alpine
-LABEL org.opencontainers.image.title="YOOX Cloud GCS API Portal"
+LABEL org.opencontainers.image.title="Cloud API Documentation Portal"
 LABEL org.opencontainers.image.vendor="YOOX"
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY index.html /usr/share/nginx/html/index.html

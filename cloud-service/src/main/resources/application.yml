@@ -62,7 +62,17 @@ mqtt:
 
 cloud-sdk:
   mqtt:
-    inbound-topic: sys/product/+/status,thing/product/+/requests,thing/product/+/state
+    # Subscribe immediately after the cloud MQTT connection is established.
+    # Per-device subscriptions are still applied on update_topo as an
+    # idempotent reconnect safeguard.
+    inbound-topic: >-
+      sys/product/+/status,
+      thing/product/+/requests,
+      thing/product/+/state,
+      thing/product/+/osd,
+      thing/product/+/services_reply,
+      thing/product/+/events,
+      thing/product/+/property/set_reply
 
 device:
   auto-registration:
@@ -109,7 +119,11 @@ cloud-api:
 # P0 runtime intentionally exposes RTSP only. The device cloud capability matrix
 # also contains RTMP and GB28181; they remain planned and are documented in API指南.
 livestream:
+  mediamtx-metrics-url: ${YOOX_MEDIAMTX_METRICS_URL:http://mediamtx:9998/metrics}
   url:
+    rtmp:
+      url: rtmp://${YOOX_PUBLIC_RTMP_HOST:127.0.0.1}:${YOOX_PUBLIC_RTMP_PORT:8554}/live/?user=${YOOX_RTSP_USERNAME:yoox-publisher}&pass=${YOOX_RTSP_PASSWORD:yoox_rtsp_change_me}
+      payUrl: ${YOOX_RTMP_WHEP_URL_TEMPLATE:/webrtc/live/%s/whep}
     rtsp:
       url: rtsp://${YOOX_RTSP_USERNAME:yoox-publisher}:${YOOX_RTSP_PASSWORD:yoox_rtsp_change_me}@${YOOX_PUBLIC_RTSP_HOST:127.0.0.1}:${YOOX_PUBLIC_RTSP_PORT:8554}/
       payUrl: ${YOOX_WHEP_URL_TEMPLATE:/webrtc/%s/whep}
