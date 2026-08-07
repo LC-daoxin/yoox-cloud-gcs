@@ -23,6 +23,9 @@ function topicFromMessage(msg: WsMessage): string | undefined {
     const gatewaySn = String(data.gateway_sn ?? data.gatewaySn ?? sn)
     return gatewaySn ? `thing/product/${gatewaySn}/state` : undefined
   }
+  if (msg.biz_code === 'drc_hsi_info_push') {
+    return sn ? `thing/product/${sn}/drc/up` : undefined
+  }
   if (!sn) return undefined
   if (['gateway_osd', 'dock_osd', 'device_osd'].includes(msg.biz_code)) {
     return `thing/product/${sn}/osd`

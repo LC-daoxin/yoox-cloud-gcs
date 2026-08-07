@@ -23,6 +23,7 @@ import com.yoox.service.manage.service.IUserService;
 import com.yoox.service.manage.service.IWorkspaceService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -49,6 +50,9 @@ public class UserServiceImpl implements IUserService {
 
     @Autowired
     private MqttPropertyConfiguration mqttPropertyConfiguration;
+
+    @Value("${app.mqtt-advertised-address:}")
+    private String mqttAdvertisedAddress;
 
     @Autowired
     private IWorkspaceService workspaceService;
@@ -104,7 +108,7 @@ public class UserServiceImpl implements IUserService {
         String token = JwtUtil.createToken(customClaim.convertToMap());
 
         UserDTO userDTO = entityConvertToDTO(userEntity);
-        userDTO.setMqttAddr(MqttPropertyConfiguration.getBasicMqttAddress());
+        userDTO.setMqttAddr(getAdvertisedMqttAddress());
         userDTO.setAccessToken(token);
         userDTO.setWorkspaceId(workspaceOpt.get().getWorkspaceId());
         return HttpResultResponse.success(userDTO);
@@ -227,7 +231,17 @@ public class UserServiceImpl implements IUserService {
                 .userType(entity.getUserType())
                 .mqttUsername(entity.getMqttUsername())
                 .mqttPassword(entity.getMqttPassword())
-                .mqttAddr(MqttPropertyConfiguration.getBasicMqttAddress())
+                .mqttAddr(getAdvertisedMqttAddress())
                 .build();
+    }
+
+    /**
+     * The service uses Docker's internal broker hostname, while remote devices
+     * must receive an address that is reachable outside the Compose network.
+     */
+    private String getAdvertisedMqttAddress() {
+        return StringUtils.hasText(mqttAdvertisedAddress)
+                ? mqttAdvertisedAddress.trim()
+                : MqttPropertyConfiguration.getBasicMqttAddress();
     }
 }

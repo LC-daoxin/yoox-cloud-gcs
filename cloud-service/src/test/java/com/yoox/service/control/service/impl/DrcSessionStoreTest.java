@@ -113,6 +113,39 @@ class DrcSessionStoreTest {
     }
 
     @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void activeLeaseCanBeAtomicallyReboundToFreshSameOwnerBrowserClient() {
+        String replacementClientId = "replacement-browser";
+        when(valueOperations.get("drc:owner:" + replacementClientId))
+                .thenReturn(WORKSPACE_ID + "\n" + USER_ID);
+        when(stringRedisTemplate.execute(
+                any(DefaultRedisScript.class), any(List.class),
+                anyString(), anyString(), anyString(), anyString(),
+                anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(1L);
+        DrcSession session = session("generation", CLIENT_ID);
+
+        assertTrue(sessionStore.rebindBrowserClient(session, replacementClientId));
+
+        assertEquals(replacementClientId, session.getBrowserClientId());
+        ArgumentCaptor<DefaultRedisScript> script =
+                ArgumentCaptor.forClass(DefaultRedisScript.class);
+        ArgumentCaptor<List> keys = ArgumentCaptor.forClass(List.class);
+        verify(stringRedisTemplate).execute(
+                script.capture(), keys.capture(),
+                eq("generation"), eq(CLIENT_ID), eq(replacementClientId),
+                eq("generation\n" + CLIENT_ID),
+                eq("generation\n" + replacementClientId),
+                eq(WORKSPACE_ID + "\n" + USER_ID),
+                eq(RedisConst.DRC_MODE_ALIVE_SECOND.toString()),
+                eq("browser_client_id"));
+        assertTrue(script.getValue().getScriptAsString().contains("redis.call('del', KEYS[9])"));
+        assertEquals("drc:client-session:" + CLIENT_ID, keys.getValue().get(3));
+        assertEquals("drc:client-session:" + replacementClientId, keys.getValue().get(4));
+        assertEquals(RedisConst.MQTT_ACL_PREFIX + CLIENT_ID, keys.getValue().get(8));
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void exitingStateIsReturnedAsRetryInsteadOfSuccessNoOp() {
         when(stringRedisTemplate.execute(

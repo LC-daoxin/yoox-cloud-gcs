@@ -6,8 +6,12 @@ import com.yoox.great.context.error.CommonErrorEnum;
 import com.yoox.great.context.model.CustomClaim;
 import com.yoox.great.context.response.HttpResultResponse;
 import com.yoox.great.mqtt.core.consume.MqttReply;
+import com.yoox.great.context.enums.device.DeviceDomainEnum;
 import com.yoox.great.mqtt.enums.device.ExitWaylineWhenRcLostEnum;
+import com.yoox.great.mqtt.enums.wayline.BarrierSwitchStateEnum;
+import com.yoox.great.mqtt.enums.wayline.MediaUploadMethodEnum;
 import com.yoox.great.mqtt.enums.wayline.TaskTypeEnum;
+import com.yoox.great.mqtt.enums.wayline.WaylinePrecisionTypeEnum;
 import com.yoox.great.mqtt.handle.events.TopicEventsRequest;
 import com.yoox.great.mqtt.handle.events.TopicEventsResponse;
 import com.yoox.great.mqtt.core.EventsReceiver;
@@ -242,6 +246,14 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
                     throw new SQLException("Failed to create wayline job.");
                 }
                 WaylineJobDTO waylineJob = waylineJobOpt.get();
+                // Autel 扩展参数不落库，创建后补到 DTO 上随 prepare 下发（条件任务经 Redis 序列化保留）
+                waylineJob.setWaylinePrecisionType(param.getWaylinePrecisionType());
+                waylineJob.setBarrierSwitchState(param.getBarrierSwitchState());
+                waylineJob.setTakeoffAltitude(param.getTakeoffAltitude());
+                waylineJob.setFirstWaypointSpeed(param.getFirstWaypointSpeed());
+                waylineJob.setReturnSpeed(param.getReturnSpeed());
+                waylineJob.setMediaUploadMethod(param.getMediaUploadMethod());
+                waylineJob.setAlternateLandPoint(param.getAlternateLandPoint());
                 // If it is a conditional task type, add conditions to the job parameters.
                 addConditions(waylineJob, param, beginTime, endTime);
 
@@ -286,8 +298,14 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
         return HttpResultResponse.success();
     }
 
-    private Boolean prepareFlightTask(WaylineJobDTO waylineJob) throws SQLException {
-        Optional<GetWaylineListResponse> waylineFile = waylineFileService.getWaylineByWaylineId(waylineJob.getWorkspaceId(), waylineJob.getFileId());
+    // RC 网关下航线任务需 device_list 寻址无人机，此处按网关域选择 *Rc 变体。
+    private boolean isRcGateway(String gatewaySn) {
+        return DeviceDomainEnum.REMOTER_CONTROL == deviceRedisService.getDeviceOnline(gatewaySn)
+                .map(DeviceDTO::getDomain)
+                .orElse(null);
+    }
+
+    private Boolean prepareFlightTask(WaylineJobDTO waylineJob) throws SQLException {        Optional<GetWaylineListResponse> waylineFile = waylineFileService.getWaylineByWaylineId(waylineJob.getWorkspaceId(), waylineJob.getFileId());
         if (waylineFile.isEmpty()) {
             throw new SQLException("Wayline file doesn't exist.");
         }
@@ -300,6 +318,18 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
                 .setRthAltitude(waylineJob.getRthAltitude())
                 .setOutOfControlAction(waylineJob.getOutOfControlAction())
                 .setExitWaylineWhenRcLost(ExitWaylineWhenRcLostEnum.EXECUTE_RC_LOST_ACTION)
+                // Autel 航线管理扩展字段；未指定时精度默认 GPS、避障默认打开、媒体默认落地上传、备降点标记未配置
+                .setWaylinePrecisionType(Objects.requireNonNullElse(
+                        waylineJob.getWaylinePrecisionType(), WaylinePrecisionTypeEnum.GPS))
+                .setBarrierSwitchState(Objects.requireNonNullElse(
+                        waylineJob.getBarrierSwitchState(), BarrierSwitchStateEnum.ENABLE))
+                .setTakeoffAltitude(waylineJob.getTakeoffAltitude())
+                .setFirstWaypointSpeed(waylineJob.getFirstWaypointSpeed())
+                .setReturnSpeed(waylineJob.getReturnSpeed())
+                .setMediaUploadMethod(Objects.requireNonNullElse(
+                        waylineJob.getMediaUploadMethod(), MediaUploadMethodEnum.AFTER_LANDING))
+                .setAlternateLandPoint(Objects.requireNonNullElse(
+                        waylineJob.getAlternateLandPoint(), new AlternateLandPoint().setIsConfigured(0)))
                 .setFile(new FlighttaskFile()
                         .setUrl(url.toString())
                         .setFingerprint(waylineFile.get().getSign()));
@@ -312,8 +342,11 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
             flightTask.setExecutableConditions(waylineJob.getConditions().getExecutableConditions());
         }
 
-        TopicServicesResponse<ServicesReplyData> serviceReply = abstractWaylineService.flighttaskPrepare(
-                SDKManager.getDeviceSDK(waylineJob.getDockSn()), flightTask);
+        TopicServicesResponse<ServicesReplyData> serviceReply = isRcGateway(waylineJob.getDockSn())
+                ? abstractWaylineService.flighttaskPrepareRc(
+                        SDKManager.getDeviceSDK(waylineJob.getDockSn()), flightTask)
+                : abstractWaylineService.flighttaskPrepare(
+                        SDKManager.getDeviceSDK(waylineJob.getDockSn()), flightTask);
         if (!serviceReply.getData().getResult().isSuccess()) {
             log.info("Prepare task ====> Error code: {}", serviceReply.getData().getResult());
             waylineJobService.updateJob(WaylineJobDTO.builder()
@@ -344,8 +377,11 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
 
         WaylineJobDTO job = waylineJob.get();
 
-        TopicServicesResponse<ServicesReplyData> serviceReply = abstractWaylineService.flighttaskExecute(
-                SDKManager.getDeviceSDK(job.getDockSn()), new FlighttaskExecuteRequest().setFlightId(jobId));
+        TopicServicesResponse<ServicesReplyData> serviceReply = isRcGateway(job.getDockSn())
+                ? abstractWaylineService.flighttaskExecuteRc(
+                        SDKManager.getDeviceSDK(job.getDockSn()), new FlighttaskExecuteRequest().setFlightId(jobId))
+                : abstractWaylineService.flighttaskExecute(
+                        SDKManager.getDeviceSDK(job.getDockSn()), new FlighttaskExecuteRequest().setFlightId(jobId));
         if (!serviceReply.getData().getResult().isSuccess()) {
             log.info("Execute job ====> Error: {}", serviceReply.getData().getResult());
             waylineJobService.updateJob(WaylineJobDTO.builder()
@@ -396,8 +432,11 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
             throw new RuntimeException("Dock is offline.");
         }
 
-        TopicServicesResponse<ServicesReplyData> serviceReply = abstractWaylineService.flighttaskUndo(SDKManager.getDeviceSDK(dockSn),
-                new FlighttaskUndoRequest().setFlightIds(jobIds));
+        TopicServicesResponse<ServicesReplyData> serviceReply = isRcGateway(dockSn)
+                ? abstractWaylineService.flighttaskUndoRc(SDKManager.getDeviceSDK(dockSn),
+                        new FlighttaskUndoRequest().setFlightIds(jobIds))
+                : abstractWaylineService.flighttaskUndo(SDKManager.getDeviceSDK(dockSn),
+                        new FlighttaskUndoRequest().setFlightIds(jobIds));
         if (!serviceReply.getData().getResult().isSuccess()) {
             log.info("Cancel job ====> Error: {}", serviceReply.getData().getResult());
             throw new RuntimeException("Failed to cancel the wayline job of " + dockSn);
@@ -464,7 +503,9 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
             return;
         }
 
-        TopicServicesResponse<ServicesReplyData> reply = abstractWaylineService.flighttaskPause(SDKManager.getDeviceSDK(dockSn));
+        TopicServicesResponse<ServicesReplyData> reply = isRcGateway(dockSn)
+                ? abstractWaylineService.flighttaskPauseRc(SDKManager.getDeviceSDK(dockSn))
+                : abstractWaylineService.flighttaskPause(SDKManager.getDeviceSDK(dockSn));
         if (!reply.getData().getResult().isSuccess()) {
             throw new RuntimeException("Failed to pause wayline job. Error: " + reply.getData().getResult());
         }
@@ -478,7 +519,9 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
             waylineRedisService.setRunningWaylineJob(dockSn, runningDataOpt.get());
             return;
         }
-        TopicServicesResponse<ServicesReplyData> reply = abstractWaylineService.flighttaskRecovery(SDKManager.getDeviceSDK(dockSn));
+        TopicServicesResponse<ServicesReplyData> reply = isRcGateway(dockSn)
+                ? abstractWaylineService.flighttaskRecoveryRc(SDKManager.getDeviceSDK(dockSn))
+                : abstractWaylineService.flighttaskRecovery(SDKManager.getDeviceSDK(dockSn));
         if (!reply.getData().getResult().isSuccess()) {
             throw new RuntimeException("Failed to resume wayline job. Error: " + reply.getData().getResult());
         }

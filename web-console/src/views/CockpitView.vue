@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import mqtt, { type MqttClient } from 'mqtt'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ApiError, del, get, post, put } from '../services/api'
+import { ApiError, del, get, listFrom, post, put } from '../services/api'
 import { WhepPlayer, type WhepState } from '../services/whep'
 import { deviceWs } from '../services/ws'
 import { loadAMap, getAmapKey } from '../services/amap'
@@ -20,6 +20,11 @@ interface Broker { address: string; username: string; password: string; client_i
 interface Acl { pub: string[]; sub: string[] }
 interface PendingDrcExit {
   clientId: string
+  dockSn: string
+  workspaceId: string
+  createdAt: number
+}
+interface DrcResumeMarker {
   dockSn: string
   workspaceId: string
   createdAt: number
@@ -80,6 +85,22 @@ interface HmsAlarm {
   createTime?: string
 }
 
+interface CockpitWayline {
+  id: string
+  name: string
+  drone_model_key?: string
+  payload_model_keys?: string[]
+  template_types?: number[]
+  update_time?: number
+}
+
+interface MapTargetValue {
+  latitude: number
+  longitude: number
+  height: number
+  maxSpeed: number
+}
+
 type LiveQuality = 2 | 3
 type CockpitLayout = 'video' | 'balanced' | 'map'
 type OperationPanelState = 'ground' | 'airborne' | 'task'
@@ -91,6 +112,8 @@ type DrcLandingMethod = 'drc_emergency_landing' | 'drc_force_landing'
 const CONTROL_REQUEST_OPTIONS = { timeoutMs: 15_000 } as const
 const DRC_CONTROL_INTERVAL_MS = 100
 const PENDING_DRC_EXIT_STORAGE_KEY = 'yoox.cockpit.pending-drc-exit'
+const DRC_RESUME_STORAGE_KEY = 'yoox.cockpit.drc-resume'
+const DRC_RESUME_MAX_AGE_MS = 5 * 60_000
 
 const session = useSessionStore()
 const devices     = ref<Device[]>([])
@@ -123,6 +146,7 @@ const videoRetrying = ref(false)
 const flightAuthorityPending = ref(false)
 const flightControlSource = ref<ControlSource>('')
 const pendingDrcExit = ref<PendingDrcExit | undefined>(readPendingDrcExit())
+const drcResumeMarker = ref<DrcResumeMarker | undefined>(readDrcResumeMarker())
 const payloadAuthorityPending = ref(false)
 const payloadAuthorityKeys = reactive(new Set<string>())
 const payloadPressed = reactive(new Set<PayloadShortcutCode>())
@@ -164,10 +188,16 @@ const lastHeartbeatAckAt = ref(0)
 const emergencyStopPending = ref(false)
 const drcLandingPending = ref<DrcLandingMethod | ''>('')
 const returnHomePending = ref(false)
+const returnHomeCancelPending = ref(false)
 const mapTargetMode = ref<MapTargetMode>()
 const mapTargetPanelOpen = ref(false)
 const mapTargetPending = ref(false)
-const mapTarget = reactive({ latitude: 0, longitude: 0, height: 50, maxSpeed: 5 })
+const mapTarget = reactive({ latitude: 0, longitude: 0, height: 10, maxSpeed: 5 })
+const mapTargetDrafts = reactive<Record<MapTargetMode, MapTargetValue>>({
+  flyto: { latitude: 0, longitude: 0, height: 10, maxSpeed: 5 },
+  lookAt: { latitude: 0, longitude: 0, height: 10, maxSpeed: 5 }
+})
+const pointFlightTarget = reactive({ latitude: 0, longitude: 0, height: 0 })
 const recording    = ref(false)
 const recordingSeconds = ref(0)
 const reportedLive = ref(false)
@@ -185,6 +215,23 @@ const latestHms    = ref<HmsAlarm>()
 const hmsHighestLevel = computed(() => hmsAlarms.value.reduce(
   (highest, alarm) => Math.max(highest, Number(alarm.level) || 0), 0))
 const shortcutHelpOpen = ref(false)
+const waylineTaskOpen = ref(false)
+const waylineTaskLoading = ref(false)
+const waylineTaskSubmitting = ref(false)
+const waylineTaskError = ref('')
+const waylineTaskNotice = ref('')
+const waylineTaskDockSn = ref('')
+const cockpitWaylines = ref<CockpitWayline[]>([])
+const selectedWaylineId = ref('')
+const waylineTaskConfirmed = ref(false)
+const waylineTaskForm = reactive({
+  rthAltitude: 100,
+  minBatteryCapacity: 60,
+  barrierSwitchState: 1,
+  takeoffAltitude: 100,
+  firstWaypointSpeed: 10,
+  returnSpeed: 10
+})
 const logPaused    = ref(false)
 const logTransport = ref<'ALL' | InteractionTransport>('ALL')
 const logQuery     = ref('')
@@ -205,6 +252,12 @@ const telemetry    = reactive({
   hsiUpdatedAt: 0,
   measureReported: false, measureState: -1, measureDistance: -1,
   measureLatitude: 0, measureLongitude: 0, measureAltitude: 0
+})
+const obstacleSegments = reactive({
+  front: [-1, -1, -1, -1],
+  rear: [-1, -1, -1, -1],
+  left: [-1, -1, -1],
+  right: [-1, -1, -1]
 })
 // 左侧设备栏折叠状态：点击把手在展开/收起间切换，列宽与内容做缓动动画
 const railCollapsed = ref(false)
@@ -261,6 +314,8 @@ let videoConnectingSince = 0
 let lastAutoVideoRetryAt = 0
 let cameraActionTipTimer = 0
 let errorDismissTimer = 0
+let waylineTaskNoticeTimer = 0
+let waylineTaskLoadSeq = 0
 let hmsNoticeTimer = 0
 let hmsLoadSeq = 0
 let pointFlightNoticeTimer = 0
@@ -325,12 +380,52 @@ let drcLandingRequestId = ''
 let drcLandingGatewaySn = ''
 let drcLandingTimer = 0
 let componentExiting = false
+let pageUnloading = false
+
+function readDrcResumeMarker(): DrcResumeMarker | undefined {
+  try {
+    const raw = window.sessionStorage.getItem(DRC_RESUME_STORAGE_KEY)
+    if (!raw) return undefined
+    const value = JSON.parse(raw) as Partial<DrcResumeMarker>
+    if (!value.dockSn || value.workspaceId !== session.workspaceId ||
+        !Number.isFinite(value.createdAt) ||
+        Date.now() - Number(value.createdAt) > DRC_RESUME_MAX_AGE_MS) {
+      window.sessionStorage.removeItem(DRC_RESUME_STORAGE_KEY)
+      return undefined
+    }
+    return value as DrcResumeMarker
+  } catch {
+    return undefined
+  }
+}
+
+function rememberDrcResume(resumeDockSn: string) {
+  drcResumeMarker.value = {
+    dockSn: resumeDockSn,
+    workspaceId: session.workspaceId,
+    createdAt: Date.now()
+  }
+}
+
+function clearDrcResume() {
+  drcResumeMarker.value = undefined
+}
+
+watch(drcResumeMarker, (value) => {
+  try {
+    if (value) window.sessionStorage.setItem(DRC_RESUME_STORAGE_KEY, JSON.stringify(value))
+    else window.sessionStorage.removeItem(DRC_RESUME_STORAGE_KEY)
+  } catch { /* sessionStorage 不可用时退化为手动重新进入 DRC */ }
+}, { immediate: true })
 
 // 地图
 const mapContainer = ref<HTMLDivElement>()
 const mapSatellite = ref(true)
 const hasMapKey    = computed(() => Boolean(getAmapKey()))
-let AMapRef: any, map: any, droneMarker: any, remoteControllerMarker: any, droneTrail: any, mapTargetMarker: any, measuredTargetMarker: any
+let AMapRef: any, map: any, droneMarker: any, remoteControllerMarker: any, droneTrail: any, mapTargetMarker: any, pointFlightTargetMarker: any, measuredTargetMarker: any
+// 分开记录坐标与内容，坐标小幅变化时只移动标记，不重建标签 DOM。
+let measuredTargetPositionKey = ''
+let measuredTargetContentKey = ''
 // 用户拖拽/缩放地图后停止自动跟随，只有主动点击“定位飞行器”才恢复。
 let userInteracting = false
 const trailPts: [number, number][] = []
@@ -375,6 +470,7 @@ const selectedAircraftSn = computed(() => {
     dock?.device_sn ||
     ''
 })
+const selectedAircraftOnline = computed(() => isAircraftOnlineForDock(selectedDock.value))
 
 function dockAircraftSn(dock: Device) {
   return dock.child_device_sn ||
@@ -389,6 +485,11 @@ function aircraftDeviceForDock(dock?: Device) {
   const aircraftSn = dockAircraftSn(dock)
   return devices.value.find((device) => device.device_sn === aircraftSn)
     ?? (dock.children?.device_sn === aircraftSn ? dock.children : undefined)
+}
+
+function isAircraftOnlineForDock(dock?: Device) {
+  const aircraft = aircraftDeviceForDock(dock)
+  return Boolean(aircraft && isOnlineDevice(aircraft))
 }
 
 function dockModelName(dock: Device) {
@@ -418,6 +519,15 @@ function dockCallSign(dock: Device) {
 
 function dockCardStats(dock: Device): DeviceCardTelemetry {
   const runtime = deviceCardTelemetry[dock.device_sn]
+  if (!isAircraftOnlineForDock(dock)) {
+    return {
+      battery: -1,
+      rcBattery: runtime?.rcBattery ?? -1,
+      remainFlightTime: -1,
+      modeCode: -1,
+      rcSignal: runtime?.rcSignal ?? Number(dock.signal_quality ?? dock.sdr_quality ?? 0)
+    }
+  }
   if (runtime) return runtime
   return {
     battery: Number(dock.battery_capacity ?? dock.capacity_percent ?? 0),
@@ -429,13 +539,15 @@ function dockCardStats(dock: Device): DeviceCardTelemetry {
 }
 
 function dockStatusLabel(dock: Device) {
+  if (!isAircraftOnlineForDock(dock)) return '离线'
   return modeLabel(dockCardStats(dock).modeCode)
 }
 
 function dockStatusTone(dock: Device) {
+  if (!isAircraftOnlineForDock(dock)) return 'offline'
   const modeCode = dockCardStats(dock).modeCode
   if (modeCode < 0 || modeCode === 14) return 'offline'
-  return [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18, 20, 39].includes(modeCode)
+  return [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18, 20, 37, 39].includes(modeCode)
     ? 'flying'
     : 'standby'
 }
@@ -448,7 +560,7 @@ function signalBars(signal: number) {
   return signal > 0 ? 1 : 0
 }
 
-const sources = computed<CockpitSource[]>(() => capacity.value
+const sources = computed<CockpitSource[]>(() => (selectedAircraftOnline.value ? capacity.value : [])
   .filter((dev) => selectedDeviceSns.value.has(dev.sn))
   .flatMap((dev) => (dev.cameras_list ?? []).flatMap((cam) =>
     (cam.videos_list ?? []).map((video) => ({
@@ -462,6 +574,10 @@ const sources = computed<CockpitSource[]>(() => capacity.value
     }))
   )))
 const selectedSource = computed(() => sources.value.find((source) => source.key === selectedVideoId.value))
+const selectedMeasurementPayloadKey = computed(() => {
+  const source = selectedSource.value
+  return source ? `${source.deviceSn}/${source.cameraIndex}` : ''
+})
 const selectedPayloadSn = computed(() => {
   const aircraft = aircraftDeviceForDock(selectedDock.value)
   const payloads = (aircraft?.payloads_list ?? aircraft?.payloads ?? []) as Record<string, unknown>[]
@@ -511,6 +627,7 @@ const drcLinkReady = computed(() =>
   drcConnectionState.value === 'online' &&
   hasFlightAuthority.value &&
   Boolean(selectedDock.value) &&
+  selectedAircraftOnline.value &&
   Boolean(drcAircraftSn) &&
   selectedAircraftSn.value === drcAircraftSn &&
   !dockSelectionPending.value &&
@@ -532,6 +649,13 @@ const mapTargetValid = computed(() =>
   Number.isFinite(mapTarget.longitude) && mapTarget.longitude >= -180 && mapTarget.longitude <= 180 &&
   !(mapTarget.latitude === 0 && mapTarget.longitude === 0) &&
   Number.isFinite(mapTarget.height) && mapTarget.height >= 2 && mapTarget.height <= 10000)
+const pointFlightMapActive = computed(() =>
+  telemetry.pointFlightActive &&
+  (pointFlightProgress.value?.kind === 'flyto' || telemetry.modeCode === 37))
+const pointFlightTargetValid = computed(() =>
+  Number.isFinite(pointFlightTarget.latitude) && pointFlightTarget.latitude >= -90 && pointFlightTarget.latitude <= 90 &&
+  Number.isFinite(pointFlightTarget.longitude) && pointFlightTarget.longitude >= -180 && pointFlightTarget.longitude <= 180 &&
+  !(pointFlightTarget.latitude === 0 && pointFlightTarget.longitude === 0))
 const remoteControllerCoordinatesValid = computed(() =>
   Number.isFinite(telemetry.rcLatitude) &&
   telemetry.rcLatitude >= -90 && telemetry.rcLatitude <= 90 &&
@@ -565,35 +689,78 @@ const measureTone = computed(() => {
   if ([2, 3].includes(telemetry.measureState)) return 'warn'
   return telemetry.measureState === 1 ? 'active' : 'idle'
 })
-const obstacleHudVisible = computed(() => operationPanelState.value !== 'ground')
-const obstacleHudReady = computed(() =>
-  active.value && telemetry.hsiUpdatedAt > 0 && telemetry.radarEnabled === true)
-const obstacleHudStateLabel = computed(() => {
-  if (!active.value) return '进入 DRC 后获取避障信息'
-  if (telemetry.radarEnabled === false) return '避障已关闭'
-  if (!obstacleHudReady.value) return '等待避障数据'
-  return '避障感知'
-})
-
 // 仅用于视频 HUD 的距离分级，不代表飞控的制动阈值。
 function obstacleRiskClass(distance: number) {
-  if (distance < 0) return 'unknown'
+  if (distance <= 0) return 'unknown'
   if (distance <= 3) return 'danger'
   if (distance <= 6) return 'warning'
   if (distance <= 10) return 'caution'
   return 'clear'
 }
+function nearestObstacleDistance(distances: number[]) {
+  const positiveDistances = distances.filter((distance) => distance > 0)
+  return positiveDistances.length > 0 ? Math.min(...positiveDistances) : -1
+}
+const nearestObstacle = computed(() => ({
+  front: nearestObstacleDistance(obstacleSegments.front),
+  rear: nearestObstacleDistance(obstacleSegments.rear),
+  left: nearestObstacleDistance(obstacleSegments.left),
+  right: nearestObstacleDistance(obstacleSegments.right)
+}))
 const operationPanelState = computed<OperationPanelState>(() => {
   // 面板只能跟随飞机 OSD 状态。HTTP 指令已受理或任务状态未知，并不代表
   // 飞机已经离地；否则待机中的飞机会被错误切换到任务面板。
-  if ([5, 20, 39].includes(telemetry.modeCode)) return 'task'
+  if ([5, 20, 37, 39].includes(telemetry.modeCode)) return 'task'
   if ([3, 4, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18].includes(telemetry.modeCode)) return 'airborne'
   // 未知、离线、升级和起飞准备状态一律按地面处理，禁止非零摇杆输出；
   // DRC 通信与心跳链路本身仍可在待机时预先建立。
   return 'ground'
 })
+const obstacleHudVisible = computed(() =>
+  active.value && operationPanelState.value !== 'ground')
+const obstacleHudReady = computed(() =>
+  obstacleHudVisible.value && telemetry.hsiUpdatedAt > 0 && telemetry.radarEnabled === true)
+const obstacleHudStateLabel = computed(() => {
+  if (telemetry.radarEnabled === false) return '避障已关闭'
+  return '等待避障数据'
+})
+const selectedCockpitWayline = computed(() =>
+  cockpitWaylines.value.find((wayline) => wayline.id === selectedWaylineId.value))
+const waylineTaskBattery = computed(() => {
+  const dock = selectedDock.value
+  return dock ? dockCardStats(dock).battery : -1
+})
+const waylineTaskFormValid = computed(() =>
+  Number.isFinite(waylineTaskForm.rthAltitude) && waylineTaskForm.rthAltitude >= 20 && waylineTaskForm.rthAltitude <= 500 &&
+  Number.isFinite(waylineTaskForm.minBatteryCapacity) && waylineTaskForm.minBatteryCapacity >= 50 && waylineTaskForm.minBatteryCapacity <= 90 &&
+  Number.isFinite(waylineTaskForm.takeoffAltitude) && waylineTaskForm.takeoffAltitude >= 1 && waylineTaskForm.takeoffAltitude <= 1500 &&
+  Number.isFinite(waylineTaskForm.firstWaypointSpeed) && waylineTaskForm.firstWaypointSpeed >= 1 && waylineTaskForm.firstWaypointSpeed <= 25 &&
+  Number.isFinite(waylineTaskForm.returnSpeed) && waylineTaskForm.returnSpeed >= 1 && waylineTaskForm.returnSpeed <= 25)
+const waylineTaskBlockedReason = computed(() => {
+  if (!selectedDock.value || selectedDock.value.device_sn !== waylineTaskDockSn.value) {
+    return '当前执行设备已离线或发生变化，请关闭弹窗后重新选择'
+  }
+  if (!selectedAircraftOnline.value) return '遥控器未连接飞机，不能执行航线任务'
+  if (dockSelectionPending.value) return '正在切换设备，请稍候'
+  if (pendingDrcExit.value) return '上次退出 DRC 尚未确认，请先完成退出'
+  if (drcEnterPending.value || drcReconnectPending.value || state.value === 'connecting') {
+    return 'DRC 状态正在切换，请稍候'
+  }
+  if (operationPanelState.value === 'task') return '当前飞机已有任务正在执行'
+  if (operationPanelState.value === 'airborne') return '飞机已在空中，不能创建立即起飞航线任务'
+  if (telemetry.pointFlightActive) return '当前存在指点飞行任务，请先结束任务'
+  if (!selectedCockpitWayline.value) return '请选择要执行的航线'
+  if (!waylineTaskFormValid.value) return '请检查任务参数是否在允许范围内'
+  const battery = waylineTaskBattery.value
+  if (battery > 0 && battery < waylineTaskForm.minBatteryCapacity) {
+    return `当前无人机电量 ${battery.toFixed(0)}%，低于任务最低电量 ${waylineTaskForm.minBatteryCapacity}%`
+  }
+  if (!waylineTaskConfirmed.value) return '请先确认飞行安全检查项'
+  return ''
+})
 const drcBlockedReason = computed(() => {
   if (!selectedDock.value || dockSelectionPending.value) return '请选择在线设备'
+  if (!selectedAircraftOnline.value) return '遥控器未连接飞机'
   if (pendingDrcExit.value) return '上次退出 DRC 未确认：请先重试退出'
   if (emergencyStopPending.value) return '刹车悬停指令确认中，控制输出已暂停'
   if (drcLandingPending.value) return '降落指令确认中，控制输出已暂停'
@@ -624,7 +791,7 @@ const drcActionLabel = computed(() => {
 })
 const drcActionDisabled = computed(() => {
   if (pendingDrcExit.value) return state.value === 'connecting'
-  if (!selectedDock.value || dockSelectionPending.value || drcReconnectPending.value || drcEnterPending.value) return true
+  if (!selectedDock.value || !selectedAircraftOnline.value || dockSelectionPending.value || drcReconnectPending.value || drcEnterPending.value) return true
   if (active.value) return false
   return !hasFlightAuthority.value || state.value === 'connecting'
 })
@@ -740,6 +907,7 @@ function syncSelections() {
       pointFlightProgress.value = undefined
       resetPointFlightTracking()
       flyToStopPending.value = false
+      clearPointFlightTargetMarker(true)
       Object.assign(telemetry, {
         altitude: 0, height: 0, speed: 0, verticalSpeed: 0, homeDistance: 0,
         satellites: 0, rtkNumber: 0, gpsQuality: 0, gpsFixed: 0, battery: 0,
@@ -924,6 +1092,10 @@ async function selectDock(sn: string) {
       map?.remove(mapTargetMarker)
       mapTargetMarker = undefined
     }
+    clearPointFlightTargetMarker(true)
+    Object.assign(mapTargetDrafts.flyto, { latitude: 0, longitude: 0, height: 10, maxSpeed: 5 })
+    Object.assign(mapTargetDrafts.lookAt, { latitude: 0, longitude: 0, height: 10, maxSpeed: 5 })
+    Object.assign(mapTarget, mapTargetDrafts.flyto)
     Object.assign(telemetry, {
       altitude: 0, height: 0, speed: 0, verticalSpeed: 0, homeDistance: 0,
       satellites: 0, rtkNumber: 0, gpsQuality: 0, gpsFixed: 0, battery: 0,
@@ -939,6 +1111,7 @@ async function selectDock(sn: string) {
       measureReported: false, measureState: -1, measureDistance: -1,
       measureLatitude: 0, measureLongitude: 0, measureAltitude: 0
     })
+    resetObstacleDistances()
     clearMeasuredTargetMarker()
     clearRemoteControllerMarker()
     syncSelections()
@@ -948,14 +1121,23 @@ async function selectDock(sn: string) {
   }
 }
 
-watch(selectedVideoId, async (videoId, previousVideoId) => {
-  payloadZoomTarget.value = undefined
-  hydrateAuthorityState()
+let lastMeasurementPayloadKey = ''
+watch(selectedMeasurementPayloadKey, (payloadKey) => {
+  // 同一负载切换广角/变焦/红外视频不应清空测距结果；只有真正切换负载时重置。
+  if (!payloadKey) return
+  const payloadChanged = Boolean(lastMeasurementPayloadKey && payloadKey !== lastMeasurementPayloadKey)
+  lastMeasurementPayloadKey = payloadKey
+  if (!payloadChanged) return
   Object.assign(telemetry, {
     measureReported: false, measureState: -1, measureDistance: -1,
     measureLatitude: 0, measureLongitude: 0, measureAltitude: 0
   })
   clearMeasuredTargetMarker()
+})
+
+watch(selectedVideoId, async (videoId, previousVideoId) => {
+  payloadZoomTarget.value = undefined
+  hydrateAuthorityState()
   if (!videoId || videoId === previousVideoId) return
   await nextTick()
   if (videoState.value === 'idle') void startVideo()
@@ -963,6 +1145,45 @@ watch(selectedVideoId, async (videoId, previousVideoId) => {
 
 watch(hasPayloadAuthority, (hasAuthority) => {
   if (!hasAuthority) releasePayloadControls()
+})
+
+watch(selectedAircraftOnline, (online, previousOnline) => {
+  if (online) {
+    if (telemetry.latitude !== 0 || telemetry.longitude !== 0) {
+      updateMap(telemetry.longitude, telemetry.latitude, telemetry.heading)
+    }
+    void loadPointFlightState(dockSn.value)
+    return
+  }
+  if (!previousOnline) return
+
+  releaseKeys()
+  releasePayloadControls()
+  flightControlSource.value = ''
+  for (const key of [...payloadAuthorityKeys]) {
+    if (key.startsWith(`${dockSn.value}/`)) payloadAuthorityKeys.delete(key)
+  }
+  droneMarker?.hide?.()
+  reportedLive.value = false
+  videoError.value = '遥控器已与飞机断开连接，等待飞机重新上线'
+  void stopVideo()
+  Object.assign(telemetry, {
+    altitude: 0, height: 0, speed: 0, verticalSpeed: 0, homeDistance: 0,
+    satellites: 0, rtkNumber: 0, gpsQuality: 0, gpsFixed: 0, battery: 0,
+    latitude: 0, longitude: 0, remainFlightTime: -1, modeCode: -1,
+    radarEnabled: undefined, hsiUpdatedAt: 0
+  })
+  resetObstacleTelemetry()
+  if (waylineTaskOpen.value) waylineTaskError.value = '遥控器已与飞机断开，航线任务不能执行'
+  if (active.value || state.value === 'connecting') {
+    void leaveDrc('aircraft-offline').catch((reason) => {
+      error.value = reason instanceof Error ? reason.message : '飞机断开后退出 DRC 失败'
+    })
+  }
+})
+
+watch(pointFlightMapActive, () => {
+  updatePointFlightTargetMarker()
 })
 
 // 待机状态允许预先建立 DRC/心跳链路，但绝不允许非零摇杆输出。落地或 OSD
@@ -1000,6 +1221,11 @@ async function loadCockpitData() {
   ])
   devices.value = deviceData
   capacity.value = liveData
+  const resumableDockSn = drcResumeMarker.value?.dockSn
+  if (resumableDockSn && deviceData.some((device) =>
+    device.device_sn === resumableDockSn && isGatewayDevice(device) && isOnlineDevice(device))) {
+    dockSn.value = resumableDockSn
+  }
   syncSelections()
   await loadPointFlightState(dockSn.value)
 }
@@ -1072,10 +1298,17 @@ function updateRemoteControllerMarker() {
 
 function targetIcon(mode: MapTargetMode) {
   const color = mode === 'flyto' ? '#3fa9ff' : '#ffb04f'
-  const label = mode === 'flyto' ? '指点飞行' : 'Look At'
+  const label = mode === 'flyto' ? '指点飞行目标' : 'Look At 目标'
   return `<div style="position:relative;width:18px;height:18px;filter:drop-shadow(0 3px 8px rgba(0,0,0,.7))">
     <span style="position:absolute;left:50%;bottom:calc(100% + 4px);transform:translateX(-50%);padding:3px 7px;border:1px solid ${color};border-radius:5px;color:#fff;background:rgba(4,10,18,.88);font:10px sans-serif;white-space:nowrap">${label}</span>
     <span style="position:absolute;inset:0;box-sizing:border-box;border:3px solid #fff;border-radius:50%;background:${color}"></span>
+  </div>`
+}
+
+function pointFlightTargetIcon() {
+  return `<div style="position:relative;width:22px;height:22px;filter:drop-shadow(0 3px 9px rgba(0,0,0,.8))">
+    <span style="position:absolute;left:50%;bottom:calc(100% + 5px);transform:translateX(-50%);padding:4px 8px;border:1px solid #35d6a4;border-radius:5px;color:#dffff5;background:rgba(3,20,17,.94);font:700 10px sans-serif;white-space:nowrap">指点飞行执行中</span>
+    <span style="position:absolute;inset:0;box-sizing:border-box;border:3px solid #eafff8;border-radius:50%;background:#35d6a4;box-shadow:0 0 0 5px rgba(53,214,164,.16)"></span>
   </div>`
 }
 
@@ -1089,6 +1322,8 @@ function measuredTargetIcon() {
 }
 
 function clearMeasuredTargetMarker() {
+  measuredTargetPositionKey = ''
+  measuredTargetContentKey = ''
   if (!measuredTargetMarker) return
   map?.remove(measuredTargetMarker)
   measuredTargetMarker = undefined
@@ -1101,34 +1336,92 @@ function updateMeasuredTargetMarker() {
     return
   }
   const [gLng, gLat] = wgs84ToGcj02(telemetry.measureLongitude, telemetry.measureLatitude)
+  const positionKey = `${gLng.toFixed(6)},${gLat.toFixed(6)}`
+  const contentKey = telemetry.measureDistance > 0 ? telemetry.measureDistance.toFixed(1) : ''
   if (!measuredTargetMarker) {
     measuredTargetMarker = new AMapRef.Marker({
       anchor: 'center', zIndex: 250,
       content: measuredTargetIcon(), position: [gLng, gLat]
     })
     map.add(measuredTargetMarker)
-  } else {
+    measuredTargetPositionKey = positionKey
+    measuredTargetContentKey = contentKey
+    return
+  }
+  if (positionKey !== measuredTargetPositionKey) {
+    measuredTargetPositionKey = positionKey
     measuredTargetMarker.setPosition([gLng, gLat])
+  }
+  if (contentKey !== measuredTargetContentKey) {
+    measuredTargetContentKey = contentKey
     measuredTargetMarker.setContent(measuredTargetIcon())
   }
 }
 
 function updateMapTargetMarker() {
-  if (!map || !AMapRef || !mapTargetMode.value || !mapTargetValid.value) return
+  const mode = mapTargetMode.value
+  if (mode) Object.assign(mapTargetDrafts[mode], mapTarget)
+  if (!map || !AMapRef || !mode || !mapTargetValid.value) {
+    if (mapTargetMarker) {
+      map?.remove(mapTargetMarker)
+      mapTargetMarker = undefined
+    }
+    return
+  }
   const [gLng, gLat] = wgs84ToGcj02(mapTarget.longitude, mapTarget.latitude)
   if (!mapTargetMarker) {
     mapTargetMarker = new AMapRef.Marker({
       anchor: 'center', zIndex: 260,
-      content: targetIcon(mapTargetMode.value), position: [gLng, gLat]
+      content: targetIcon(mode), position: [gLng, gLat]
     })
     map.add(mapTargetMarker)
   } else {
     mapTargetMarker.setPosition([gLng, gLat])
-    mapTargetMarker.setContent(targetIcon(mapTargetMode.value))
+    mapTargetMarker.setContent(targetIcon(mode))
   }
 }
 
+function clearPointFlightTargetMarker(resetTarget = false) {
+  if (pointFlightTargetMarker) {
+    map?.remove(pointFlightTargetMarker)
+    pointFlightTargetMarker = undefined
+  }
+  if (resetTarget) Object.assign(pointFlightTarget, { latitude: 0, longitude: 0, height: 0 })
+}
+
+function updatePointFlightTargetMarker() {
+  if (!map || !AMapRef || !pointFlightMapActive.value || !pointFlightTargetValid.value) {
+    if (!pointFlightMapActive.value) clearPointFlightTargetMarker()
+    return
+  }
+  const [gLng, gLat] = wgs84ToGcj02(pointFlightTarget.longitude, pointFlightTarget.latitude)
+  if (!pointFlightTargetMarker) {
+    pointFlightTargetMarker = new AMapRef.Marker({
+      anchor: 'center', zIndex: 270,
+      content: pointFlightTargetIcon(), position: [gLng, gLat]
+    })
+    map.add(pointFlightTargetMarker)
+  } else {
+    pointFlightTargetMarker.setPosition([gLng, gLat])
+    pointFlightTargetMarker.setContent(pointFlightTargetIcon())
+  }
+}
+
+function locatePointFlightTarget() {
+  if (!map || !pointFlightTargetValid.value) return
+  updatePointFlightTargetMarker()
+  const [gLng, gLat] = wgs84ToGcj02(pointFlightTarget.longitude, pointFlightTarget.latitude)
+  userInteracting = true
+  map.setCenter([gLng, gLat])
+}
+
 function selectMapTarget(mode: MapTargetMode) {
+  if (mapTargetMode.value) Object.assign(mapTargetDrafts[mapTargetMode.value], mapTarget)
+  if (mode === 'flyto' && pointFlightMapActive.value && pointFlightTargetValid.value &&
+      mapTargetDrafts.flyto.latitude === 0 && mapTargetDrafts.flyto.longitude === 0) {
+    Object.assign(mapTargetDrafts.flyto, pointFlightTarget)
+  }
+  Object.assign(mapTarget, mapTargetDrafts[mode])
   mapTargetMode.value = mode
   mapTargetPanelOpen.value = true
   updateMapTargetMarker()
@@ -1147,6 +1440,11 @@ function handleMapTargetClick(event: { lnglat?: { getLng?: () => number; getLat?
 }
 
 function clearMapTarget() {
+  const mode = mapTargetMode.value
+  if (mode) {
+    Object.assign(mapTargetDrafts[mode], { latitude: 0, longitude: 0 })
+    Object.assign(mapTarget, mapTargetDrafts[mode])
+  }
   mapTargetMode.value = undefined
   mapTargetPanelOpen.value = false
   if (mapTargetMarker) {
@@ -1174,10 +1472,13 @@ async function initMap() {
     })
     // 飞机是地图上的主操作对象，必须始终压过遥控器、测距和指点标记。
     droneMarker = new AMapRef.Marker({ anchor: 'center', content: droneIcon(0, false), zIndex: 1000 })
-    droneTrail  = new AMapRef.Polyline({ path: [], strokeColor: '#3fa9ff', strokeWeight: 3, strokeOpacity: .85, zIndex: 100 })
-    map.add([droneMarker, droneTrail])
+    // AMap rejects an empty or single-point Polyline. Create the trail only
+    // after two valid aircraft positions have been collected.
+    droneTrail = undefined
+    map.add(droneMarker)
     updateRemoteControllerMarker()
     updateMeasuredTargetMarker()
+    updatePointFlightTargetMarker()
     // 手动拖拽或缩放后保持用户选择的地图位置，不自动拉回飞机坐标。
     const pauseFollow = () => {
       userInteracting = true
@@ -1192,6 +1493,7 @@ async function initMap() {
 function updateMap(lng: number, lat: number, hdg: number) {
   if (!map || !AMapRef || !Number.isFinite(lng) || !Number.isFinite(lat) || (lng === 0 && lat === 0)) return
   const [gLng, gLat] = wgs84ToGcj02(lng, lat)
+  droneMarker?.show?.()
   droneMarker?.setPosition([gLng, gLat])
   droneMarker?.setContent(droneIcon(hdg, active.value))
   // 用户拖拽/缩放期间不自动 setCenter，避免把地图拉回飞机坐标
@@ -1200,7 +1502,20 @@ function updateMap(lng: number, lat: number, hdg: number) {
   if (!last || Math.abs(last[0] - gLng) > 1e-5 || Math.abs(last[1] - gLat) > 1e-5) {
     trailPts.push([gLng, gLat])
     if (trailPts.length > 500) trailPts.shift()
-    droneTrail?.setPath(trailPts)
+    if (trailPts.length >= 2) {
+      if (!droneTrail) {
+        droneTrail = new AMapRef.Polyline({
+          path: trailPts,
+          strokeColor: '#3fa9ff',
+          strokeWeight: 3,
+          strokeOpacity: .85,
+          zIndex: 100
+        })
+        map.add(droneTrail)
+      } else {
+        droneTrail.setPath(trailPts)
+      }
+    }
   }
 }
 
@@ -1345,21 +1660,19 @@ function applyTelemetry(message: DeviceTelemetry) {
   const measureLatitude = payloadTelemetry?.measure_target_latitude ?? selectedPayload?.measure_target_latitude
   const measureLongitude = payloadTelemetry?.measure_target_longitude ?? selectedPayload?.measure_target_longitude
   const measureAltitude = payloadTelemetry?.measure_target_altitude ?? selectedPayload?.measure_target_altitude
-  telemetry.measureReported = [
+  const measureReportedInMessage = [
     measureState, measureDistance, measureLatitude, measureLongitude, measureAltitude
   ].some((value) => value !== undefined && value !== null)
-  if (telemetry.measureReported) {
+  // gateway_osd 与 device_osd 会交替到达，网关包通常不包含负载测距字段。
+  // 缺少字段只表示“本包未上报”，不能清空上一包有效结果，否则视频提示和
+  // 地图目标会在有效值与未上报之间持续闪烁。设备/视频源切换及离线时另行重置。
+  if (measureReportedInMessage) {
+    telemetry.measureReported = true
     telemetry.measureState = telemetryNumber(measureState, -1)
     telemetry.measureDistance = telemetryNumber(measureDistance, -1)
     telemetry.measureLatitude = telemetryNumber(measureLatitude, 0)
     telemetry.measureLongitude = telemetryNumber(measureLongitude, 0)
     telemetry.measureAltitude = telemetryNumber(measureAltitude, 0)
-  } else {
-    telemetry.measureState = -1
-    telemetry.measureDistance = -1
-    telemetry.measureLatitude = 0
-    telemetry.measureLongitude = 0
-    telemetry.measureAltitude = 0
   }
   updateMeasuredTargetMarker()
   const recordingState = Number(selectedCamera?.recording_state)
@@ -1616,6 +1929,7 @@ function markPointFlightSubmissionFailed(kind: 'takeoff' | 'flyto', message: str
     plannedPathPoints: []
   }
   telemetry.pointFlightActive = false
+  if (kind === 'flyto') clearPointFlightTargetMarker(true)
   error.value = message
 }
 
@@ -1691,6 +2005,19 @@ function applyPointFlightProgress(
   const active = source === 'server' && !incomingTaskId
     ? true
     : (typeof reportedActive === 'boolean' ? reportedActive : !terminal)
+  const plannedPathPoints = (Array.isArray(data.planned_path_points)
+    ? data.planned_path_points
+    : Array.isArray(data.plannedPathPoints) ? data.plannedPathPoints : [])
+    .flatMap((point) => {
+      if (!point || typeof point !== 'object') return []
+      const value = point as Record<string, unknown>
+      const latitude = Number(value.latitude)
+      const longitude = Number(value.longitude)
+      const height = Number(value.height)
+      return Number.isFinite(latitude) && Number.isFinite(longitude) && Number.isFinite(height)
+        ? [{ latitude, longitude, height }]
+        : []
+    })
   pointFlightProgress.value = {
     kind,
     status: source === 'server' && !incomingTaskId ? 'command_unknown' : status,
@@ -1700,23 +2027,17 @@ function applyPointFlightProgress(
     remainingDistance: eventNumber(data, 'remaining_distance', 'remainingDistance'),
     remainingTime: eventNumber(data, 'remaining_time', 'remainingTime'),
     wayPointIndex: eventNumber(data, 'way_point_index', 'wayPointIndex'),
-    plannedPathPoints: (Array.isArray(data.planned_path_points)
-      ? data.planned_path_points
-      : Array.isArray(data.plannedPathPoints) ? data.plannedPathPoints : [])
-      .flatMap((point) => {
-        if (!point || typeof point !== 'object') return []
-        const value = point as Record<string, unknown>
-        const latitude = Number(value.latitude)
-        const longitude = Number(value.longitude)
-        const height = Number(value.height)
-        return Number.isFinite(latitude) && Number.isFinite(longitude) && Number.isFinite(height)
-          ? [{ latitude, longitude, height }]
-          : []
-      })
+    plannedPathPoints
   }
   telemetry.taskRemainingDistance = pointFlightProgress.value.remainingDistance
   telemetry.taskRemainingTime = pointFlightProgress.value.remainingTime
   telemetry.pointFlightActive = active
+  if (kind === 'flyto') {
+    const reportedTarget = plannedPathPoints[plannedPathPoints.length - 1]
+    if (active && reportedTarget) Object.assign(pointFlightTarget, reportedTarget)
+    if (active) updatePointFlightTargetMarker()
+    else clearPointFlightTargetMarker(true)
+  }
   if (kind === 'flyto' && (!active || status !== 'cancel_requested')) flyToStopPending.value = false
   const message = String(data.message ?? '')
   if (data.uncertain === true) {
@@ -1767,6 +2088,120 @@ function pointFlightStatusLabel(status?: string) {
     wayline_progress: '飞向目标点', wayline_ok: '已到达目标点',
     wayline_cancel: '任务已取消', wayline_failed: '任务失败'
   } as Record<string, string>)[status ?? ''] ?? '等待事件'
+}
+
+function resetWaylineTaskForm() {
+  Object.assign(waylineTaskForm, {
+    rthAltitude: 100,
+    minBatteryCapacity: 60,
+    barrierSwitchState: 1,
+    takeoffAltitude: 100,
+    firstWaypointSpeed: 10,
+    returnSpeed: 10
+  })
+  waylineTaskConfirmed.value = false
+}
+
+function closeWaylineTask() {
+  if (waylineTaskSubmitting.value) return
+  waylineTaskOpen.value = false
+  waylineTaskError.value = ''
+  waylineTaskConfirmed.value = false
+}
+
+async function loadCockpitWaylines() {
+  const requestSeq = ++waylineTaskLoadSeq
+  waylineTaskLoading.value = true
+  waylineTaskError.value = ''
+  try {
+    const data = await get<unknown>(
+      `/wayline/api/v1/workspaces/${session.workspaceId}/waylines?page=1&page_size=100&order_by=update_time%20desc`)
+    if (requestSeq !== waylineTaskLoadSeq) return
+    cockpitWaylines.value = listFrom<CockpitWayline>(data)
+    if (!cockpitWaylines.value.some((wayline) => wayline.id === selectedWaylineId.value)) {
+      selectedWaylineId.value = cockpitWaylines.value[0]?.id ?? ''
+    }
+  } catch (reason) {
+    if (requestSeq !== waylineTaskLoadSeq) return
+    cockpitWaylines.value = []
+    selectedWaylineId.value = ''
+    waylineTaskError.value = reason instanceof Error ? reason.message : '航线列表加载失败'
+  } finally {
+    if (requestSeq === waylineTaskLoadSeq) waylineTaskLoading.value = false
+  }
+}
+
+function openWaylineTask(dock: Device) {
+  if (dockSelectionPending.value || dock.device_sn !== dockSn.value) return
+  releaseKeys()
+  releasePayloadControls()
+  waylineTaskDockSn.value = dock.device_sn
+  waylineTaskError.value = ''
+  resetWaylineTaskForm()
+  waylineTaskOpen.value = true
+  void loadCockpitWaylines()
+}
+
+function formatWaylineUpdateTime(timestamp?: number) {
+  if (!timestamp) return '更新时间未知'
+  return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
+}
+
+async function startWaylineTask() {
+  const file = selectedCockpitWayline.value
+  const targetDockSn = waylineTaskDockSn.value
+  if (!file || waylineTaskBlockedReason.value || waylineTaskSubmitting.value) return
+
+  const drcExitNotice = active.value ? '\n当前 DRC 会话将先安全退出。' : ''
+  if (!window.confirm(
+    `确认由设备 ${targetDockSn} 立即执行航线“${file.name}”？${drcExitNotice}\n请确保空域、天气、现场人员和应急接管条件均已确认。`)) return
+
+  waylineTaskSubmitting.value = true
+  waylineTaskError.value = ''
+  try {
+    if (active.value || state.value === 'connecting') {
+      await leaveDrc('wayline-task-start')
+      if (pendingDrcExit.value) throw new Error('设备尚未确认退出 DRC，航线任务未下发，请先重试退出 DRC')
+    }
+    if (selectedDock.value?.device_sn !== targetDockSn || !selectedAircraftOnline.value) {
+      throw new Error('执行设备已离线或发生变化，航线任务未下发')
+    }
+    if (operationPanelState.value !== 'ground') {
+      throw new Error('飞机状态已变化，只有待机状态可开始航线任务')
+    }
+
+    await post(`/wayline/api/v1/workspaces/${session.workspaceId}/flight-tasks`, {
+      name: `${file.name}-座舱任务`.slice(0, 64),
+      file_id: file.id,
+      dock_sn: targetDockSn,
+      wayline_type: file.template_types?.[0] ?? 0,
+      task_type: 0,
+      rth_altitude: waylineTaskForm.rthAltitude,
+      out_of_control_action: 0,
+      min_battery_capacity: waylineTaskForm.minBatteryCapacity,
+      min_storage_capacity: 1024,
+      wayline_precision_type: 0,
+      barrier_switch_state: waylineTaskForm.barrierSwitchState,
+      takeoff_altitude: waylineTaskForm.takeoffAltitude,
+      first_waypoint_speed: waylineTaskForm.firstWaypointSpeed,
+      return_speed: waylineTaskForm.returnSpeed,
+      media_upload_method: 0,
+      alternate_land_point: { is_configured: 0 }
+    })
+
+    waylineTaskOpen.value = false
+    waylineTaskConfirmed.value = false
+    waylineTaskNotice.value = `航线“${file.name}”已下发，等待飞机进入任务状态`
+    window.clearTimeout(waylineTaskNoticeTimer)
+    waylineTaskNoticeTimer = window.setTimeout(() => {
+      waylineTaskNotice.value = ''
+      waylineTaskNoticeTimer = 0
+    }, 7_000)
+  } catch (reason) {
+    waylineTaskError.value = reason instanceof Error ? reason.message : '航线任务下发失败'
+  } finally {
+    waylineTaskSubmitting.value = false
+  }
 }
 
 function dismissError() {
@@ -2001,6 +2436,13 @@ onMounted(async () => {
         }
       }
     }
+    if (msg.biz_code === 'drc_hsi_info_push') {
+      const hsi = msg.data as Record<string, unknown>
+      const hsiGatewaySn = String(hsi.sn ?? '')
+      if (active.value && (!hsiGatewaySn || hsiGatewaySn === dockSn.value)) {
+        applyHsiTelemetry(hsi)
+      }
+    }
     if (msg.biz_code === 'fly_to_point_progress') {
       applyPointFlightProgress('flyto', msg.data as Record<string, unknown>, 'event')
     }
@@ -2014,11 +2456,14 @@ onMounted(async () => {
       applyTargetDetectionReport(msg.data as Record<string, unknown>)
     }
   })
+  void resumeDrcAfterReload()
   await initMap()
   videoWatchdogTimer = window.setInterval(monitorVideoBitrate, 1_000)
   window.addEventListener('keydown', handleKey)
   window.addEventListener('keyup', handleKey)
   window.addEventListener('blur', releaseKeys)
+  window.addEventListener('beforeunload', markPageUnloading)
+  window.addEventListener('pagehide', markPageUnloading)
   document.addEventListener('focusin', handleControlFocusIn)
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
@@ -2029,15 +2474,50 @@ onBeforeUnmount(async () => {
   window.clearTimeout(videoReconnectTimer)
   window.clearTimeout(cameraActionTipTimer)
   window.clearTimeout(errorDismissTimer)
+  window.clearTimeout(waylineTaskNoticeTimer)
   window.clearTimeout(hmsNoticeTimer)
   window.clearTimeout(pointFlightNoticeTimer)
   window.clearTimeout(targetReportTimer)
   window.clearInterval(videoWatchdogTimer)
-  await exit()
+  window.removeEventListener('beforeunload', markPageUnloading)
+  window.removeEventListener('pagehide', markPageUnloading)
+  if (pageUnloading && (active.value || state.value === 'connecting')) {
+    preserveDrcForReload()
+  } else {
+    await exit()
+  }
   if (map) { map.destroy?.(); map = undefined }
 })
 
 // ────────── DRC 控制 ──────────
+
+function markPageUnloading() {
+  pageUnloading = true
+}
+
+function preserveDrcForReload() {
+  window.clearInterval(heartbeatTimer)
+  window.clearInterval(heartbeatHealthTimer)
+  window.clearInterval(controlTimer)
+  releaseKeys()
+  try { client?.end(true) } catch { /* 页面正在卸载 */ }
+  client = undefined
+  drcMqttConnected.value = false
+}
+
+async function resumeDrcAfterReload() {
+  const marker = drcResumeMarker.value
+  if (!marker || marker.dockSn !== selectedDock.value?.device_sn ||
+      pendingDrcExit.value || active.value || drcEnterPending.value) return
+  drcStatusMessage.value = '检测到刷新前的 DRC 会话，正在恢复飞行权与控制通道…'
+  const authorityReady = await grabFlightAuthority(marker.dockSn)
+  if (!authorityReady) {
+    clearDrcResume()
+    return
+  }
+  const recovered = await enter()
+  if (!recovered && !active.value) clearDrcResume()
+}
 
 function enter(): Promise<boolean> {
   if (componentExiting) return Promise.resolve(false)
@@ -2054,6 +2534,7 @@ function enter(): Promise<boolean> {
 function controlTargetValid(expectedDockSn: string) {
   return !componentExiting &&
     !dockSelectionPending.value &&
+    selectedAircraftOnline.value &&
     dockSn.value === expectedDockSn &&
     selectedDock.value?.device_sn === expectedDockSn &&
     hasFlightAuthority.value
@@ -2065,9 +2546,14 @@ function enteringTargetValid(expectedDockSn: string, expectedAircraftSn: string)
     selectedAircraftSn.value === expectedAircraftSn
 }
 
+function isDrcOwnerConflict(reason: unknown): boolean {
+  const message = reason instanceof Error ? reason.message : String(reason ?? '')
+  return /(?:session|lease) belongs to another owner/i.test(message)
+}
+
 async function performEnter(): Promise<boolean> {
   if (active.value) return drcControlsReady.value
-  if (!selectedDock.value || dockSelectionPending.value || state.value === 'connecting' || drcLeavePromise) return false
+  if (!selectedDock.value || !selectedAircraftOnline.value || dockSelectionPending.value || state.value === 'connecting' || drcLeavePromise) return false
   if (pendingDrcExit.value) {
     drcStatusMessage.value = '上次退出 DRC 尚未确认，请先执行“② 重试退出 DRC”'
     return false
@@ -2106,6 +2592,7 @@ async function performEnter(): Promise<boolean> {
       client_id: enteringBroker.client_id, dock_sn: enteringDockSn, expire_sec: 3600,
       device_info: { osd_frequency: 10, hsi_frequency: 1 }
     }, CONTROL_REQUEST_OPTIONS)
+    rememberDrcResume(enteringDockSn)
     if (!enteringTargetValid(enteringDockSn, enteringAircraftSn)) throw new Error('设备或飞行控制权状态已变化，已取消进入 DRC')
     broker = enteringBroker
     acl = enteringAcl
@@ -2149,6 +2636,9 @@ async function performEnter(): Promise<boolean> {
         client_id: enteringBroker.client_id, dock_sn: enteringDockSn, expire_sec: 3600,
         device_info: { osd_frequency: 10, hsi_frequency: 1 }
       }, CONTROL_REQUEST_OPTIONS).catch((exitReason) => {
+        // 进入请求在服务端完成会话重绑前失败时，当前浏览器并不是租约所有者。
+        // 不把这种预期拒绝记录为“退出未确认”，否则会错误阻止用户再次进入。
+        if (isDrcOwnerConflict(exitReason)) return
         exitUnconfirmed = true
         rememberPendingDrcExit(enteringBroker!.client_id, enteringDockSn)
         const exitMessage = exitReason instanceof Error ? exitReason.message : '设备退出 DRC 未确认'
@@ -2168,6 +2658,7 @@ async function performEnter(): Promise<boolean> {
     acl = undefined
     drcPublishTopic = ''
     drcAircraftSn = ''
+    clearDrcResume()
     return false
   }
 }
@@ -2371,14 +2862,7 @@ function heartbeat() {
 
 function checkHeartbeatHealth() {
   if (telemetry.hsiUpdatedAt > 0 && Date.now() - telemetry.hsiUpdatedAt > 3_500) {
-    telemetry.obstacleFront = -1
-    telemetry.obstacleBack = -1
-    telemetry.obstacleLeft = -1
-    telemetry.obstacleRight = -1
-    telemetry.obstacleUp = -1
-    telemetry.obstacleDown = -1
-    telemetry.radarEnabled = undefined
-    telemetry.hsiUpdatedAt = 0
+    resetObstacleTelemetry()
   }
   if (!active.value) return
   const baseline = lastHeartbeatAckAt.value || drcConnectedAt
@@ -2395,35 +2879,64 @@ function hsiBoolean(value: unknown): boolean | undefined {
   return undefined
 }
 
-function nearestHsiDistance(data: Record<string, unknown>, names: string[]): number {
-  const distances = names
-    .map((name) => Number(data[name]))
-    .filter((value) => Number.isFinite(value) && value > 0)
-  return distances.length ? Math.min(...distances) / 1000 : -1
+function hsiDistance(value: unknown): number {
+  if (value === null || value === undefined || value === '') return -1
+  const distance = Number(value)
+  return Number.isFinite(distance) && distance >= 0 ? distance : -1
+}
+
+function hsiSegmentDistances(data: Record<string, unknown>, prefix: string, count: number) {
+  return Array.from({ length: count }, (_, offset) => {
+    const index = offset + 1
+    return hsiDistance(data[`${prefix}${index}_distance`] ?? data[`${prefix}${index}Distance`])
+  })
+}
+
+function nearestHsiDistance(distances: number[]): number {
+  const detected = distances.filter((distance) => distance >= 0)
+  return detected.length ? Math.min(...detected) : -1
+}
+
+function resetObstacleDistances() {
+  obstacleSegments.front.splice(0, obstacleSegments.front.length, -1, -1, -1, -1)
+  obstacleSegments.rear.splice(0, obstacleSegments.rear.length, -1, -1, -1, -1)
+  obstacleSegments.left.splice(0, obstacleSegments.left.length, -1, -1, -1)
+  obstacleSegments.right.splice(0, obstacleSegments.right.length, -1, -1, -1)
+  telemetry.obstacleFront = -1
+  telemetry.obstacleBack = -1
+  telemetry.obstacleLeft = -1
+  telemetry.obstacleRight = -1
+  telemetry.obstacleUp = -1
+  telemetry.obstacleDown = -1
+}
+
+function resetObstacleTelemetry() {
+  resetObstacleDistances()
+  telemetry.radarEnabled = undefined
+  telemetry.hsiUpdatedAt = 0
 }
 
 function applyHsiTelemetry(data: Record<string, unknown>) {
   telemetry.radarEnabled = hsiBoolean(data.radar_enable ?? data.radarEnable)
   telemetry.hsiUpdatedAt = Date.now()
   if (telemetry.radarEnabled === false) {
-    telemetry.obstacleFront = -1
-    telemetry.obstacleBack = -1
-    telemetry.obstacleLeft = -1
-    telemetry.obstacleRight = -1
-    telemetry.obstacleUp = -1
-    telemetry.obstacleDown = -1
+    resetObstacleDistances()
     return
   }
-  telemetry.obstacleFront = nearestHsiDistance(data,
-    ['front1_distance', 'front2_distance', 'front3_distance', 'front4_distance'])
-  telemetry.obstacleBack = nearestHsiDistance(data,
-    ['rear1_distance', 'rear2_distance', 'rear3_distance', 'rear4_distance'])
-  telemetry.obstacleLeft = nearestHsiDistance(data,
-    ['left1_distance', 'left2_distance', 'left3_distance'])
-  telemetry.obstacleRight = nearestHsiDistance(data,
-    ['right1_distance', 'right2_distance', 'right3_distance'])
-  telemetry.obstacleUp = nearestHsiDistance(data, ['up_distance', 'upDistance'])
-  telemetry.obstacleDown = nearestHsiDistance(data, ['down_distance', 'downDistance'])
+  const front = hsiSegmentDistances(data, 'front', 4)
+  const rear = hsiSegmentDistances(data, 'rear', 4)
+  const left = hsiSegmentDistances(data, 'left', 3)
+  const right = hsiSegmentDistances(data, 'right', 3)
+  obstacleSegments.front.splice(0, obstacleSegments.front.length, ...front)
+  obstacleSegments.rear.splice(0, obstacleSegments.rear.length, ...rear)
+  obstacleSegments.left.splice(0, obstacleSegments.left.length, ...left)
+  obstacleSegments.right.splice(0, obstacleSegments.right.length, ...right)
+  telemetry.obstacleFront = nearestHsiDistance(front)
+  telemetry.obstacleBack = nearestHsiDistance(rear)
+  telemetry.obstacleLeft = nearestHsiDistance(left)
+  telemetry.obstacleRight = nearestHsiDistance(right)
+  telemetry.obstacleUp = hsiDistance(data.up_distance ?? data.upDistance)
+  telemetry.obstacleDown = hsiDistance(data.down_distance ?? data.downDistance)
 }
 
 /** 速度档位映射：slow/normal/fast → 缩放因子 */
@@ -2653,9 +3166,15 @@ function handleMessage(_topic: string, payload: Uint8Array, sessionAircraftSn: s
       drcLandingRequestId = ''
       drcLandingGatewaySn = ''
       drcLandingPending.value = ''
-      const label = method === 'drc_emergency_landing' ? '紧急降落' : '强制降落'
-      if (result === 0) showCameraActionTip(`${label}指令调用成功（不代表已落地）`)
-      else error.value = `${label}指令调用失败（${result}）`
+      if (method === 'drc_emergency_landing') {
+        // result=0 直接降落；result≠0 时设备转为避障并识别二维码方式降落，两者均是正常执行分支，不是失败
+        showCameraActionTip(result === 0
+          ? '紧急降落已下发：设备直接降落（不代表已落地）'
+          : `紧急降落已下发：设备转为避障并识别二维码方式降落（result=${result}，不代表已落地）`)
+      } else {
+        if (result === 0) showCameraActionTip('强制降落指令调用成功（不代表已落地）')
+        else error.value = `强制降落指令调用失败（${result}）`
+      }
     }
     if (message.method === 'osd_info_push') {
       applyTelemetry({
@@ -2896,6 +3415,15 @@ function handleControlFocusIn(event: FocusEvent) {
 function handleKey(event: KeyboardEvent) {
   const payloadCode = event.code as PayloadShortcutCode
   const watched = ['KeyQ', 'KeyW', 'KeyE', 'KeyC', 'KeyA', 'KeyS', 'KeyD', 'KeyZ']
+
+  // 航线任务弹窗打开时屏蔽全部飞行/负载快捷键，避免填写参数时误触控制。
+  if (waylineTaskOpen.value) {
+    if (event.type === 'keydown' && event.code === 'Escape') {
+      event.preventDefault()
+      closeWaylineTask()
+    }
+    return
+  }
 
   // keyup 永远优先于输入框和飞行状态判断；否则按住方向键后聚焦输入框，或
   // 飞行状态切换，会吞掉松键事件并让旧控制向量持续发送。
@@ -3247,7 +3775,7 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
     if (!videoOperationIsCurrent(operation, sourceKey)) return
     let recovered = false
     if (initialPlayback !== true) {
-      recovered = await recoverVideoEncoder(source, lens.value)
+      recovered = await recoverVideoEncoder(source, lens.value, operation, sourceKey)
       if (!videoOperationIsCurrent(operation, sourceKey)) return
     }
 
@@ -3298,7 +3826,9 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
 
 async function recoverVideoEncoder(
   source: CockpitSource,
-  desiredLens: 'normal' | 'wide' | 'zoom' | 'ir'
+  desiredLens: 'normal' | 'wide' | 'zoom' | 'ir',
+  operation: number,
+  sourceKey: string
 ) {
   const reported = sources.value
     .filter((item) =>
@@ -3317,6 +3847,12 @@ async function recoverVideoEncoder(
       ['normal', 'wide', 'zoom', 'ir'].includes(value))
 
   for (const alternateLens of candidates) {
+    // Abort before sending any further lens command once this operation has
+    // been superseded (exit/retry/new source) — otherwise the delayed
+    // switch-back below can land on the device after a newer session has
+    // already started, leaving the picture stuck on the recovery lens.
+    if (!videoOperationIsCurrent(operation, sourceKey)) return false
+    let switchedToAlternate = false
     try {
       await post('/manage/api/v1/live/streams/switch', {
         video_id: {
@@ -3325,7 +3861,9 @@ async function recoverVideoEncoder(
         },
         video_type: alternateLens
       })
+      switchedToAlternate = true
       await delay(1_800)
+      if (!videoOperationIsCurrent(operation, sourceKey)) return false
       await post('/manage/api/v1/live/streams/switch', {
         video_id: {
           drone_sn: source.deviceSn,
@@ -3339,7 +3877,18 @@ async function recoverVideoEncoder(
       await delay(1_200)
       return true
     } catch {
-      // Try another camera capability when the firmware rejects this lens.
+      // The switch-back failed after the device already moved to the
+      // recovery lens — restore the desired lens before giving up so the
+      // device isn't left parked on the alternate lens.
+      if (switchedToAlternate && videoOperationIsCurrent(operation, sourceKey)) {
+        await post('/manage/api/v1/live/streams/switch', {
+          video_id: {
+            drone_sn: source.deviceSn,
+            payload_index: source.cameraIndex
+          },
+          video_type: desiredLens
+        }).catch(() => undefined)
+      }
     }
   }
   return false
@@ -3399,7 +3948,10 @@ async function switchLens(value: 'normal' | 'wide' | 'zoom' | 'ir') {
 async function grabFlightAuthority(expectedDockSn = dockSn.value): Promise<boolean> {
   if (dockSelectionPending.value) return false
   if (hasFlightAuthority.value && dockSn.value === expectedDockSn) return true
-  if (selectedDock.value?.device_sn !== expectedDockSn || flightAuthorityPending.value) return false
+  if (!selectedAircraftOnline.value || selectedDock.value?.device_sn !== expectedDockSn || flightAuthorityPending.value) {
+    if (!selectedAircraftOnline.value) error.value = '遥控器未连接飞机，无法获取飞行控制权'
+    return false
+  }
   flightAuthorityPending.value = true
   error.value = ''
   try {
@@ -3430,6 +3982,10 @@ async function grabPayloadAuthority(): Promise<boolean> {
   const gatewaySn = selectedDock.value?.device_sn
   if (dockSelectionPending.value) return false
   if (hasPayloadAuthority.value) return true
+  if (!selectedAircraftOnline.value) {
+    error.value = '遥控器未连接飞机，无法获取负载控制权'
+    return false
+  }
   if (!gatewaySn || !source || !key || payloadAuthorityPending.value) return false
   payloadAuthorityPending.value = true
   error.value = ''
@@ -3593,6 +4149,25 @@ async function returnHome() {
   }
 }
 
+async function cancelReturnHome() {
+  const targetDockSn = selectedDock.value?.device_sn
+  if (dockSelectionPending.value || returnHomeCancelPending.value || emergencyStopPending.value ||
+      drcLandingPending.value || !targetDockSn ||
+      !window.confirm('确认取消返航？取消后飞行器将在原地悬停。')) return
+  returnHomeCancelPending.value = true
+  error.value = ''
+  try {
+    if (!hasFlightAuthority.value && !await grabFlightAuthority(targetDockSn)) return
+    if (!controlTargetValid(targetDockSn)) throw new Error('设备或飞行控制权状态已变化，已取消操作')
+    await post(`/control/api/v1/devices/${targetDockSn}/jobs/return_home_cancel`, undefined, CONTROL_REQUEST_OPTIONS)
+    showCameraActionTip('取消返航指令调用成功（飞行器将悬停，不代表已悬停）')
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '取消返航指令调用失败'
+  } finally {
+    returnHomeCancelPending.value = false
+  }
+}
+
 async function emergencyStop() {
   if (dockSelectionPending.value || emergencyStopPending.value || drcLandingPending.value || !selectedDock.value) return
   if (!drcControlsReady.value) {
@@ -3629,7 +4204,7 @@ async function drcLanding(method: DrcLandingMethod) {
   }
   const emergency = method === 'drc_emergency_landing'
   const confirmed = window.confirm(emergency
-    ? '确认下发紧急降落？飞机将避障并识别二维码降落。设备回复成功只表示指令调用成功，不代表已经落地。'
+    ? '确认下发紧急降落？设备返回成功（result=0）代表直接降落，不做避障与二维码识别；返回失败（result≠0）时飞行器会转为避障并识别二维码方式降落。设备回复仅表示指令调用结果，不代表已经落地。'
     : '高风险：确认下发强制降落？飞机将不考虑障碍物直接降落。请确认下方区域绝对安全；设备回复成功不代表已经落地。')
   if (!confirmed) return
 
@@ -3674,6 +4249,10 @@ async function submitMapTarget() {
     error.value = '当前没有已连接的设备'
     return
   }
+  if (!selectedAircraftOnline.value) {
+    error.value = '遥控器未连接飞机，不能发送地图目标指令'
+    return
+  }
   if (!mapTargetValid.value) {
     error.value = '请输入有效经纬度和 2–10000 m 的目标高度'
     return
@@ -3681,6 +4260,10 @@ async function submitMapTarget() {
   if (mode === 'flyto' &&
       (!Number.isFinite(normalizedMaxSpeed) || normalizedMaxSpeed < 1 || normalizedMaxSpeed > 15)) {
     error.value = '指点飞行最大速度须为 1–15 m/s 的整数'
+    return
+  }
+  if (mode === 'flyto' && telemetry.pointFlightActive) {
+    error.value = '当前已有指点飞行任务，请先结束后再选择新目标'
     return
   }
   if (mode === 'flyto' && operationPanelState.value !== 'airborne') {
@@ -3701,7 +4284,13 @@ async function submitMapTarget() {
     if (mode === 'flyto') {
       if (!hasFlightAuthority.value && !await grabFlightAuthority(targetDockSn)) return
       if (!controlTargetValid(targetDockSn)) throw new Error('设备或飞行控制权状态已变化，已取消指点飞行')
+      Object.assign(pointFlightTarget, {
+        latitude: Number(mapTarget.latitude.toFixed(6)),
+        longitude: Number(mapTarget.longitude.toFixed(6)),
+        height: Number(mapTarget.height.toFixed(1))
+      })
       beginPointFlightSubmission('flyto')
+      updatePointFlightTargetMarker()
       await post(`/control/api/v1/devices/${targetDockSn}/jobs/fly-to-point`, {
         max_speed: normalizedMaxSpeed,
         points: [{
@@ -3717,6 +4306,14 @@ async function submitMapTarget() {
         )
       }
       showCameraActionTip('指点飞行指令已受理，等待设备进度事件')
+      Object.assign(mapTargetDrafts.flyto, mapTarget)
+      mapTargetPanelOpen.value = false
+      mapTargetMode.value = undefined
+      if (mapTargetMarker) {
+        map?.remove(mapTargetMarker)
+        mapTargetMarker = undefined
+      }
+      updatePointFlightTargetMarker()
     } else {
       if (!hasPayloadAuthority.value && !await grabPayloadAuthority()) return
       if (dockSelectionPending.value || selectedDock.value?.device_sn !== targetDockSn) {
@@ -3754,7 +4351,7 @@ async function submitMapTarget() {
 async function oneKeyTakeoff() {
   const targetDockSn = selectedDock.value?.device_sn
   if (dockSelectionPending.value || operationPanelState.value !== 'ground' ||
-      takeoffPending.value || telemetry.pointFlightActive || !targetDockSn) return
+      takeoffPending.value || telemetry.pointFlightActive || !targetDockSn || !selectedAircraftOnline.value) return
   if (
     takeoffSettings.targetAgl < 2 || takeoffSettings.targetAgl > 1500 ||
     takeoffSettings.maxSpeed < 1 || takeoffSettings.maxSpeed > 15
@@ -3829,6 +4426,7 @@ async function oneKeyTakeoff() {
 async function stopPointFlight() {
   const targetDockSn = selectedDock.value?.device_sn
   if (dockSelectionPending.value || !targetDockSn || flyToStopPending.value ||
+      !selectedAircraftOnline.value ||
       pointFlightProgress.value?.kind !== 'flyto' || !telemetry.pointFlightActive ||
       !window.confirm('确认结束当前 FlyTo 飞向目标点任务？')) return
   flyToStopPending.value = true
@@ -3865,7 +4463,7 @@ function modeLabel(code: number): string {
     11: '强制降落', 12: '三桨叶降落', 13: '升级中',
     14: '未连接', 15: 'APAS', 16: '虚拟摇杆状态',
     17: '指令飞行', 18: 'RTK 固定', 19: '机场评估',
-    20: '兴趣点', 39: 'KML 航线'
+    20: '兴趣点', 37: '指点飞行', 39: 'KML 航线'
   }
   return map[code] ?? '未连接'
 }
@@ -3929,6 +4527,7 @@ function leaveDrc(reason = 'unspecified'): Promise<void> {
 }
 
 async function performLeaveDrc() {
+  clearDrcResume()
   window.clearInterval(heartbeatTimer)
   window.clearInterval(heartbeatHealthTimer)
   window.clearInterval(controlTimer)
@@ -3994,14 +4593,7 @@ async function performLeaveDrc() {
     drcControlRejected.value = false
     drcControlFailure.value = ''
   }
-  telemetry.obstacleFront = -1
-  telemetry.obstacleBack = -1
-  telemetry.obstacleLeft = -1
-  telemetry.obstacleRight = -1
-  telemetry.obstacleUp = -1
-  telemetry.obstacleDown = -1
-  telemetry.radarEnabled = undefined
-  telemetry.hsiUpdatedAt = 0
+  resetObstacleTelemetry()
 }
 
 async function requestLeaveDrc() {
@@ -4058,7 +4650,14 @@ async function exit() {
   releaseKeys()
   if (drcEnterPromise) await drcEnterPromise.catch(() => false)
   await leaveDrc('component-unmount')
-  await stopVideo()
+  // 退出座舱不下发 /streams/stop：设备推流留给用户手动点击"停止"或设备自身
+  // 空闲超时来管理，这样快速重新进入座舱时可以直接复用现有推流，无需重新
+  // 触发一遍首帧等待/切镜头恢复流程。
+  window.clearTimeout(videoReconnectTimer)
+  videoReconnectTimer = 0
+  const operation = ++videoOperationGeneration
+  videoStartTask = undefined
+  await resetVideoSession(false, () => operation === videoOperationGeneration)
 }
 
 function toggleFullscreen() {
@@ -4078,7 +4677,7 @@ function toggleFullscreen() {
         <button
           class="control-state-btn authority"
           :class="{ active: hasFlightAuthority }"
-          :disabled="dockSelectionPending || !selectedDock || flightAuthorityPending || hasFlightAuthority"
+          :disabled="dockSelectionPending || !selectedDock || !selectedAircraftOnline || flightAuthorityPending || hasFlightAuthority"
           :title="hasFlightAuthority ? '第 1 步已完成：平台已取得飞行控制权' : '第 1 步：向设备发送 flight_authority_grab'"
           @click="grabFlightAuthority()">
           {{ flightAuthorityLabel }}
@@ -4112,7 +4711,6 @@ function toggleFullscreen() {
             title="扩大地图区域"
             @click="layoutMode = 'map'">地图优先</button>
         </div>
-        <span class="auto-live-badge"><i></i> 自动直播</span>
         <button
           class="bar-btn hms-trigger"
           :class="[`level-${hmsHighestLevel}`, { active: hmsAlarms.length > 0 }]"
@@ -4142,6 +4740,82 @@ function toggleFullscreen() {
           <span>方向键控制前需开启负载控制</span>
           <span>WSADQEZC 控制前需取得飞行控制权并进入 DRC</span>
         </footer>
+      </section>
+    </div>
+
+    <div v-if="waylineTaskOpen" class="wayline-task-backdrop" @click.self="closeWaylineTask">
+      <section class="wayline-task-dialog" role="dialog" aria-modal="true" aria-label="选择航线任务">
+        <header class="wayline-task-head">
+          <div>
+            <small>WAYLINE FLIGHT</small>
+            <h2>选择航线任务</h2>
+            <p>由 {{ selectedDock ? dockModelName(selectedDock) : '当前设备' }}（{{ waylineTaskDockSn }}）立即执行</p>
+          </div>
+          <button type="button" aria-label="关闭航线任务弹窗" :disabled="waylineTaskSubmitting" @click="closeWaylineTask">×</button>
+        </header>
+
+        <form class="wayline-task-form" @submit.prevent="startWaylineTask">
+          <div class="wayline-task-route-field">
+            <label for="cockpit-wayline-select">已有航线</label>
+            <div>
+              <select id="cockpit-wayline-select" v-model="selectedWaylineId" :disabled="waylineTaskLoading || waylineTaskSubmitting || !cockpitWaylines.length" required>
+                <option value="" disabled>{{ waylineTaskLoading ? '正在加载航线…' : '请选择航线' }}</option>
+                <option v-for="wayline in cockpitWaylines" :key="wayline.id" :value="wayline.id">{{ wayline.name }}</option>
+              </select>
+              <button type="button" :disabled="waylineTaskLoading || waylineTaskSubmitting" @click="loadCockpitWaylines">
+                {{ waylineTaskLoading ? '加载中…' : '刷新' }}
+              </button>
+            </div>
+          </div>
+
+          <article v-if="selectedCockpitWayline" class="wayline-task-route-card">
+            <span class="wayline-route-icon" aria-hidden="true">⌁</span>
+            <div>
+              <strong>{{ selectedCockpitWayline.name }}</strong>
+              <p>
+                <span>飞机 {{ selectedCockpitWayline.drone_model_key || '未标注' }}</span>
+                <span>负载 {{ selectedCockpitWayline.payload_model_keys?.join(', ') || '未标注' }}</span>
+              </p>
+              <small>{{ formatWaylineUpdateTime(selectedCockpitWayline.update_time) }}</small>
+            </div>
+          </article>
+          <div v-else-if="waylineTaskLoading" class="wayline-task-empty">正在读取航线库…</div>
+          <div v-else class="wayline-task-empty">
+            <strong>航线库为空</strong>
+            <span>请先在“航线任务”页面上传 KMZ 航线。</span>
+          </div>
+
+          <div class="wayline-task-grid">
+            <label>返航高度（米）<input v-model.number="waylineTaskForm.rthAltitude" type="number" min="20" max="500" required /></label>
+            <label>最低电量（%）<input v-model.number="waylineTaskForm.minBatteryCapacity" type="number" min="50" max="90" required /></label>
+            <label>避障开关<select v-model.number="waylineTaskForm.barrierSwitchState"><option :value="1">开启避障</option><option :value="0">关闭避障</option></select></label>
+            <label>起飞高度（米）<input v-model.number="waylineTaskForm.takeoffAltitude" type="number" min="1" max="1500" required /></label>
+            <label>去首航点速度（m/s）<input v-model.number="waylineTaskForm.firstWaypointSpeed" type="number" min="1" max="25" required /></label>
+            <label>返航速度（m/s）<input v-model.number="waylineTaskForm.returnSpeed" type="number" min="1" max="25" required /></label>
+          </div>
+
+          <div class="wayline-task-defaults">
+            <span>立即执行</span><span>失联返航</span><span>GPS 航线</span><span>落地上传媒体</span>
+          </div>
+          <label class="wayline-task-confirm">
+            <input v-model="waylineTaskConfirmed" type="checkbox" :disabled="waylineTaskSubmitting" />
+            <span>我已确认航线、返航高度、空域、天气、现场人员和应急接管条件。</span>
+          </label>
+          <p v-if="active" class="wayline-task-drc-note">开始执行前将先归零控制量并安全退出当前 DRC 会话。</p>
+          <p v-if="waylineTaskBlockedReason" class="wayline-task-blocked">{{ waylineTaskBlockedReason }}</p>
+          <p v-if="waylineTaskError" class="wayline-task-error" role="alert">{{ waylineTaskError }}</p>
+
+          <footer>
+            <button type="button" class="wayline-task-cancel" :disabled="waylineTaskSubmitting" @click="closeWaylineTask">取消</button>
+            <button
+              type="submit"
+              class="wayline-task-submit"
+              :disabled="waylineTaskLoading || waylineTaskSubmitting || !!waylineTaskBlockedReason"
+              :title="waylineTaskBlockedReason">
+              {{ waylineTaskSubmitting ? '正在下发…' : active ? '退出 DRC 并开始执行' : '开始执行' }}
+            </button>
+          </footer>
+        </form>
       </section>
     </div>
 
@@ -4196,6 +4870,13 @@ function toggleFullscreen() {
         </div>
         <button type="button" aria-label="关闭错误提示" @click="dismissError">×</button>
       </div>
+    </Transition>
+
+    <Transition name="cockpit-toast">
+      <button v-if="waylineTaskNotice" type="button" class="wayline-task-success" aria-live="polite" @click="waylineTaskNotice = ''">
+        <span aria-hidden="true">✓</span>
+        <div><strong>航线任务已下发</strong><p>{{ waylineTaskNotice }}</p></div>
+      </button>
     </Transition>
 
     <Transition name="cockpit-toast">
@@ -4264,10 +4945,10 @@ function toggleFullscreen() {
                     <span class="dev-battery-icon"><i :style="{ width: `${Math.max(0, Math.min(100, dockCardStats(dock).rcBattery))}%` }"></i></span>
                     <strong>{{ dockCardStats(dock).rcBattery < 0 ? '--' : `${dockCardStats(dock).rcBattery.toFixed(0)}%` }}</strong>
                   </span>
-                  <span class="dev-power-item" :aria-label="`无人机电量 ${dockCardStats(dock).battery.toFixed(0)}%`">
+                  <span class="dev-power-item" :aria-label="`无人机电量 ${dockCardStats(dock).battery < 0 ? '未知' : `${dockCardStats(dock).battery.toFixed(0)}%`}`">
                     <small>UAV</small>
                     <span class="dev-battery-icon"><i :style="{ width: `${Math.max(0, Math.min(100, dockCardStats(dock).battery))}%` }"></i></span>
-                    <strong>{{ dockCardStats(dock).battery.toFixed(0) }}%</strong>
+                    <strong>{{ dockCardStats(dock).battery < 0 ? '--' : `${dockCardStats(dock).battery.toFixed(0)}%` }}</strong>
                   </span>
                 </span>
                 <b></b>
@@ -4283,9 +4964,17 @@ function toggleFullscreen() {
           </button>
           <div class="dev-actions">
             <button
+              class="dev-action-wayline"
+              title="选择航线并立即执行"
+              :disabled="dockSelectionPending || dock.device_sn !== dockSn || !isAircraftOnlineForDock(dock)"
+              @click.stop="openWaylineTask(dock)">
+              <span class="dev-action-icon" aria-hidden="true">⌁</span>
+              <span>航线任务</span>
+            </button>
+            <button
               class="dev-action-locate"
               title="定位飞行器"
-              :disabled="dock.device_sn !== dockSn"
+              :disabled="dock.device_sn !== dockSn || !isAircraftOnlineForDock(dock)"
               @click.stop="centerOnDrone">
               <span class="dev-action-icon" aria-hidden="true">⌖</span>
               <span>定位</span>
@@ -4317,14 +5006,30 @@ function toggleFullscreen() {
         <button class="map-tool" title="定位飞行器" @click="centerOnDrone">⊕</button>
         <button
           class="map-tool map-target-tool"
-          :class="{ active: mapTargetMode === 'flyto' }"
-          title="在地图上选择指点飞行目标"
+          :class="{ active: mapTargetMode === 'flyto', executing: pointFlightMapActive }"
+          :title="pointFlightMapActive ? '指点飞行正在执行；点击查看任务目标' : '在地图上选择指点飞行目标'"
           @click="selectMapTarget('flyto')">航</button>
         <button
           class="map-tool map-target-tool"
           :class="{ active: mapTargetMode === 'lookAt' }"
           title="在地图上选择云台 Look At 目标"
           @click="selectMapTarget('lookAt')">瞄</button>
+      </div>
+
+      <div v-if="pointFlightMapActive" class="point-flight-map-status" :class="{ disconnected: !selectedAircraftOnline }" role="status">
+        <i aria-hidden="true"></i>
+        <div>
+          <strong>{{ selectedAircraftOnline ? '指点飞行执行中' : '指点飞行状态待确认' }}</strong>
+          <span>
+            {{ selectedAircraftOnline ? pointFlightStatusLabel(pointFlightProgress?.status) : '飞机连接已中断' }}
+            · 距离 {{ fmtTaskDistance(pointFlightProgress?.remainingDistance ?? telemetry.taskRemainingDistance) }}
+            · 时间 {{ fmtDuration(pointFlightProgress?.remainingTime ?? telemetry.taskRemainingTime) }}
+          </span>
+        </div>
+        <button v-if="pointFlightTargetValid" type="button" @click="locatePointFlightTarget">定位目标</button>
+        <button type="button" class="stop" :disabled="!selectedAircraftOnline || flyToStopPending" @click="stopPointFlight">
+          {{ flyToStopPending ? '结束中…' : '结束任务' }}
+        </button>
       </div>
 
       <!-- 未配置 Key 时的备用指南针视图 -->
@@ -4384,7 +5089,7 @@ function toggleFullscreen() {
           </div>
           <button type="button" title="清除目标点" @click="clearMapTarget">×</button>
         </header>
-        <p>点击地图选点，或输入 WGS84 坐标。</p>
+        <p>点击地图选点，或输入 WGS84 坐标。{{ mapTargetMode === 'lookAt' && pointFlightMapActive ? '当前指点飞行目标会保持显示。' : '' }}</p>
         <div class="map-target-coordinates">
           <label>经度<input v-model.number="mapTarget.longitude" type="number" min="-180" max="180" step="0.000001" @change="updateMapTargetMarker" /></label>
           <label>纬度<input v-model.number="mapTarget.latitude" type="number" min="-90" max="90" step="0.000001" @change="updateMapTargetMarker" /></label>
@@ -4399,8 +5104,9 @@ function toggleFullscreen() {
         </div>
         <div class="map-target-actions">
           <span :class="{ valid: mapTargetValid }">{{ mapTargetValid ? '目标点有效' : '请选择有效目标点' }}</span>
-          <button type="submit" :disabled="dockSelectionPending || !mapTargetValid || mapTargetPending || !selectedDock ||
+          <button type="submit" :disabled="dockSelectionPending || !mapTargetValid || mapTargetPending || !selectedDock || !selectedAircraftOnline ||
             (mapTargetMode === 'flyto' && operationPanelState !== 'airborne') ||
+            (mapTargetMode === 'flyto' && telemetry.pointFlightActive) ||
             (mapTargetMode === 'lookAt' && !selectedSource)">
             {{ mapTargetPending ? '发送中…' : mapTargetMode === 'flyto' ? '启动指点飞行' : '执行 Look At' }}
           </button>
@@ -4409,7 +5115,9 @@ function toggleFullscreen() {
     </section>
 
     <!-- ── 右侧面板：视频 + 遥测 + 操控 ─────────────────── -->
-    <section class="flight-view">
+    <section
+      class="flight-view"
+      :class="{ 'has-payload-shortcuts': hasPayloadAuthority }">
       <!-- 镜头选择 + 视频源 -->
       <div class="lens-bar">
         <button
@@ -4538,40 +5246,74 @@ function toggleFullscreen() {
           class="video-obstacle-hud"
           :class="{ ready: obstacleHudReady, disabled: telemetry.radarEnabled === false }"
           aria-label="飞行避障信息">
-          <div class="obstacle-hud-state">
+          <div v-if="!obstacleHudReady" class="obstacle-hud-state">
             <i></i><span>{{ obstacleHudStateLabel }}</span>
           </div>
-          <div
-            v-if="obstacleHudReady && telemetry.obstacleFront >= 0"
-            class="obstacle-edge obstacle-front"
-            :class="obstacleRiskClass(telemetry.obstacleFront)">
-            <span>前 {{ fmtObstacle(telemetry.obstacleFront) }} m</span><i></i><i></i><i></i>
-          </div>
-          <div
-            v-if="obstacleHudReady && telemetry.obstacleBack >= 0"
-            class="obstacle-edge obstacle-back"
-            :class="obstacleRiskClass(telemetry.obstacleBack)">
-            <span>后 {{ fmtObstacle(telemetry.obstacleBack) }} m</span><i></i><i></i><i></i>
-          </div>
-          <div
-            v-if="obstacleHudReady && telemetry.obstacleLeft >= 0"
-            class="obstacle-edge obstacle-left"
-            :class="obstacleRiskClass(telemetry.obstacleLeft)">
-            <span>左 {{ fmtObstacle(telemetry.obstacleLeft) }} m</span><i></i><i></i><i></i>
-          </div>
-          <div
-            v-if="obstacleHudReady && telemetry.obstacleRight >= 0"
-            class="obstacle-edge obstacle-right"
-            :class="obstacleRiskClass(telemetry.obstacleRight)">
-            <span>右 {{ fmtObstacle(telemetry.obstacleRight) }} m</span><i></i><i></i><i></i>
-          </div>
-          <div v-if="obstacleHudReady" class="obstacle-vertical-pair">
+          <div v-if="obstacleHudReady" class="obstacle-rail obstacle-rail-front" aria-label="前方四路雷达">
             <span
-              v-if="telemetry.obstacleUp >= 0"
-              :class="obstacleRiskClass(telemetry.obstacleUp)">↑ {{ fmtObstacle(telemetry.obstacleUp) }} m</span>
+              v-if="nearestObstacle.front > 0"
+              class="obstacle-rail-summary"
+              :class="obstacleRiskClass(nearestObstacle.front)">机头 {{ fmtObstacle(nearestObstacle.front) }}m</span>
+            <div
+              v-for="(distance, index) in obstacleSegments.front"
+              :key="`front-${index}`"
+              class="obstacle-segment obstacle-segment-horizontal"
+              :class="obstacleRiskClass(distance)"
+              :aria-label="`前方 ${index + 1} 号雷达${distance > 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
+              <i v-if="distance >= 0"></i>
+            </div>
+          </div>
+          <div v-if="obstacleHudReady" class="obstacle-rail obstacle-rail-rear" aria-label="后方四路雷达">
             <span
-              v-if="telemetry.obstacleDown >= 0"
-              :class="obstacleRiskClass(telemetry.obstacleDown)">↓ {{ fmtObstacle(telemetry.obstacleDown) }} m</span>
+              v-if="nearestObstacle.rear > 0"
+              class="obstacle-rail-summary"
+              :class="obstacleRiskClass(nearestObstacle.rear)">机尾 {{ fmtObstacle(nearestObstacle.rear) }}m</span>
+            <div
+              v-for="(distance, index) in obstacleSegments.rear"
+              :key="`rear-${index}`"
+              class="obstacle-segment obstacle-segment-horizontal"
+              :class="obstacleRiskClass(distance)"
+              :aria-label="`后方 ${index + 1} 号雷达${distance > 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
+              <i v-if="distance >= 0"></i>
+            </div>
+          </div>
+          <div v-if="obstacleHudReady" class="obstacle-rail obstacle-rail-left" aria-label="左侧三路雷达">
+            <span
+              v-if="nearestObstacle.left > 0"
+              class="obstacle-rail-summary"
+              :class="obstacleRiskClass(nearestObstacle.left)">{{ fmtObstacle(nearestObstacle.left) }}m</span>
+            <div
+              v-for="(distance, index) in obstacleSegments.left"
+              :key="`left-${index}`"
+              class="obstacle-segment obstacle-segment-vertical"
+              :class="obstacleRiskClass(distance)"
+              :aria-label="`左侧 ${index + 1} 号雷达${distance > 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
+              <i v-if="distance >= 0"></i>
+            </div>
+          </div>
+          <div v-if="obstacleHudReady" class="obstacle-rail obstacle-rail-right" aria-label="右侧三路雷达">
+            <span
+              v-if="nearestObstacle.right > 0"
+              class="obstacle-rail-summary"
+              :class="obstacleRiskClass(nearestObstacle.right)">{{ fmtObstacle(nearestObstacle.right) }}m</span>
+            <div
+              v-for="(distance, index) in obstacleSegments.right"
+              :key="`right-${index}`"
+              class="obstacle-segment obstacle-segment-vertical"
+              :class="obstacleRiskClass(distance)"
+              :aria-label="`右侧 ${index + 1} 号雷达${distance > 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
+              <i v-if="distance >= 0"></i>
+            </div>
+          </div>
+          <div
+            v-if="obstacleHudReady && (telemetry.obstacleUp > 0 || telemetry.obstacleDown > 0)"
+            class="obstacle-vertical-pair">
+            <span
+              v-if="telemetry.obstacleUp > 0"
+              :class="obstacleRiskClass(telemetry.obstacleUp)">上方 {{ fmtObstacle(telemetry.obstacleUp) }}m</span>
+            <span
+              v-if="telemetry.obstacleDown > 0"
+              :class="obstacleRiskClass(telemetry.obstacleDown)">下方 {{ fmtObstacle(telemetry.obstacleDown) }}m</span>
           </div>
         </div>
         <div
@@ -4629,7 +5371,7 @@ function toggleFullscreen() {
       </div>
 
       <div class="control-deck">
-        <!-- ═══ 左列：电池/时间/RTK ═══ -->
+        <!-- ═══ 左列：电池/时间/GPS/失联动作 ═══ -->
         <div class="deck-info-col">
           <div class="info-row">
             <span class="info-label">电池电量</span>
@@ -4644,12 +5386,6 @@ function toggleFullscreen() {
           <div class="info-row">
             <span class="info-label">GPS 搜星 / 质量</span>
             <span class="info-val">GPS {{ telemetry.satellites }} · Q{{ telemetry.gpsQuality }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">当前档位</span>
-            <span class="info-val gear-info" :class="{ unknown: telemetry.gearLevel < 0 }">
-              {{ gearLabel(telemetry.gearLevel) }}
-            </span>
           </div>
           <div class="info-row">
             <span class="info-label">失联动作</span>
@@ -4743,7 +5479,7 @@ function toggleFullscreen() {
             <div class="drc-readiness-actions">
               <button
                 :class="{ done: hasFlightAuthority }"
-                :disabled="dockSelectionPending || !selectedDock || flightAuthorityPending || hasFlightAuthority"
+                :disabled="dockSelectionPending || !selectedDock || !selectedAircraftOnline || flightAuthorityPending || hasFlightAuthority"
                 @click="grabFlightAuthority()">
                 {{ flightAuthorityPending ? '① 抢夺中…' : hasFlightAuthority ? '① 飞行权已获取' : '① 抢夺飞行权' }}
               </button>
@@ -4762,7 +5498,7 @@ function toggleFullscreen() {
                 <small>范围 2–1500 m</small>
               </label>
             </div>
-            <button class="takeoff-side-action" :disabled="dockSelectionPending || takeoffPending || telemetry.pointFlightActive || !selectedDock" @click="oneKeyTakeoff">
+            <button class="takeoff-side-action" :disabled="dockSelectionPending || takeoffPending || telemetry.pointFlightActive || !selectedDock || !selectedAircraftOnline" @click="oneKeyTakeoff">
               <span>▲</span>{{ takeoffPending ? '起飞中…' : '一键起飞' }}
             </button>
             <p
@@ -4808,8 +5544,15 @@ function toggleFullscreen() {
               </button>
             </div>
             <div class="deck-btns landing-actions">
-              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || emergencyStopPending || !!drcLandingPending" @click="returnHome">
+              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending" @click="returnHome">
                 {{ returnHomePending ? '发送中…' : '返航' }}
+              </button>
+              <button
+                v-if="telemetry.modeCode === 9"
+                class="deck-btn btn-cancel"
+                :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                @click="cancelReturnHome">
+                {{ returnHomeCancelPending ? '发送中…' : '取消返航' }}
               </button>
               <button
                 v-if="pointFlightProgress?.kind === 'flyto' && telemetry.pointFlightActive"
@@ -4818,19 +5561,19 @@ function toggleFullscreen() {
                 @click="stopPointFlight">
                 {{ flyToStopPending ? '取消中…' : '结束 FlyTo' }}
               </button>
-              <button class="deck-btn btn-stop" :disabled="dockSelectionPending || emergencyStopPending || !!drcLandingPending" @click="emergencyStop">
+              <button class="deck-btn btn-stop" :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending" @click="emergencyStop">
                 {{ emergencyStopPending ? '等待确认' : '刹车悬停' }}<br><small>[Space]</small>
               </button>
               <button
                 class="deck-btn btn-emergency-land"
-                :disabled="dockSelectionPending || returnHomePending || emergencyStopPending || !!drcLandingPending"
-                title="避障并识别二维码降落"
+                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                title="成功=直接降落；失败时设备转为避障并识别二维码降落"
                 @click="drcLanding('drc_emergency_landing')">
                 {{ drcLandingPending === 'drc_emergency_landing' ? '等待确认…' : '紧急降落' }}
               </button>
               <button
                 class="deck-btn btn-force-land"
-                :disabled="dockSelectionPending || returnHomePending || emergencyStopPending || !!drcLandingPending"
+                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
                 title="不考虑障碍物直接强制降落"
                 @click="drcLanding('drc_force_landing')">
                 {{ drcLandingPending === 'drc_force_landing' ? '等待确认…' : '强制降落' }}
@@ -4858,22 +5601,29 @@ function toggleFullscreen() {
               </button>
             </div>
             <div class="deck-btns landing-actions">
-              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || emergencyStopPending || !!drcLandingPending" @click="returnHome">
+              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending" @click="returnHome">
                 {{ returnHomePending ? '发送中…' : '返航' }}
               </button>
-              <button class="deck-btn btn-stop" :disabled="dockSelectionPending || state === 'connecting' || emergencyStopPending || !!drcLandingPending" @click="emergencyStop">
+              <button
+                v-if="telemetry.modeCode === 9"
+                class="deck-btn btn-cancel"
+                :disabled="dockSelectionPending || state === 'connecting' || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                @click="cancelReturnHome">
+                {{ returnHomeCancelPending ? '发送中…' : '取消返航' }}
+              </button>
+              <button class="deck-btn btn-stop" :disabled="dockSelectionPending || state === 'connecting' || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending" @click="emergencyStop">
                 {{ emergencyStopPending ? '等待确认' : '刹车悬停' }}<br><small>[Space]</small>
               </button>
               <button
                 class="deck-btn btn-emergency-land"
-                :disabled="dockSelectionPending || state === 'connecting' || returnHomePending || emergencyStopPending || !!drcLandingPending"
-                title="避障并识别二维码降落"
+                :disabled="dockSelectionPending || state === 'connecting' || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                title="成功=直接降落；失败时设备转为避障并识别二维码降落"
                 @click="drcLanding('drc_emergency_landing')">
                 {{ drcLandingPending === 'drc_emergency_landing' ? '等待确认…' : '紧急降落' }}
               </button>
               <button
                 class="deck-btn btn-force-land"
-                :disabled="dockSelectionPending || state === 'connecting' || returnHomePending || emergencyStopPending || !!drcLandingPending"
+                :disabled="dockSelectionPending || state === 'connecting' || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
                 title="不考虑障碍物直接强制降落"
                 @click="drcLanding('drc_force_landing')">
                 {{ drcLandingPending === 'drc_force_landing' ? '等待确认…' : '强制降落' }}
@@ -5081,13 +5831,6 @@ function toggleFullscreen() {
   text-overflow: ellipsis; white-space: nowrap;
 }
 .control-state-reason.ready { color: #35d6a4; }
-.auto-live-badge {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 3px 8px; border-radius: 20px;
-  border: 1px solid rgba(53,214,164,.24);
-  color: #35d6a4; background: rgba(53,214,164,.07); font-size: 10px;
-}
-.auto-live-badge i { width: 5px; height: 5px; border-radius: 50%; background: #35d6a4; box-shadow: 0 0 7px #35d6a4; }
 .layout-switch {
   display: inline-flex; align-items: center; gap: 2px;
   padding: 2px; border: 1px solid rgba(255,255,255,.08); border-radius: 9px;
@@ -5211,6 +5954,110 @@ function toggleFullscreen() {
   display: flex; justify-content: space-between; gap: 14px; margin-top: 14px;
   color: #8291a2; font-size: 10px;
 }
+
+/* ─── 座舱航线任务 ────────────────────────────────── */
+.wayline-task-backdrop {
+  position: absolute; z-index: 100; inset: 0; display: grid; place-items: center;
+  padding: 24px; background: rgba(2,5,9,.8); backdrop-filter: blur(9px);
+}
+.wayline-task-dialog {
+  display: flex; flex-direction: column; width: min(700px, 96vw); max-height: min(820px, 92vh);
+  overflow: hidden; border: 1px solid rgba(63,169,255,.3); border-radius: 14px;
+  color: #edf3fa; background: #080d15;
+  box-shadow: 0 24px 80px rgba(0,0,0,.64), 0 0 34px rgba(63,169,255,.08);
+}
+.wayline-task-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 18px;
+  padding: 18px 20px 14px; border-bottom: 1px solid rgba(255,255,255,.08);
+  background: linear-gradient(120deg, rgba(63,169,255,.12), transparent 52%);
+}
+.wayline-task-head small { color: #3fa9ff; font: 9px/1 monospace; letter-spacing: .18em; }
+.wayline-task-head h2 { margin: 5px 0 0; font-size: 20px; font-weight: 550; }
+.wayline-task-head p { margin: 6px 0 0; color: #8191a4; font: 10px/1.4 monospace; }
+.wayline-task-head > button {
+  width: 30px; height: 30px; padding: 0; border: 0; color: #9ba9b8; background: transparent;
+  font-size: 24px; line-height: 1; cursor: pointer;
+}
+.wayline-task-head > button:disabled { opacity: .4; cursor: default; }
+.wayline-task-form { min-height: 0; overflow: auto; padding: 16px 20px 18px; }
+.wayline-task-route-field > label,
+.wayline-task-grid label {
+  display: flex; flex-direction: column; gap: 6px; color: #8fa0b3; font-size: 10px;
+}
+.wayline-task-route-field > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.wayline-task-route-field select,
+.wayline-task-grid input,
+.wayline-task-grid select {
+  width: 100%; height: 36px; box-sizing: border-box; padding: 0 10px;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 7px;
+  color: #e9f1fa; background: #101722; outline: none;
+}
+.wayline-task-route-field select:focus,
+.wayline-task-grid input:focus,
+.wayline-task-grid select:focus { border-color: #3fa9ff; box-shadow: 0 0 0 2px rgba(63,169,255,.12); }
+.wayline-task-route-field button {
+  min-width: 62px; border: 1px solid rgba(63,169,255,.3); border-radius: 7px;
+  color: #8dcaff; background: rgba(63,169,255,.08); cursor: pointer;
+}
+.wayline-task-route-field button:disabled { opacity: .45; cursor: default; }
+.wayline-task-route-card {
+  display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 11px; align-items: center;
+  margin-top: 12px; padding: 12px; border: 1px solid rgba(63,169,255,.2); border-radius: 8px;
+  background: rgba(63,169,255,.055);
+}
+.wayline-route-icon {
+  display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px;
+  color: #64b9ff; background: rgba(63,169,255,.14); font-size: 22px;
+}
+.wayline-task-route-card strong { display: block; font-size: 13px; }
+.wayline-task-route-card p { display: flex; flex-wrap: wrap; gap: 5px 12px; margin: 5px 0; color: #8292a6; font: 9px/1.4 monospace; }
+.wayline-task-route-card small { color: #66778b; font-size: 9px; }
+.wayline-task-empty {
+  display: grid; gap: 5px; margin-top: 12px; padding: 22px;
+  border: 1px dashed rgba(255,255,255,.13); border-radius: 8px;
+  color: #708095; font-size: 10px; text-align: center;
+}
+.wayline-task-empty strong { color: #aab7c6; font-size: 12px; }
+.wayline-task-grid {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
+  margin-top: 16px;
+}
+.wayline-task-defaults { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.wayline-task-defaults span {
+  padding: 4px 7px; border: 1px solid rgba(53,214,164,.2); border-radius: 12px;
+  color: #67d7b5; background: rgba(53,214,164,.07); font-size: 9px;
+}
+.wayline-task-confirm {
+  display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 8px;
+  margin-top: 14px; padding: 11px; border: 1px solid rgba(255,176,79,.24); border-radius: 8px;
+  color: #c4b18f; background: rgba(255,176,79,.055); font-size: 10px; line-height: 1.5; cursor: pointer;
+}
+.wayline-task-confirm input { margin: 2px 0 0; accent-color: #3fa9ff; }
+.wayline-task-drc-note,
+.wayline-task-blocked,
+.wayline-task-error { margin: 10px 0 0; padding: 8px 10px; border-radius: 7px; font-size: 10px; line-height: 1.45; }
+.wayline-task-drc-note { color: #8dcaff; background: rgba(63,169,255,.08); }
+.wayline-task-blocked { color: #ffc779; background: rgba(255,176,79,.09); }
+.wayline-task-error { color: #ff9aa5; background: rgba(255,93,108,.09); }
+.wayline-task-form footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.wayline-task-form footer button {
+  height: 36px; padding: 0 16px; border-radius: 7px; font-size: 11px; font-weight: 600; cursor: pointer;
+}
+.wayline-task-form footer button:disabled { opacity: .42; cursor: not-allowed; }
+.wayline-task-cancel { border: 1px solid rgba(255,255,255,.13); color: #a9b5c3; background: rgba(255,255,255,.04); }
+.wayline-task-submit { border: 1px solid #258fea; color: #fff; background: #087ff5; box-shadow: 0 0 16px rgba(8,127,245,.18); }
+.wayline-task-submit:hover:not(:disabled) { background: #168bf8; }
+.wayline-task-success {
+  position: fixed; z-index: 1200; top: 56px; left: 50%; transform: translateX(-50%);
+  display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; gap: 9px;
+  width: min(520px, calc(100vw - 32px)); box-sizing: border-box; padding: 10px 12px;
+  border: 1px solid rgba(53,214,164,.5); border-radius: 9px; color: #d7f6ed;
+  background: rgba(6,30,24,.95); box-shadow: 0 10px 30px rgba(0,0,0,.38);
+  text-align: left; backdrop-filter: blur(10px); cursor: pointer;
+}
+.wayline-task-success > span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: #062119; background: #35d6a4; font-weight: 800; }
+.wayline-task-success strong { display: block; margin-bottom: 2px; color: #6ee7c1; font-size: 11px; }
+.wayline-task-success p { margin: 0; color: #b9dcd1; font-size: 10px; line-height: 1.45; }
 
 .cockpit-error-toast {
   position: fixed; z-index: 1200; top: 56px; left: 50%;
@@ -5429,6 +6276,11 @@ function toggleFullscreen() {
 .dev-actions button:disabled { opacity: .38; cursor: not-allowed; }
 .dev-action-icon { font: 14px/1 monospace; transform: translateY(-.5px); }
 .dev-action-icon.stop { font-size: 8px; }
+/* 航线任务：青绿色，区别于定位与紧急制动 */
+.dev-action-wayline {
+  border: 1px solid rgba(53,214,164,.34); color: #69dfbc; background: rgba(53,214,164,.09);
+}
+.dev-action-wayline:hover:not(:disabled) { border-color: #35d6a4; background: rgba(53,214,164,.18); box-shadow: 0 0 12px rgba(53,214,164,.2); }
 /* 定位：冷蓝毛玻璃 */
 .dev-action-locate {
   border: 1px solid rgba(63,169,255,.3); color: #7fc4ff; background: rgba(63,169,255,.1);
@@ -5464,7 +6316,39 @@ function toggleFullscreen() {
 }
 .map-tool:hover { border-color: #3fa9ff; background: rgba(20,28,40,.85); transform: translateY(-1px); }
 .map-tool.active { border-color: rgba(63,169,255,.5); color: #3fa9ff; box-shadow: 0 0 0 1px rgba(63,169,255,.2); }
-.map-target-tool { font: 700 12px/1 ui-sans-serif, system-ui, sans-serif; }
+.map-target-tool { position: relative; font: 700 12px/1 ui-sans-serif, system-ui, sans-serif; }
+.map-target-tool.executing { color: #35d6a4; border-color: rgba(53,214,164,.65); box-shadow: 0 0 12px rgba(53,214,164,.22); }
+.map-target-tool.executing::after {
+  content: ''; position: absolute; top: -3px; right: -3px; width: 6px; height: 6px;
+  border-radius: 50%; background: #35d6a4; box-shadow: 0 0 7px #35d6a4;
+}
+.point-flight-map-status {
+  position: absolute; z-index: 11; top: 10px; left: 50%; transform: translateX(-50%);
+  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; align-items: center; gap: 9px;
+  width: max-content; max-width: calc(100% - 150px); box-sizing: border-box; padding: 7px 9px;
+  border: 1px solid rgba(53,214,164,.42); border-radius: 8px; color: #dffbf2;
+  background: rgba(4,22,18,.9); box-shadow: 0 6px 20px rgba(0,0,0,.34), 0 0 18px rgba(53,214,164,.08);
+  backdrop-filter: blur(8px);
+}
+.point-flight-map-status > i {
+  width: 8px; height: 8px; border-radius: 50%; background: #35d6a4;
+  box-shadow: 0 0 8px #35d6a4; animation: blink 1.2s ease infinite;
+}
+.point-flight-map-status > div { min-width: 0; }
+.point-flight-map-status strong { display: block; color: #73e9c5; font-size: 11px; }
+.point-flight-map-status span {
+  display: block; overflow: hidden; margin-top: 2px; color: #91b9ad;
+  font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap;
+}
+.point-flight-map-status button {
+  height: 25px; padding: 0 8px; border: 1px solid rgba(53,214,164,.3); border-radius: 5px;
+  color: #8debcf; background: rgba(53,214,164,.08); font-size: 9px; white-space: nowrap; cursor: pointer;
+}
+.point-flight-map-status button.stop { color: #ff9aa5; border-color: rgba(255,93,108,.34); background: rgba(255,93,108,.08); }
+.point-flight-map-status button:disabled { opacity: .4; cursor: not-allowed; }
+.point-flight-map-status.disconnected { border-color: rgba(255,176,79,.42); background: rgba(28,18,5,.92); }
+.point-flight-map-status.disconnected > i { background: #ffb04f; box-shadow: 0 0 8px #ffb04f; }
+.point-flight-map-status.disconnected strong { color: #ffc779; }
 
 /* 无 Key 时的备用指南针 */
 .cx-fallback { position: absolute; inset: 0; display: grid; place-items: center; }
@@ -5737,28 +6621,63 @@ function toggleFullscreen() {
 .video-obstacle-hud.ready .obstacle-hud-state i { background: #35d6a4; box-shadow: 0 0 6px rgba(53,214,164,.75); }
 .video-obstacle-hud.disabled .obstacle-hud-state { border-color: rgba(255,93,108,.38); color: #ff7b87; }
 .video-obstacle-hud.disabled .obstacle-hud-state i { background: #ff5d6c; box-shadow: 0 0 6px rgba(255,93,108,.75); }
-.obstacle-edge { position: absolute; display: flex; align-items: center; justify-content: center; gap: 3px; filter: drop-shadow(0 1px 2px #000); }
-.obstacle-edge span { padding: 3px 6px; border-radius: 4px; color: #e9f8ff; background: rgba(2,8,14,.67); white-space: nowrap; }
-.obstacle-edge > i { display: block; width: 18px; height: 3px; border-radius: 3px; background: currentColor; opacity: .35; }
-.obstacle-edge > i:nth-last-child(2) { opacity: .62; }
-.obstacle-edge > i:last-child { opacity: .95; box-shadow: 0 0 7px currentColor; }
-.obstacle-front { top: 38px; left: 50%; transform: translateX(-50%); flex-direction: column-reverse; }
-.obstacle-back { bottom: 71px; left: 50%; transform: translateX(-50%); flex-direction: column; }
-.obstacle-left { left: 8px; top: 50%; transform: translateY(-50%); flex-direction: row-reverse; }
-.obstacle-right { right: 52px; top: 50%; transform: translateY(-50%); }
-.obstacle-left > i, .obstacle-right > i { width: 3px; height: 18px; }
+.obstacle-rail { position: absolute; display: grid; gap: clamp(5px, 1.6vw, 18px); filter: drop-shadow(0 1px 2px #000); }
+.obstacle-rail-front, .obstacle-rail-rear {
+  left: 21%; right: 21%; grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.obstacle-rail-front { top: 54px; }
+.obstacle-rail-rear { bottom: 58px; }
+.obstacle-rail-left, .obstacle-rail-right {
+  top: 31%; bottom: 31%; grid-template-rows: repeat(3, minmax(0, 1fr)); gap: clamp(7px, 2vh, 20px);
+}
+.obstacle-rail-left { left: 12%; }
+.obstacle-rail-right { right: calc(12% + 38px); }
+.obstacle-rail-summary {
+  position: absolute; z-index: 1; padding: 3px 5px; border-radius: 4px;
+  color: var(--obstacle-color); background: rgba(2,8,14,.72); white-space: nowrap;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 22%, transparent);
+}
+.obstacle-rail-front .obstacle-rail-summary {
+  bottom: calc(100% + 5px); left: 50%; transform: translateX(-50%);
+}
+.obstacle-rail-rear .obstacle-rail-summary {
+  top: calc(100% + 5px); left: 50%; transform: translateX(-50%);
+}
+.obstacle-rail-left .obstacle-rail-summary {
+  top: 50%; left: calc(100% + 5px); transform: translateY(-50%);
+}
+.obstacle-rail-right .obstacle-rail-summary {
+  top: 50%; right: calc(100% + 5px); transform: translateY(-50%);
+}
+.obstacle-segment { display: flex; align-items: center; justify-content: center; min-width: 0; color: var(--obstacle-color); }
+.obstacle-segment span {
+  padding: 2px 4px; border-radius: 4px; color: currentColor; background: rgba(2,8,14,.69);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 22%, transparent); white-space: nowrap;
+}
+.obstacle-segment small { margin-left: 1px; font-size: .75em; opacity: .72; }
+.obstacle-segment i { display: block; flex: 1 1 auto; border-radius: 4px; background: currentColor; box-shadow: 0 0 8px currentColor; }
+.obstacle-segment-horizontal { flex-direction: column; gap: 3px; }
+.obstacle-segment-horizontal i { width: 100%; min-width: 24px; height: 3px; }
+.obstacle-segment-vertical { gap: 3px; }
+.obstacle-segment-vertical i { width: 3px; height: 100%; min-height: 28px; }
+.obstacle-rail-left .obstacle-segment { flex-direction: row-reverse; }
+.obstacle-rail-left .obstacle-segment span, .obstacle-rail-right .obstacle-segment span { writing-mode: vertical-rl; padding: 4px 2px; }
+.obstacle-rail-left .obstacle-segment span { transform: rotate(180deg); }
 .obstacle-vertical-pair {
-  position: absolute; top: 51px; right: 8px; display: flex; flex-direction: column; gap: 4px;
+  position: absolute; bottom: 74px; left: 50%; transform: translateX(-50%); display: flex; gap: 7px;
 }
 .obstacle-vertical-pair span {
-  min-width: 48px; padding: 4px 6px; box-sizing: border-box; border-left: 2px solid currentColor;
-  border-radius: 4px; color: var(--obstacle-color); background: rgba(2,8,14,.67); text-align: right;
+  padding: 4px 6px; box-sizing: border-box; border-radius: 4px;
+  color: var(--obstacle-color); background: rgba(2,8,14,.67); text-align: center; white-space: nowrap;
   filter: drop-shadow(0 1px 2px #000);
 }
 .video-obstacle-hud .clear { color: #43d9ff; }
 .video-obstacle-hud .caution { color: #f1dd55; }
 .video-obstacle-hud .warning { color: #ffad45; }
 .video-obstacle-hud .danger { color: #ff5d6c; animation: obstacle-danger-pulse .8s ease-in-out infinite alternate; }
+.video-obstacle-hud .unknown { color: rgba(127,154,174,.48); }
+.video-obstacle-hud .unknown i { box-shadow: none; opacity: .32; }
+.video-obstacle-hud .unknown span { opacity: .68; }
 @keyframes obstacle-danger-pulse { from { opacity: .72; } to { opacity: 1; filter: drop-shadow(0 0 7px rgba(255,93,108,.8)); } }
 .gimbal-pitch-hud {
   position: absolute; z-index: 6; top: 32px; left: 10px;
@@ -5812,14 +6731,19 @@ function toggleFullscreen() {
 .video-metrics-actions button:disabled { opacity: .5; cursor: wait; }
 @container (max-width: 480px) {
   .obstacle-hud-state { top: 5px; padding: 3px 5px; font-size: 8px; }
-  .obstacle-front { top: 31px; }
-  .obstacle-back { bottom: 61px; }
-  .obstacle-edge span { padding: 2px 4px; font-size: 8px; }
-  .obstacle-edge > i { width: 14px; height: 2px; }
-  .obstacle-left > i, .obstacle-right > i { width: 2px; height: 14px; }
-  .obstacle-right { right: 46px; }
-  .obstacle-vertical-pair { top: 43px; right: 5px; gap: 3px; }
-  .obstacle-vertical-pair span { min-width: 42px; padding: 3px 4px; font-size: 8px; }
+  .obstacle-rail-front { top: 43px; }
+  .obstacle-rail-rear { bottom: 48px; }
+  .obstacle-rail-front, .obstacle-rail-rear { left: 18%; right: 18%; gap: 4px; }
+  .obstacle-rail-left, .obstacle-rail-right { top: 30%; bottom: 30%; gap: 5px; }
+  .obstacle-rail-left { left: 9%; }
+  .obstacle-rail-right { right: calc(9% + 34px); }
+  .obstacle-rail-summary { padding: 2px 4px; font-size: 8px; }
+  .obstacle-segment span { padding: 2px 3px; font-size: 7px; }
+  .obstacle-segment-horizontal i { min-width: 14px; height: 2px; }
+  .obstacle-segment-vertical i { width: 2px; min-height: 18px; }
+  .obstacle-rail-left .obstacle-segment span, .obstacle-rail-right .obstacle-segment span { padding: 3px 1px; }
+  .obstacle-vertical-pair { bottom: 59px; gap: 5px; }
+  .obstacle-vertical-pair span { padding: 3px 4px; font-size: 8px; }
   .gimbal-pitch-hud { top: 29px; left: 8px; gap: 4px; padding: 3px 5px; font-size: 9px; }
   .gimbal-pitch-hud strong { min-width: 33px; }
   .video-metrics {
@@ -5914,8 +6838,6 @@ function toggleFullscreen() {
 .info-label { font-size: 9px; color: #6b7789; letter-spacing: .04em; }
 .info-val { font-size: 13px; font-weight: 600; color: #dce8f4; font-family: 'JetBrains Mono', monospace; }
 .info-val.bat-warn { color: #ff5d6c; animation: blink 1.2s infinite; }
-.gear-info { color: #7fb6e6; }
-.gear-info.unknown { color: #6b7a8a; }
 /* 失联动作：语义色点 + 文字，随状态变色，无数据置灰 */
 .rclost-info { display: inline-flex; align-items: center; gap: 6px; transition: color .18s; }
 .rclost-dot {
@@ -6392,20 +7314,18 @@ function toggleFullscreen() {
 .cockpit-pro:is(.layout-map, .layout-video) .deck-info-col {
   grid-row: 1; grid-column: 1;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 6px;
   border-right: none; border-bottom: 1px solid rgba(255,255,255,.06);
 }
 .cockpit-pro:is(.layout-map, .layout-video) .info-row {
-  grid-column: span 2;
   min-width: 0; min-height: 38px;
   padding: 5px 6px; box-sizing: border-box;
   flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px;
   border: 1px solid rgba(255,255,255,.07); border-radius: 5px;
   background: rgba(255,255,255,.025);
 }
-.cockpit-pro:is(.layout-map, .layout-video) .info-row:nth-child(n + 4) { grid-column: span 3; }
 .cockpit-pro:is(.layout-map, .layout-video) .info-label {
   font-size: 8px; line-height: 1; letter-spacing: .03em; white-space: nowrap;
 }
@@ -6452,6 +7372,30 @@ function toggleFullscreen() {
 .cockpit-pro:is(.layout-map, .layout-video) .direction-grid kbd { width: 30px; height: 25px; font-size: 11px; }
 .cockpit-pro:is(.layout-map, .layout-video) .deck-btns { flex-direction: row; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .cockpit-pro:is(.layout-map, .layout-video) .deck-btn { padding: 5px 8px; font-size: 10px; flex: 1; min-width: 60px; }
+
+/* 视频优先且负载控制已开启时，两个控制栏各占自己的布局行。
+ * flex-basis: 0 让飞行控制区只使用扣除视频和负载栏后的剩余高度，
+ * 避免飞行状态切换后内容高度把负载云台栏顶上来。 */
+.cockpit-pro.layout-video .flight-view.has-payload-shortcuts .control-deck {
+  flex: 1 1 0;
+  grid-template-rows: auto minmax(132px, 160px) minmax(104px, 1fr);
+}
+.cockpit-pro.layout-video .flight-view.has-payload-shortcuts .deck-compass-zone {
+  height: auto; min-height: 132px; max-height: 160px;
+  align-self: stretch;
+}
+.cockpit-pro.layout-video .flight-view.has-payload-shortcuts .deck-control-zone {
+  min-height: 104px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.cockpit-pro.layout-video .flight-view.has-payload-shortcuts .payload-shortcut-panel {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 126px;
+}
 
 @media (max-width: 1220px) {
   /* 设备列表宽度始终锁定 320px：此处不再覆盖 --rail-width，沿用默认值 */

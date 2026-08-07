@@ -22,7 +22,9 @@ public class GetWaylineListResponse extends BaseModel {
      */
     @NotNull
     @Schema(description = "wayline file name", example = "waylineFile")
-    @Pattern(regexp = "^[^<>:\"/|?*._\\\\]+$")
+    // 航线展示名称来自 KMZ 文件名（去扩展名）。允许日期中常见的点号和下划线；
+    // 这里只需排除操作系统保留字符，文件对象路径由 object_key 单独管理。
+    @Pattern(regexp = "^[^<>:\"/|?*\\\\]+$")
     private String name;
 
     /**

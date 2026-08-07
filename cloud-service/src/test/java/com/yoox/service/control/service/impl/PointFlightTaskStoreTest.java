@@ -176,7 +176,8 @@ class PointFlightTaskStoreTest {
         String finished = "{\"sn\":\"test-gateway\",\"kind\":\"takeoff\","
                 + "\"flight_id\":\"takeoff-1\",\"status\":\"task_finish\",\"active\":false}";
         when(stringRedisTemplate.execute(
-                any(DefaultRedisScript.class), any(List.class), anyString(), anyString()))
+                any(DefaultRedisScript.class), any(List.class),
+                anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(finished);
 
         Map<String, Object> state = taskStore.finishProgressingTaskOnIdle(GATEWAY_SN).orElseThrow();
@@ -185,7 +186,7 @@ class PointFlightTaskStoreTest {
                 ArgumentCaptor.forClass(DefaultRedisScript.class);
         verify(stringRedisTemplate).execute(
                 script.capture(), eq(List.of(REDIS_KEY, ACTIVE_KEY)),
-                anyString(), eq(TTL_SECONDS));
+                anyString(), eq(TTL_SECONDS), eq("0"), eq("Aircraft returned to idle mode."));
         String lua = script.getValue().getScriptAsString();
         assertTrue(lua.contains("current['status'] or '') ~= 'wayline_progress'"));
         assertTrue(lua.contains("current['status'] = 'task_finish'"));
@@ -193,6 +194,52 @@ class PointFlightTaskStoreTest {
         assertTrue(lua.contains("redis.call('del', KEYS[2])"));
         assertEquals("task_finish", state.get("status"));
         assertEquals(Boolean.FALSE, state.get("active"));
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void manualModeFinishesOnlyTakeoffTasks() {
+        String finished = "{\"sn\":\"test-gateway\",\"kind\":\"takeoff\","
+                + "\"flight_id\":\"takeoff-1\",\"status\":\"task_finish\",\"active\":false}";
+        when(stringRedisTemplate.execute(
+                any(DefaultRedisScript.class), any(List.class),
+                anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(finished);
+
+        Map<String, Object> state =
+                taskStore.finishProgressingTakeoffOnManual(GATEWAY_SN).orElseThrow();
+
+        ArgumentCaptor<DefaultRedisScript> script =
+                ArgumentCaptor.forClass(DefaultRedisScript.class);
+        verify(stringRedisTemplate).execute(
+                script.capture(), eq(List.of(REDIS_KEY, ACTIVE_KEY)),
+                anyString(), eq(TTL_SECONDS), eq("1"),
+                eq("Takeoff completed. The aircraft is hovering."));
+        String lua = script.getValue().getScriptAsString();
+        assertTrue(lua.contains("ARGV[3] == '1' and current['kind'] ~= 'takeoff'"));
+        assertEquals("task_finish", state.get("status"));
+        assertEquals(Boolean.FALSE, state.get("active"));
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void confirmedCancelReleasesTheActiveClaim() {
+        when(stringRedisTemplate.execute(
+                any(DefaultRedisScript.class), any(List.class),
+                anyString(), anyString(), anyString()))
+                .thenReturn(1L);
+
+        taskStore.recordCancelConfirmed(GATEWAY_SN, "Cancel command accepted.");
+
+        ArgumentCaptor<DefaultRedisScript> script =
+                ArgumentCaptor.forClass(DefaultRedisScript.class);
+        verify(stringRedisTemplate).execute(
+                script.capture(), eq(List.of(REDIS_KEY, ACTIVE_KEY)),
+                eq("Cancel command accepted."), anyString(), eq(TTL_SECONDS));
+        String lua = script.getValue().getScriptAsString();
+        assertTrue(lua.contains("current['status'] = 'cancel_confirmed'"));
+        assertTrue(lua.contains("current['active'] = false"));
+        assertTrue(lua.contains("redis.call('del', KEYS[2])"));
     }
 
     @Test

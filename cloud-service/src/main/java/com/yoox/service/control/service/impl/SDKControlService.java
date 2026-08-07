@@ -1,6 +1,7 @@
 package com.yoox.service.control.service.impl;
 
 import com.yoox.api.control.AbstractControlService;
+import com.yoox.great.mqtt.constant.TopicConst;
 import com.yoox.great.mqtt.core.consume.MqttReply;
 import com.yoox.great.mqtt.enums.control.ControlSourceEnum;
 import com.yoox.great.mqtt.enums.control.DrcStatusErrorEnum;
@@ -8,8 +9,10 @@ import com.yoox.great.mqtt.enums.control.JoystickInvalidReasonEnum;
 import com.yoox.great.mqtt.enums.device.DrcStateEnum;
 import com.yoox.great.mqtt.handle.events.TopicEventsRequest;
 import com.yoox.great.mqtt.handle.events.TopicEventsResponse;
+import com.yoox.great.mqtt.handle.drc.TopicDrcRequest;
 import com.yoox.great.mqtt.model.control.DrcStatusNotify;
 import com.yoox.great.mqtt.model.control.FlyToPointProgress;
+import com.yoox.great.mqtt.model.control.HsiInfoPush;
 import com.yoox.great.mqtt.model.control.JoystickInvalidNotify;
 import com.yoox.great.mqtt.model.control.TakeoffToPointProgress;
 import com.yoox.great.websocket.enums.BizCodeEnum;
@@ -25,6 +28,7 @@ import com.yoox.service.wayline.service.IFlightTaskService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.integration.mqtt.support.MqttHeaders;
 import org.springframework.messaging.MessageHeaders;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -107,6 +111,50 @@ public class SDKControlService extends AbstractControlService {
             log.error("Failed to broadcast takeoff progress for gateway {}", dockSn, exception);
         }
         return acknowledge(request);
+    }
+
+    @Override
+    public void hsiInfoPush(TopicDrcRequest<HsiInfoPush> request, MessageHeaders headers) {
+        String gatewaySn = drcGatewaySn(headers);
+        Map<String, Object> notification = request == null || request.getData() == null
+                ? new LinkedHashMap<>()
+                : mapper.convertValue(
+                        request.getData(), new TypeReference<Map<String, Object>>() { });
+        notification.put("sn", gatewaySn);
+        notification.put("method", request == null ? "hsi_info_push" : request.getMethod());
+        notification.put("tid", request == null ? null : request.getTid());
+        notification.put("bid", request == null ? null : request.getBid());
+        notification.put("timestamp", request == null ? null : request.getTimestamp());
+
+        try {
+            workspaceId(gatewaySn).ifPresentOrElse(
+                    workspaceId -> webSocketMessageService.sendBatch(
+                            workspaceId,
+                            UserTypeEnum.WEB.getVal(),
+                            BizCodeEnum.DRC_HSI_INFO_PUSH.getCode(),
+                            notification),
+                    () -> log.warn(
+                            "Unable to broadcast DRC obstacle telemetry: gateway {} is not bound to a workspace",
+                            gatewaySn));
+        } catch (RuntimeException exception) {
+            log.error("Failed to broadcast DRC obstacle telemetry for gateway {}", gatewaySn, exception);
+        }
+    }
+
+    private String drcGatewaySn(MessageHeaders headers) {
+        Object header = headers == null ? null : headers.get(MqttHeaders.RECEIVED_TOPIC);
+        String topic = header == null ? "" : header.toString();
+        String prefix = TopicConst.THING_MODEL_PRE + TopicConst.PRODUCT;
+        String suffix = TopicConst.DRC + TopicConst.UP;
+        if (!topic.startsWith(prefix) || !topic.endsWith(suffix)
+                || topic.length() <= prefix.length() + suffix.length()) {
+            throw new SecurityException("The DRC MQTT topic does not identify a gateway.");
+        }
+        String gatewaySn = topic.substring(prefix.length(), topic.length() - suffix.length());
+        if (!gatewaySn.matches(TopicConst.REGEX_SN)) {
+            throw new SecurityException("The DRC MQTT topic contains an invalid gateway serial number.");
+        }
+        return gatewaySn;
     }
 
     @Override

@@ -56,6 +56,15 @@ public class ServicesPublish {
                 deviceList);
     }
 
+    public TopicServicesResponse<ServicesReplyData> publish(
+            String sn, String method, Object data, String bid, List<Map<String, String>> deviceList) {
+        return (TopicServicesResponse) this.publish(
+                null, sn, method, data, bid,
+                MqttGatewayPublish.DEFAULT_RETRY_COUNT,
+                MqttGatewayPublish.DEFAULT_RETRY_TIMEOUT,
+                deviceList);
+    }
+
     public TopicServicesResponse<ServicesReplyData> publish(String sn, String method, Object data, int retryCount) {
         return this.publish(sn, method, data, null, retryCount);
     }
@@ -100,22 +109,32 @@ public class ServicesPublish {
                         .setTimestamp(System.currentTimeMillis())
                         .setMethod(method)
                         .setDeviceList(deviceList)
-                        .setData(Objects.requireNonNullElse(data, "")), retryCount, timeout);
+                        .setData(data), retryCount, timeout);
         ServicesReplyReceiver replyReceiver = (ServicesReplyReceiver) response.getData();
         ServicesReplyData<T> reply = new ServicesReplyData<T>().setResult(replyReceiver.getResult());
         if (Objects.isNull(clazz)) {
             reply.setOutput((T) Objects.requireNonNullElse(
                     replyReceiver.getOutput(), Objects.requireNonNullElse(replyReceiver.getInfo(), "")));
-            return response.setData(reply);
+        } else {
+            ObjectMapper mapper = Common.getObjectMapper();
+            if (Objects.nonNull(replyReceiver.getInfo())) {
+                reply.setOutput(mapper.convertValue(replyReceiver.getInfo(), clazz));
+            }
+            if (Objects.nonNull(replyReceiver.getOutput())) {
+                reply.setOutput(mapper.convertValue(replyReceiver.getOutput(), clazz));
+            }
         }
-        ObjectMapper mapper = Common.getObjectMapper();
-        if (Objects.nonNull(replyReceiver.getInfo())) {
-            reply.setOutput(mapper.convertValue(replyReceiver.getInfo(), clazz));
-        }
-        if (Objects.nonNull(replyReceiver.getOutput())) {
-            reply.setOutput(mapper.convertValue(replyReceiver.getOutput(), clazz));
-        }
-        return response.setData(reply);
+        // 不能直接 response.setData(reply) 复用同一个对象：该 response 与
+        // ServicesReplyHandler 发布的 ServicesReplyReceivedEvent 共享同一实例，
+        // 若在此处把 data 字段从 ServicesReplyReceiver 替换成 ServicesReplyData，
+        // 会与异步事件监听线程产生数据竞争，导致监听端 ClassCastException。
+        // 因此这里构造一个新的响应对象返回，不修改共享的 response 实例。
+        return new TopicServicesResponse<ServicesReplyData<T>>()
+                .setTid(response.getTid())
+                .setBid(response.getBid())
+                .setMethod(response.getMethod())
+                .setTimestamp(response.getTimestamp())
+                .setData(reply);
     }
 
 }

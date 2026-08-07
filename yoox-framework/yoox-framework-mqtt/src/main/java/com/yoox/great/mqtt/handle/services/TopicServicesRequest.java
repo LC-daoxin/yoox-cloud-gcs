@@ -2,6 +2,7 @@ package com.yoox.great.mqtt.handle.services;
 
 
 import com.yoox.great.mqtt.core.CommonTopicRequest;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
@@ -74,6 +75,9 @@ public class TopicServicesRequest<T> extends CommonTopicRequest<T> {
         return this;
     }
 
+    // 道通上云 API 要求无参数的 services 指令（如 return_home）发送 "data": null。
+    // 全局 ObjectMapper 配置了 NON_ABSENT 会省略 null 字段，此处强制始终序列化。
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     public T getData() {
         return data;
     }

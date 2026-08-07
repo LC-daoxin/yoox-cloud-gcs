@@ -50,6 +50,10 @@ public enum DroneModeCodeEnum {
 
     POI(20),
     /**
+     * 指点飞行模式（Autel 扩展，fly_to_point 执行中上报）
+     */
+    FLY_TO_POINT_MODE(37),
+    /**
      * KML route mode
      */
     KML_ROUTE_MODE(39),

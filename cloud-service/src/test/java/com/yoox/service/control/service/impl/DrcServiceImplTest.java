@@ -201,6 +201,36 @@ class DrcServiceImplTest {
     }
 
     @Test
+    void refreshedBrowserAtomicallyTakesOverSamePrincipalActiveLease() {
+        stubRegisteredGateway();
+        DrcSession existing = session(USER_ID, OTHER_CLIENT_ID, null);
+        existing.setControlTopicSn(GATEWAY_SN);
+        when(drcSessionStore.getSession(GATEWAY_SN)).thenReturn(Optional.of(existing));
+        when(drcSessionStore.getState(existing))
+                .thenReturn(Optional.of(DrcSessionStore.SessionState.ACTIVE));
+        when(drcSessionStore.rebindBrowserClient(existing, CLIENT_ID)).thenReturn(true);
+        stubOnlineGateway(new OsdRcDrone()
+                .setElevation(10f)
+                .setModeCode(DroneModeCodeEnum.MANUAL));
+        when(controlService.seizeAuthority(
+                GATEWAY_SN, DroneAuthorityEnum.FLIGHT, null, true))
+                .thenReturn(HttpResultResponse.success());
+
+        JwtAclDTO browserAcl = drcService.deviceDrcEnter(
+                WORKSPACE_ID, USER_ID, drcParam(CLIENT_ID));
+
+        assertEquals("thing/product/" + GATEWAY_SN + "/drc/down",
+                browserAcl.getPub().get(0));
+        verify(drcSessionStore).rebindBrowserClient(existing, CLIENT_ID);
+        verify(drcSessionStore).grantUserTopics(
+                CLIENT_ID,
+                "thing/product/" + GATEWAY_SN + "/drc/down",
+                "thing/product/" + GATEWAY_SN + "/drc/up");
+        verify(drcSessionStore).refreshSession(existing);
+        verify(abstractControlService, never()).drcModeEnter(any(), any());
+    }
+
+    @Test
     void callerSuppliedClientIdIsAlwaysRejected() {
         DrcConnectParam param = new DrcConnectParam();
         param.setClientId(CLIENT_ID);
@@ -262,19 +292,17 @@ class DrcServiceImplTest {
     }
 
     @Test
-    void sameAuthenticatedOwnerCanExitStaleSessionWithFreshBrowserClient() {
+    void staleBrowserIdentityCannotExitAnotherTabSessionForSamePrincipal() {
         stubRegisteredGateway();
         DrcSession staleSession = session(USER_ID, OTHER_CLIENT_ID, null);
         when(drcSessionStore.getSession(GATEWAY_SN)).thenReturn(Optional.of(staleSession));
-        when(drcSessionStore.prepareExit(staleSession))
-                .thenReturn(DrcSessionStore.ExitPreparation.STARTED_ACTIVE);
-        when(abstractControlService.drcModeExit(any(GatewayManager.class))).thenReturn(reply(0));
-        when(drcSessionStore.releaseSession(staleSession)).thenReturn(true);
 
-        drcService.deviceDrcExit(WORKSPACE_ID, USER_ID, drcParam(CLIENT_ID));
+        assertThrows(SecurityException.class,
+                () -> drcService.deviceDrcExit(
+                        WORKSPACE_ID, USER_ID, drcParam(CLIENT_ID)));
 
-        verify(abstractControlService).drcModeExit(any(GatewayManager.class));
-        verify(drcSessionStore).releaseSession(staleSession);
+        verify(abstractControlService, never()).drcModeExit(any(GatewayManager.class));
+        verify(drcSessionStore, never()).releaseSession(staleSession);
     }
 
     @Test

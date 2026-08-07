@@ -374,19 +374,28 @@ public class SDKDeviceService extends AbstractDeviceService {
 
     private void finishPointFlightWhenIdle(
             String gatewaySn, DroneModeCodeEnum modeCode, String workspaceId) {
-        if (modeCode != DroneModeCodeEnum.IDLE || !StringUtils.hasText(gatewaySn)
-                || !StringUtils.hasText(workspaceId)) {
+        if (!StringUtils.hasText(gatewaySn) || !StringUtils.hasText(workspaceId)) {
             return;
         }
-        pointFlightTaskStore.finishProgressingTaskOnIdle(gatewaySn).ifPresent(state -> {
+        // RC 不上报起飞任务的终结事件：到点后转 MANUAL 悬停即视为起飞完成，
+        // 否则任务一直占用点飞额度，悬停期间指点飞行会被拦截。
+        Optional<Map<String, Object>> finished;
+        if (modeCode == DroneModeCodeEnum.IDLE) {
+            finished = pointFlightTaskStore.finishProgressingTaskOnIdle(gatewaySn);
+        } else if (modeCode == DroneModeCodeEnum.MANUAL) {
+            finished = pointFlightTaskStore.finishProgressingTakeoffOnManual(gatewaySn);
+        } else {
+            return;
+        }
+        finished.ifPresent(state -> {
             String kind = String.valueOf(state.getOrDefault("kind", ""));
             BizCodeEnum bizCode = "takeoff".equals(kind)
                     ? BizCodeEnum.TAKE_OFF_TO_POINT_PROGRESS
                     : BizCodeEnum.FLY_TO_POINT_PROGRESS;
             webSocketMessageService.sendBatch(
                     workspaceId, UserTypeEnum.WEB.getVal(), bizCode.getCode(), state);
-            log.info("Finished {} point-flight task for gateway {} because aircraft is idle.",
-                    kind, gatewaySn);
+            log.info("Finished {} point-flight task for gateway {} because aircraft mode is {}.",
+                    kind, gatewaySn, modeCode);
         });
     }
 

@@ -135,6 +135,8 @@ td strong { color: #dce8f4; }
 .password-drawer { width: min(390px, 92vw); }
 .task-form { display: grid; gap: 16px; }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.checkbox-row input { width: auto; margin: 0; }
 
 .live-layout, .cockpit { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 20px; }
 .video-stage { position: relative; min-height: calc(100vh - 180px); overflow: hidden; background: #03080e; }

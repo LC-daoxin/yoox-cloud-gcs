@@ -75,6 +75,8 @@ public enum BizCodeEnum {
 
     DRC_STATUS_NOTIFY("drc_status_notify"),
 
+    DRC_HSI_INFO_PUSH("drc_hsi_info_push"),
+
     JOYSTICK_INVALID_NOTIFY("joystick_invalid_notify"),
 
     TARGET_DETECT_RESULT_REPORT("target_detect_result_report"),

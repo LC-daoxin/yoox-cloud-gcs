@@ -76,6 +76,8 @@ docker compose --env-file .env.example config --quiet
 
 ## 文档
 
+- [macOS 本地构建与部署](docs/10-macOS本地构建与部署.md)
+- [Linux 本地构建与部署](docs/11-Linux本地构建与部署.md)
 - [配置指南](docs/06-配置指南.md)
 - [API 指南](docs/07-API指南.md)
 - [部署与运维指南](docs/08-部署运维指南.md)

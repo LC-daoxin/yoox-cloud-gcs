@@ -169,8 +169,7 @@ public class DrcServiceImpl implements IDrcService {
         drcSessionStore.assertBrowserClientOwner(workspaceId, userId, param.getClientId());
         Optional<DrcSession> existingOpt = drcSessionStore.getSession(param.getDockSn());
         if (existingOpt.isPresent()) {
-            assertSessionOwner(
-                    existingOpt.get(), workspaceId, userId, param.getClientId());
+            assertSessionPrincipalOwner(existingOpt.get(), workspaceId, userId);
         }
         DeviceDTO gateway = requireDrcGateway(param.getDockSn());
         DrcTopics topics = drcTopics(param.getDockSn(), gateway);
@@ -192,6 +191,11 @@ public class DrcServiceImpl implements IDrcService {
                         "The active DRC session uses an outdated control topic. Exit DRC and enter again.");
             }
             checkDrcModeCondition(param.getDockSn(), gateway);
+            if (!param.getClientId().equals(existing.getBrowserClientId())
+                    && !drcSessionStore.rebindBrowserClient(existing, param.getClientId())) {
+                throw new IllegalStateException(
+                        "The active DRC session changed before browser recovery.");
+            }
             grantUserTopics(param.getClientId(), topics);
             drcSessionStore.refreshSession(existing);
             return browserAcl;
@@ -354,11 +358,11 @@ public class DrcServiceImpl implements IDrcService {
         }
 
         DrcSession session = sessionOpt.get();
-        // A browser refresh allocates a fresh, server-owned MQTT client ID. It
-        // must not take over an existing DRC channel, but the same authenticated
-        // workspace user must still be able to issue drc_mode_exit and clean a
-        // stale lease left by a crashed/closed page.
-        assertSessionPrincipalOwner(session, workspaceId, userId);
+        // Exit is bound to the currently active browser identity. A refreshed
+        // page first atomically rebinds the active lease in /drc/enter; an old
+        // tab can therefore close its local socket without terminating the new
+        // tab's recovered DRC session.
+        assertSessionOwner(session, workspaceId, userId, param.getClientId());
         DrcSessionStore.ExitPreparation exitPreparation = drcSessionStore.prepareExit(session);
         if (exitPreparation == DrcSessionStore.ExitPreparation.REJECTED) {
             throw new IllegalStateException("The DRC session is currently changing state.");

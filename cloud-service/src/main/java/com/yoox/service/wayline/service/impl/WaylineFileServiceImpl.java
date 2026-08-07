@@ -214,9 +214,11 @@ public class WaylineFileServiceImpl implements IWaylineFileService {
                     throw new RuntimeException("The file format is incorrect.");
                 }
 
-                DeviceTypeEnum type = DeviceTypeEnum.find(Integer.parseInt(droneNode.valueOf(KmzFileProperties.TAG_WPML_PREFIX + KmzFileProperties.TAG_DRONE_ENUM_VALUE)));
+                int droneTypeValue = Integer.parseInt(droneNode.valueOf(KmzFileProperties.TAG_WPML_PREFIX + KmzFileProperties.TAG_DRONE_ENUM_VALUE));
+                int payloadTypeValue = Integer.parseInt(payloadNode.valueOf(KmzFileProperties.TAG_WPML_PREFIX + KmzFileProperties.TAG_PAYLOAD_ENUM_VALUE));
+                DeviceTypeEnum type = resolveWaylineDroneType(droneTypeValue, payloadTypeValue);
                 DeviceSubTypeEnum subType = DeviceSubTypeEnum.find(Integer.parseInt(droneNode.valueOf(KmzFileProperties.TAG_WPML_PREFIX + KmzFileProperties.TAG_DRONE_SUB_ENUM_VALUE)));
-                DeviceTypeEnum payloadType = DeviceTypeEnum.find(Integer.parseInt(payloadNode.valueOf(KmzFileProperties.TAG_WPML_PREFIX + KmzFileProperties.TAG_PAYLOAD_ENUM_VALUE)));
+                DeviceTypeEnum payloadType = resolveWaylinePayloadType(payloadTypeValue);
                 DeviceSubTypeEnum payloadSubType = DeviceSubTypeEnum.find(Integer.parseInt(payloadNode.valueOf(KmzFileProperties.TAG_WPML_PREFIX + KmzFileProperties.TAG_PAYLOAD_SUB_ENUM_VALUE)));
                 String templateType = document.valueOf("//" + KmzFileProperties.TAG_WPML_PREFIX + KmzFileProperties.TAG_TEMPLATE_TYPE);
 
@@ -234,6 +236,24 @@ public class WaylineFileServiceImpl implements IWaylineFileService {
             e.printStackTrace();
         }
         return Optional.empty();
+    }
+
+    static DeviceTypeEnum resolveWaylineDroneType(int droneType, int payloadType) {
+        // 旧版 Autel Mission 生成的 M4T/XL806 航线仍使用 DJI 兼容值 67。
+        // 结合其专属负载值 806 识别为 EVO Max，避免把任务元数据误记为 M30。
+        if (droneType == 67 && payloadType == 806) {
+            return DeviceTypeEnum.EVO_MAX;
+        }
+        return DeviceTypeEnum.find(droneType);
+    }
+
+    static DeviceTypeEnum resolveWaylinePayloadType(int payloadType) {
+        // WPML 的 XL806 航线枚举与设备拓扑中的融光相机 4T XE（10806）
+        // 属于不同编号空间，入库时统一为设备模型键。
+        if (payloadType == 806) {
+            return DeviceTypeEnum.EVO_FUSION_4T_CAMERA;
+        }
+        return DeviceTypeEnum.find(payloadType);
     }
 
     private GetWaylineListResponse entityConvertToDTO(WaylineFileEntity entity) {

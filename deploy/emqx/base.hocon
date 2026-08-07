@@ -54,11 +54,6 @@ authorization {
       password = "yoox_redis_change_me"
       database = 0
       cmd = "HGETALL mqtt_acl:${clientid}"
-      # DRC ACL hashes use the native EMQX 5 schema:
-      #   HSET mqtt_acl:<clientid> <topic> publish|subscribe
-      # Pin the parser explicitly; otherwise a persisted/dashboard-created
-      # authorizer can retain v4 compatibility and ignore these rules.
-      compatibility_mode = disabled
     },
     {
       type = file

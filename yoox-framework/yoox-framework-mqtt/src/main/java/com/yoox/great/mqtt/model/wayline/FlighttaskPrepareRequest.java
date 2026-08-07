@@ -106,6 +106,37 @@ public class FlighttaskPrepareRequest extends BaseModel {
     @CloudSDKVersion(since = CloudSDKVersionEnum.V1_0_1, include = GatewayTypeEnum.DOCK2)
     private WaylinePrecisionTypeEnum waylinePrecisionType;
 
+    /**
+     * 避障开关状态（Autel：0 关闭避障，1 打开避障）
+     */
+    private BarrierSwitchStateEnum barrierSwitchState;
+
+    /**
+     * 起飞高度（米）
+     */
+    private Integer takeoffAltitude;
+
+    /**
+     * 飞往首航点的速度（m/s）
+     */
+    private Integer firstWaypointSpeed;
+
+    /**
+     * 返航速度（m/s）
+     */
+    private Integer returnSpeed;
+
+    /**
+     * 媒体文件上传方式（Autel：0 落地上传，1 边飞边传）
+     */
+    private MediaUploadMethodEnum mediaUploadMethod;
+
+    /**
+     * 备降点信息
+     */
+    @Valid
+    private AlternateLandPoint alternateLandPoint;
+
     public FlighttaskPrepareRequest() {
     }
 
@@ -126,6 +157,12 @@ public class FlighttaskPrepareRequest extends BaseModel {
                 ", rthMode=" + rthMode +
                 ", simulateMission=" + simulateMission +
                 ", waylinePrecisionType=" + waylinePrecisionType +
+                ", barrierSwitchState=" + barrierSwitchState +
+                ", takeoffAltitude=" + takeoffAltitude +
+                ", firstWaypointSpeed=" + firstWaypointSpeed +
+                ", returnSpeed=" + returnSpeed +
+                ", mediaUploadMethod=" + mediaUploadMethod +
+                ", alternateLandPoint=" + alternateLandPoint +
                 '}';
     }
 
@@ -252,6 +289,60 @@ public class FlighttaskPrepareRequest extends BaseModel {
 
     public FlighttaskPrepareRequest setWaylinePrecisionType(WaylinePrecisionTypeEnum waylinePrecisionType) {
         this.waylinePrecisionType = waylinePrecisionType;
+        return this;
+    }
+
+    public BarrierSwitchStateEnum getBarrierSwitchState() {
+        return barrierSwitchState;
+    }
+
+    public FlighttaskPrepareRequest setBarrierSwitchState(BarrierSwitchStateEnum barrierSwitchState) {
+        this.barrierSwitchState = barrierSwitchState;
+        return this;
+    }
+
+    public Integer getTakeoffAltitude() {
+        return takeoffAltitude;
+    }
+
+    public FlighttaskPrepareRequest setTakeoffAltitude(Integer takeoffAltitude) {
+        this.takeoffAltitude = takeoffAltitude;
+        return this;
+    }
+
+    public Integer getFirstWaypointSpeed() {
+        return firstWaypointSpeed;
+    }
+
+    public FlighttaskPrepareRequest setFirstWaypointSpeed(Integer firstWaypointSpeed) {
+        this.firstWaypointSpeed = firstWaypointSpeed;
+        return this;
+    }
+
+    public Integer getReturnSpeed() {
+        return returnSpeed;
+    }
+
+    public FlighttaskPrepareRequest setReturnSpeed(Integer returnSpeed) {
+        this.returnSpeed = returnSpeed;
+        return this;
+    }
+
+    public MediaUploadMethodEnum getMediaUploadMethod() {
+        return mediaUploadMethod;
+    }
+
+    public FlighttaskPrepareRequest setMediaUploadMethod(MediaUploadMethodEnum mediaUploadMethod) {
+        this.mediaUploadMethod = mediaUploadMethod;
+        return this;
+    }
+
+    public AlternateLandPoint getAlternateLandPoint() {
+        return alternateLandPoint;
+    }
+
+    public FlighttaskPrepareRequest setAlternateLandPoint(AlternateLandPoint alternateLandPoint) {
+        this.alternateLandPoint = alternateLandPoint;
         return this;
     }
 }

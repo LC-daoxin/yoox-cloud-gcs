@@ -1,0 +1,20 @@
+[Unit]
+Description=YOOX low-latency RTSP timestamp normalizer
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=jetson
+WorkingDirectory=/home/jetson/1_projects/YOOX_Cloud_GCS
+Environment=YOOX_PROJECT_DIR=/home/jetson/1_projects/YOOX_Cloud_GCS
+EnvironmentFile=-/etc/default/yoox-rtsp-normalizer
+ExecStart=/home/jetson/1_projects/YOOX_Cloud_GCS/scripts/rtsp-normalizer.sh
+Restart=always
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -82,6 +82,7 @@ public enum DeviceEnum {
      */
     EVO_MAX_4N_CAMERA(DeviceDomainEnum.PAYLOAD, DeviceTypeEnum.EVO_MAX_4N_CAMERA, DeviceSubTypeEnum.ZERO),
     EVO_MAX_4T_CAMERA(DeviceDomainEnum.PAYLOAD, DeviceTypeEnum.EVO_MAX_4T_CAMERA, DeviceSubTypeEnum.ZERO),
+    EVO_FUSION_4T_CAMERA(DeviceDomainEnum.PAYLOAD, DeviceTypeEnum.EVO_FUSION_4T_CAMERA, DeviceSubTypeEnum.ZERO),
     YOOX_DOCK_CAMERA(DeviceDomainEnum.PAYLOAD, DeviceTypeEnum.YOOX_DOCK_CAMERA, DeviceSubTypeEnum.ZERO),
     /**
      * 遥控器

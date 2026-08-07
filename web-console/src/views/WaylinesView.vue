@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { del, get, getToken, listFrom, post, put } from '../services/api'
+import { deviceWs, type WsMessage } from '../services/ws'
 import { useSessionStore } from '../stores/session'
 import type { Device } from '../types'
 
@@ -40,7 +41,17 @@ const jobForm = ref({
   rthAltitude: 100,
   outOfControlAction: 0,
   minBatteryCapacity: 60,
-  minStorageCapacity: 1024
+  minStorageCapacity: 1024,
+  waylinePrecisionType: 0,
+  barrierSwitchState: 1,
+  takeoffAltitude: 100,
+  firstWaypointSpeed: 10,
+  returnSpeed: 10,
+  mediaUploadMethod: 0,
+  useAlternateLandPoint: false,
+  alternateLongitude: 0,
+  alternateLatitude: 0,
+  safeLandHeight: 10
 })
 
 async function load() {
@@ -116,7 +127,17 @@ function openCreate() {
     rthAltitude: 100,
     outOfControlAction: 0,
     minBatteryCapacity: 60,
-    minStorageCapacity: 1024
+    minStorageCapacity: 1024,
+    waylinePrecisionType: 0,
+    barrierSwitchState: 1,
+    takeoffAltitude: 100,
+    firstWaypointSpeed: 10,
+    returnSpeed: 10,
+    mediaUploadMethod: 0,
+    useAlternateLandPoint: false,
+    alternateLongitude: 0,
+    alternateLatitude: 0,
+    safeLandHeight: 10
   }
   showCreate.value = true
 }
@@ -136,7 +157,21 @@ async function createJob() {
       rth_altitude: jobForm.value.rthAltitude,
       out_of_control_action: jobForm.value.outOfControlAction,
       min_battery_capacity: jobForm.value.minBatteryCapacity,
-      min_storage_capacity: jobForm.value.minStorageCapacity
+      min_storage_capacity: jobForm.value.minStorageCapacity,
+      wayline_precision_type: jobForm.value.waylinePrecisionType,
+      barrier_switch_state: jobForm.value.barrierSwitchState,
+      takeoff_altitude: jobForm.value.takeoffAltitude,
+      first_waypoint_speed: jobForm.value.firstWaypointSpeed,
+      return_speed: jobForm.value.returnSpeed,
+      media_upload_method: jobForm.value.mediaUploadMethod,
+      alternate_land_point: jobForm.value.useAlternateLandPoint
+        ? {
+            longitude: jobForm.value.alternateLongitude,
+            latitude: jobForm.value.alternateLatitude,
+            safe_land_height: jobForm.value.safeLandHeight,
+            is_configured: 1
+          }
+        : { is_configured: 0 }
     })
     showCreate.value = false
     tab.value = 'jobs'
@@ -167,7 +202,34 @@ async function changeJob(job: Job, status: 0 | 1) {
   }
 }
 
-onMounted(load)
+// 设备上报的航线任务状态（flighttask_progress.status）→ 任务表数字状态。
+const statusFromProgress: Record<string, number> = {
+  sent: 2, in_progress: 2, paused: 6, ok: 3,
+  failed: 5, canceled: 4, partially_done: 3, rejected: 5, timeout: 5
+}
+
+// 订阅 WebSocket 的 flighttask_progress，实时刷新对应任务的进度与状态，
+// 无需轮询。data 结构为 EventsReceiver：{ bid=jobId, output:{ status, progress:{ percent } } }。
+function onWaylineProgress(msg: WsMessage) {
+  if (msg.biz_code !== 'flighttask_progress') return
+  const data = (msg.data ?? {}) as Record<string, any>
+  const jobId = String(data.bid ?? data.job_id ?? '')
+  if (!jobId) return
+  const job = jobs.value.find((item) => item.job_id === jobId)
+  if (!job) return
+  const output = (data.output ?? {}) as Record<string, any>
+  const percent = Number(output?.progress?.percent)
+  if (Number.isFinite(percent)) job.progress = percent
+  const status = String(output?.status ?? '')
+  if (status in statusFromProgress) job.status = statusFromProgress[status]
+}
+
+let unsubscribe: (() => void) | undefined
+onMounted(() => {
+  load()
+  unsubscribe = deviceWs.subscribe(onWaylineProgress)
+})
+onBeforeUnmount(() => unsubscribe?.())
 </script>
 
 <template>
@@ -212,6 +274,18 @@ onMounted(load)
             <label>最低电量（%）<input v-model.number="jobForm.minBatteryCapacity" type="number" min="50" max="90" required /></label>
             <label>最低存储（MB）<input v-model.number="jobForm.minStorageCapacity" type="number" min="0" /></label>
             <label>失控动作<select v-model.number="jobForm.outOfControlAction"><option :value="0">返航</option><option :value="1">悬停</option><option :value="2">降落</option></select></label>
+            <label>航线精度<select v-model.number="jobForm.waylinePrecisionType"><option :value="0">GPS 任务</option><option :value="1">高精度 RTK 任务</option></select></label>
+            <label>避障开关<select v-model.number="jobForm.barrierSwitchState"><option :value="1">打开避障</option><option :value="0">关闭避障</option></select></label>
+            <label>起飞高度（米）<input v-model.number="jobForm.takeoffAltitude" type="number" min="1" max="1500" required /></label>
+            <label>去首航点速度（m/s）<input v-model.number="jobForm.firstWaypointSpeed" type="number" min="1" max="25" required /></label>
+            <label>返航速度（m/s）<input v-model.number="jobForm.returnSpeed" type="number" min="1" max="25" required /></label>
+            <label>媒体上传方式<select v-model.number="jobForm.mediaUploadMethod"><option :value="0">落地上传</option><option :value="1">边飞边传</option></select></label>
+          </div>
+          <label class="checkbox-row"><input v-model="jobForm.useAlternateLandPoint" type="checkbox" />设置备降点</label>
+          <div v-if="jobForm.useAlternateLandPoint" class="field-grid">
+            <label>备降点经度<input v-model.number="jobForm.alternateLongitude" type="number" step="0.0000001" min="-180" max="180" required /></label>
+            <label>备降点纬度<input v-model.number="jobForm.alternateLatitude" type="number" step="0.0000001" min="-90" max="90" required /></label>
+            <label>安全降落高度（米）<input v-model.number="jobForm.safeLandHeight" type="number" min="1" max="100" required /></label>
           </div>
           <div class="safety-card"><span>飞行安全</span><small>提交前请确认航线、返航高度、空域、电量、天气、现场人员和应急接管条件。</small></div>
           <p v-if="error" class="form-error">{{ error }}</p>

@@ -182,6 +182,8 @@ connect -> enter -> MQTT 心跳/控制 -> exit
 `expire_sec` 范围是 1800–86400 秒。进入前服务会检查设备在线、飞行状态、任务状态和控制权。
 连接信息中的 `password` 是短时 JWT；客户端不得持久化。控制端应每秒发送心跳，并以 10 Hz
 发布 `drone_control`。窗口失焦、按键释放、MQTT 断开或退出时必须先发送零杆量并释放控制权。
+同一用户刷新座舱时应申请新的浏览器 MQTT client；`enter` 会原子撤销旧 client 的 ACL 并把
+活跃租约接管到新 client，不会重复向设备下发 `drc_mode_enter`。不同用户仍不能接管该租约。
 
 DRC MQTT 消息保持设备物模型信封：
 
@@ -203,6 +205,50 @@ DRC MQTT 消息保持设备物模型信封：
 }
 ```
 
+#### DRC 避障信息上报
+
+- Topic：`thing/product/{gateway_sn}/drc/up`
+- Direction：`up`
+- Method：`hsi_info_push`
+- 距离单位：**米（m）**。字段值 `-1` 表示对应传感器未检测到障碍物；`0` 是有效距离，不能按“无数据”处理。
+
+| 位置 | 字段 | Web HUD 映射 |
+| --- | --- | --- |
+| 上 / 下 | `up_distance`、`down_distance` | 画面中上方 / 下方距离标记 |
+| 前方 1–4 | `front1_distance` … `front4_distance` | 画面上沿从左到右 4 个横向分段 |
+| 后方 1–4 | `rear1_distance` … `rear4_distance` | 画面下沿从左到右 4 个横向分段 |
+| 左侧 1–3 | `left1_distance` … `left3_distance` | 画面左沿从上到下 3 个纵向分段 |
+| 右侧 1–3 | `right1_distance` … `right3_distance` | 画面右沿从上到下 3 个纵向分段 |
+| 避障开关 | `radar_enable` | `true` 为开启，`false` 为关闭 |
+
+```json
+{
+  "bid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxx",
+  "data": {
+    "down_distance": 2,
+    "front1_distance": 1,
+    "front2_distance": -1,
+    "front3_distance": 3,
+    "front4_distance": 4,
+    "left1_distance": -1,
+    "left2_distance": 5,
+    "left3_distance": 6,
+    "radar_enable": true,
+    "rear1_distance": 7,
+    "rear2_distance": -1,
+    "rear3_distance": 8,
+    "rear4_distance": 9,
+    "right1_distance": 2,
+    "right2_distance": 3,
+    "right3_distance": -1,
+    "up_distance": 10
+  },
+  "tid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxx",
+  "timestamp": 1726131014572,
+  "method": "hsi_info_push"
+}
+```
+
 ### 3.4 指令控制
 
 | 方法 | 路径 | 说明 |
@@ -217,6 +263,24 @@ DRC MQTT 消息保持设备物模型信封：
 
 可用 `service_identifier` 与 payload 命令受机型、固件和设备能力限制；前端应按能力上报显示，
 不得把未验证指令作为固定按钮开放。
+
+> **遥控器（RC）网关与 `device_list` 寻址**
+>
+> 当网关为遥控器（`DeviceDomainEnum.REMOTER_CONTROL`，如 Autel 遥控器直连上云）时，
+> 遥控器把无人机作为子设备管理。所有面向**机身**的 `services` 指令必须在下行报文中携带
+> `device_list: [{"sn": <无人机 SN>}]` 显式寻址无人机，否则遥控器会静默丢弃指令、
+> 永不回复 `services_reply`，云端表现为 `Error Code: 211001 … No message reply received.`
+> （约 9 秒超时，3 次重试 × 3000 ms）。
+>
+> 服务端已按网关域**自动分流**（`*Rc()` 变体），调用方无需感知，覆盖：
+> 一键起飞 `takeoff_to_point`、指点飞行 `fly_to_point` / 结束 `fly_to_point_stop`、
+> 一键返航 `return_home` / 取消返航 `return_home_cancel`、飞行控制权 `flight_authority_grab`、
+> 负载控制权 `payload_authority_grab`、Look At `camera_look_at` 及全部负载指令、
+> 目标识别 `target_detect_open/close`、航线任务
+> `flighttask_prepare/execute/undo/pause/recovery`。
+>
+> 机巢（DOCK）网关不需要 `device_list`，仍走原有下行路径。排查“MQTT 指令无回复(211001)”
+> 时，优先确认该指令在 RC 网关下是否已带 `device_list`。
 
 ### 3.5 航线与任务
 
@@ -257,6 +321,11 @@ curl -sS "$BASE_URL/wayline/api/v1/workspaces/$WORKSPACE_ID/waylines/file/upload
 
 `rth_altitude` 范围 20–500 米，最低电量范围 50–90。枚举实际值以在线 OpenAPI 和设备能力为准。
 定时任务还需 `task_days`、`task_periods`。
+
+任务下发（`flighttask_prepare`）、执行（`flighttask_execute`）、暂停（`flighttask_pause`）、
+恢复（`flighttask_recovery`）、取消（`flighttask_undo`）在**遥控器（RC）网关**下同样自动携带
+`device_list` 寻址无人机（见 §3.4 说明）；`PUT /jobs/{job_id}` 的 `status=0` 暂停、`status=1` 恢复。
+任务进度经 WebSocket `flighttask_progress` 业务码实时推送，前端「航线任务」页据此实时刷新进度与状态。
 
 ### 3.6 媒体
 

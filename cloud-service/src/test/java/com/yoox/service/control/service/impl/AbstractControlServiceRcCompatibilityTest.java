@@ -4,14 +4,13 @@ import com.yoox.api.control.AbstractControlService;
 import com.yoox.great.context.enums.version.GatewayManager;
 import com.yoox.great.context.enums.version.GatewayTypeEnum;
 import com.yoox.great.context.exception.CloudSDKException;
-import com.yoox.great.mqtt.enums.control.CameraTypeEnum;
 import com.yoox.great.mqtt.enums.control.GimbalResetModeEnum;
 import com.yoox.great.mqtt.enums.control.LensStorageSettingsEnum;
 import com.yoox.great.mqtt.enums.device.CameraModeEnum;
 import com.yoox.great.mqtt.handle.services.ServicesPublish;
 import com.yoox.great.mqtt.model.config.CloudSDKHandler;
-import com.yoox.great.mqtt.model.control.CameraAimRequest;
 import com.yoox.great.mqtt.model.control.CameraModeSwitchRequest;
+import com.yoox.great.mqtt.model.control.CameraScreenSplitRequest;
 import com.yoox.great.mqtt.model.control.GimbalResetRequest;
 import com.yoox.great.mqtt.model.control.PhotoStorageSetRequest;
 import com.yoox.great.mqtt.model.control.VideoStorageSetRequest;
@@ -82,14 +81,11 @@ class AbstractControlServiceRcCompatibilityTest {
 
     @Test
     void springAopStillRejectsACommandThatIsExcludedForRc() {
-        CameraAimRequest request = new CameraAimRequest()
+        CameraScreenSplitRequest request = new CameraScreenSplitRequest()
                 .setPayloadIndex(PAYLOAD_INDEX)
-                .setCameraType(CameraTypeEnum.ZOOM)
-                .setLocked(false)
-                .setX(0.5F)
-                .setY(0.5F);
+                .setEnable(true);
 
-        assertThrows(CloudSDKException.class, () -> controlService.cameraAim(rcGateway, request));
+        assertThrows(CloudSDKException.class, () -> controlService.cameraScreenSplit(rcGateway, request));
         verifyNoInteractions(servicesPublish);
     }
 }

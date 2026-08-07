@@ -43,6 +43,9 @@ jwt:
   secret: ${YOOX_JWT_SECRET:replace_with_a_32_character_secret}
   age: ${YOOX_JWT_AGE:86400}
 
+app:
+  mqtt-advertised-address: ${YOOX_MQTT_ADVERTISED_ADDRESS:}
+
 mqtt:
   BASIC:
     protocol: ${YOOX_MQTT_PROTOCOL:MQTT}

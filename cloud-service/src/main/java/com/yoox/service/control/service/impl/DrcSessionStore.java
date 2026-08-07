@@ -118,6 +118,24 @@ public class DrcSessionStore {
                     + "redis.call('expire', KEYS[i], ARGV[2]); end; end; return 1",
             Long.class);
 
+    private static final DefaultRedisScript<Long> REBIND_BROWSER_CLIENT = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) ~= ARGV[1] then return 0 end; "
+                    + "if redis.call('get', KEYS[2]) ~= 'ACTIVE' then return -1 end; "
+                    + "if redis.call('hget', KEYS[3], ARGV[8]) ~= ARGV[2] then return 0 end; "
+                    + "if redis.call('get', KEYS[4]) ~= ARGV[1] then return 0 end; "
+                    + "if redis.call('exists', KEYS[5]) == 1 then return -2 end; "
+                    + "if redis.call('get', KEYS[6]) ~= ARGV[4] then return 0 end; "
+                    + "if redis.call('get', KEYS[7]) ~= ARGV[6] then return -3 end; "
+                    + "redis.call('hset', KEYS[3], ARGV[8], ARGV[3]); "
+                    + "redis.call('del', KEYS[4]); redis.call('del', KEYS[9]); "
+                    + "redis.call('set', KEYS[5], ARGV[1], 'EX', ARGV[7]); "
+                    + "redis.call('set', KEYS[6], ARGV[5], 'EX', ARGV[7]); "
+                    + "for i = 1, 3 do redis.call('expire', KEYS[i], ARGV[7]); end; "
+                    + "redis.call('expire', KEYS[7], ARGV[7]); "
+                    + "if redis.call('exists', KEYS[8]) == 1 then "
+                    + "redis.call('expire', KEYS[8], ARGV[7]); end; return 1",
+            Long.class);
+
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
@@ -468,6 +486,60 @@ public class DrcSessionStore {
         if (!Long.valueOf(1).equals(refreshed)) {
             throw new IllegalStateException("The DRC session is no longer active.");
         }
+    }
+
+    /**
+     * Atomically transfers an active lease to a fresh browser MQTT identity
+     * owned by the same authenticated principal. The previous browser ACL is
+     * revoked in the same Redis operation, so two refreshed tabs cannot retain
+     * command publish permission at the same time.
+     */
+    public boolean rebindBrowserClient(DrcSession session, String replacementClientId) {
+        if (session == null || !StringUtils.hasText(session.getGeneration())
+                || !StringUtils.hasText(replacementClientId)) {
+            return false;
+        }
+        assertBrowserClientOwner(
+                session.getWorkspaceId(), session.getUserId(), replacementClientId);
+        String previousClientId = session.getBrowserClientId();
+        if (replacementClientId.equals(previousClientId)) {
+            return true;
+        }
+
+        Long rebound = stringRedisTemplate.execute(
+                REBIND_BROWSER_CLIENT,
+                List.of(
+                        activeKey(session.getGatewaySn()),
+                        stateKey(session.getGeneration()),
+                        sessionKey(session.getGeneration()),
+                        clientSessionKey(previousClientId),
+                        clientSessionKey(replacementClientId),
+                        recoveryBrowserKey(session.getGatewaySn()),
+                        ownerKey(replacementClientId),
+                        ownerKey(previousClientId),
+                        aclKey(previousClientId)),
+                session.getGeneration(),
+                previousClientId,
+                replacementClientId,
+                recoveryBrowserValue(session.getGeneration(), previousClientId),
+                recoveryBrowserValue(session.getGeneration(), replacementClientId),
+                ownerToken(session.getWorkspaceId(), session.getUserId()),
+                RedisConst.DRC_MODE_ALIVE_SECOND.toString(),
+                FIELD_BROWSER_CLIENT);
+        if (Long.valueOf(1).equals(rebound)) {
+            session.setBrowserClientId(replacementClientId);
+            return true;
+        }
+        if (Long.valueOf(-1).equals(rebound)) {
+            throw new IllegalStateException("The DRC session is currently changing state.");
+        }
+        if (Long.valueOf(-2).equals(rebound)) {
+            throw new SecurityException("The replacement DRC client is already in use.");
+        }
+        if (Long.valueOf(-3).equals(rebound)) {
+            throw new SecurityException("The replacement DRC client owner changed.");
+        }
+        return false;
     }
 
     /**

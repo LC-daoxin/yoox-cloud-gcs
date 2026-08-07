@@ -117,6 +117,25 @@ public class PointFlightTaskStore {
                     + "elseif redis.call('get', KEYS[2]) == ARGV[1] then redis.call('del', KEYS[2]); end; return 1",
             Long.class);
 
+    private static final DefaultRedisScript<Long> CONFIRM_CANCEL = new DefaultRedisScript<>(
+            "local token = redis.call('get', KEYS[2]); if not token then return 0 end; "
+                    + "local raw = redis.call('get', KEYS[1]); if not raw then return -1 end; "
+                    + "local ok, current = pcall(cjson.decode, raw); if not ok then return -1 end; "
+                    + "local currentId = current['fly_to_id'] or current['flight_id']; "
+                    + "if not currentId or not current['kind'] "
+                    + "or current['kind'] .. '\\n' .. tostring(currentId) ~= token then return 0 end; "
+                    + "if current['active'] ~= true then return 0 end; "
+                    + "current['status'] = 'cancel_confirmed'; "
+                    + "current['active'] = false; current['uncertain'] = false; "
+                    + "if ARGV[1] ~= '' then current['message'] = ARGV[1] end; "
+                    + "local nextUpdated = tonumber(ARGV[2]); if not nextUpdated then return -1 end; "
+                    + "local previousUpdated = tonumber(current['updated_at']); "
+                    + "if previousUpdated and previousUpdated >= nextUpdated then "
+                    + "nextUpdated = previousUpdated + 1; end; current['updated_at'] = nextUpdated; "
+                    + "redis.call('set', KEYS[1], cjson.encode(current), 'EX', ARGV[3]); "
+                    + "if redis.call('get', KEYS[2]) == token then redis.call('del', KEYS[2]); end; return 1",
+            Long.class);
+
     private static final DefaultRedisScript<String> FINISH_PROGRESSING_TASK_ON_IDLE =
             new DefaultRedisScript<>(
                     "local token = redis.call('get', KEYS[2]); if not token then return nil end; "
@@ -127,11 +146,12 @@ public class PointFlightTaskStore {
                             + "or current['kind'] .. '\\n' .. tostring(currentId) ~= token then return nil end; "
                             + "if current['active'] ~= true "
                             + "or tostring(current['status'] or '') ~= 'wayline_progress' then return nil end; "
+                            + "if ARGV[3] == '1' and current['kind'] ~= 'takeoff' then return nil end; "
                             + "if current['kind'] == 'takeoff' then current['status'] = 'task_finish'; "
                             + "else current['status'] = 'wayline_cancel'; end; "
                             + "current['active'] = false; current['uncertain'] = false; "
                             + "current['remaining_distance'] = 0; current['remaining_time'] = 0; "
-                            + "current['message'] = 'Aircraft returned to idle mode.'; "
+                            + "current['message'] = ARGV[4]; "
                             + "local nextUpdated = tonumber(ARGV[1]); if not nextUpdated then return nil end; "
                             + "local previousUpdated = tonumber(current['updated_at']); "
                             + "if previousUpdated and previousUpdated >= nextUpdated then "
@@ -200,6 +220,21 @@ public class PointFlightTaskStore {
 
     public void recordCancelFailure(String gatewaySn, String message) {
         updateCancel(gatewaySn, "cancel_failed", false, message);
+    }
+
+    /**
+     * 设备已确认停止指令（result=0）：任务进入终态并释放占用，
+     * 否则从未在设备上真正启动过的任务会一直阻塞新指令直到 TTL 过期。
+     */
+    public void recordCancelConfirmed(String gatewaySn, String message) {
+        if (!StringUtils.hasText(gatewaySn)) {
+            return;
+        }
+        stringRedisTemplate.execute(
+                CONFIRM_CANCEL,
+                List.of(key(gatewaySn), activeKey(gatewaySn)),
+                StringUtils.hasText(message) ? message : "",
+                Long.toString(System.currentTimeMillis()), Long.toString(TTL_SECONDS));
     }
 
     public void recordProgress(String gatewaySn, String kind, Map<String, Object> progress) {
@@ -279,13 +314,29 @@ public class PointFlightTaskStore {
      * point-flight event, without clearing a command that has not taken off yet.
      */
     public Optional<Map<String, Object>> finishProgressingTaskOnIdle(String gatewaySn) {
+        return finishProgressingTask(gatewaySn, false, "Aircraft returned to idle mode.");
+    }
+
+    /**
+     * RC 不会上报起飞任务的终结事件：到点后飞机转为 MANUAL 悬停，任务会
+     * 一直占用点飞额度导致指点飞行被拦截。MANUAL 即视为起飞完成，
+     * 仅收尾 takeoff 任务（flyto 飞行中不是 MANUAL 模式，不受影响）。
+     */
+    public Optional<Map<String, Object>> finishProgressingTakeoffOnManual(String gatewaySn) {
+        return finishProgressingTask(gatewaySn, true,
+                "Takeoff completed. The aircraft is hovering.");
+    }
+
+    private Optional<Map<String, Object>> finishProgressingTask(
+            String gatewaySn, boolean onlyTakeoff, String message) {
         if (!StringUtils.hasText(gatewaySn)) {
             return Optional.empty();
         }
         String stateJson = stringRedisTemplate.execute(
                 FINISH_PROGRESSING_TASK_ON_IDLE,
                 List.of(key(gatewaySn), activeKey(gatewaySn)),
-                Long.toString(System.currentTimeMillis()), Long.toString(TTL_SECONDS));
+                Long.toString(System.currentTimeMillis()), Long.toString(TTL_SECONDS),
+                onlyTakeoff ? "1" : "0", message);
         if (!StringUtils.hasText(stateJson)) {
             return Optional.empty();
         }

@@ -10,10 +10,12 @@ import com.yoox.great.mqtt.enums.control.FlyToStatusEnum;
 import com.yoox.great.mqtt.enums.control.JoystickInvalidReasonEnum;
 import com.yoox.great.mqtt.enums.control.TakeoffStatusEnum;
 import com.yoox.great.mqtt.enums.device.DrcStateEnum;
+import com.yoox.great.mqtt.handle.drc.TopicDrcRequest;
 import com.yoox.great.mqtt.handle.events.TopicEventsRequest;
 import com.yoox.great.mqtt.handle.events.TopicEventsResponse;
 import com.yoox.great.mqtt.model.control.DrcStatusNotify;
 import com.yoox.great.mqtt.model.control.FlyToPointProgress;
+import com.yoox.great.mqtt.model.control.HsiInfoPush;
 import com.yoox.great.mqtt.model.control.JoystickInvalidNotify;
 import com.yoox.great.mqtt.model.control.TakeoffToPointProgress;
 import com.yoox.great.websocket.enums.BizCodeEnum;
@@ -33,6 +35,8 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.integration.mqtt.support.MqttHeaders;
+import org.springframework.messaging.MessageHeaders;
 
 import java.util.Map;
 import java.util.Optional;
@@ -125,6 +129,41 @@ class SDKControlServiceTest {
                 org.mockito.ArgumentMatchers.argThat(payload ->
                         "takeoff-1".equals(payload.get("flight_id"))
                                 && "task_ready".equals(payload.get("status"))));
+    }
+
+    @Test
+    void hsiInfoPushBroadcastsAutelRadarFieldsInMetres() {
+        String gatewaySn = "testgateway";
+        DeviceDTO gateway = DeviceDTO.builder()
+                .deviceSn(gatewaySn)
+                .workspaceId(WORKSPACE_ID)
+                .build();
+        when(deviceRedisService.getDeviceOnline(gatewaySn)).thenReturn(Optional.of(gateway));
+        TopicDrcRequest<HsiInfoPush> request = new TopicDrcRequest<HsiInfoPush>()
+                .setMethod("hsi_info_push")
+                .setTid("tid")
+                .setBid("bid")
+                .setTimestamp(100L)
+                .setData(new HsiInfoPush()
+                        .setFront1Distance(1.5)
+                        .setRear4Distance(-1)
+                        .setRadarEnable(true));
+        MessageHeaders headers = new MessageHeaders(Map.of(
+                MqttHeaders.RECEIVED_TOPIC,
+                "thing/product/" + gatewaySn + "/drc/up"));
+
+        controlService.hsiInfoPush(request, headers);
+
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(webSocketMessageService).sendBatch(
+                org.mockito.ArgumentMatchers.eq(WORKSPACE_ID),
+                org.mockito.ArgumentMatchers.eq(UserTypeEnum.WEB.getVal()),
+                org.mockito.ArgumentMatchers.eq(BizCodeEnum.DRC_HSI_INFO_PUSH.getCode()),
+                payload.capture());
+        assertEquals(gatewaySn, payload.getValue().get("sn"));
+        assertEquals(1.5, ((Number) payload.getValue().get("front1_distance")).doubleValue());
+        assertEquals(-1, ((Number) payload.getValue().get("rear4_distance")).intValue());
+        assertEquals(true, payload.getValue().get("radar_enable"));
     }
 
     @Test

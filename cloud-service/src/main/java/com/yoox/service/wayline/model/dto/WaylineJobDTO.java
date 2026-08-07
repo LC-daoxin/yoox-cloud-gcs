@@ -1,8 +1,12 @@
 package com.yoox.service.wayline.model.dto;
 
+import com.yoox.great.mqtt.enums.wayline.BarrierSwitchStateEnum;
+import com.yoox.great.mqtt.enums.wayline.MediaUploadMethodEnum;
 import com.yoox.great.mqtt.enums.wayline.OutOfControlActionEnum;
 import com.yoox.great.mqtt.enums.wayline.TaskTypeEnum;
+import com.yoox.great.mqtt.enums.wayline.WaylinePrecisionTypeEnum;
 import com.yoox.great.mqtt.enums.wayline.WaylineTypeEnum;
+import com.yoox.great.mqtt.model.wayline.AlternateLandPoint;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -63,4 +67,20 @@ public class WaylineJobDTO {
     private WaylineTaskConditionDTO conditions;
 
     private String parentId;
+
+    // Autel 航线管理扩展参数，仅内存/Redis 传递，不落库
+
+    private WaylinePrecisionTypeEnum waylinePrecisionType;
+
+    private BarrierSwitchStateEnum barrierSwitchState;
+
+    private Integer takeoffAltitude;
+
+    private Integer firstWaypointSpeed;
+
+    private Integer returnSpeed;
+
+    private MediaUploadMethodEnum mediaUploadMethod;
+
+    private AlternateLandPoint alternateLandPoint;
 }

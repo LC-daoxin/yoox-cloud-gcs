@@ -105,10 +105,29 @@ public class ControlServiceImpl implements IControlService {
         TopicServicesResponse response;
         switch (controlMethodEnum) {
             case RETURN_HOME:
-                response = abstractWaylineService.returnHome(SDKManager.getDeviceSDK(sn));
-                break;
             case RETURN_HOME_CANCEL:
-                response = abstractWaylineService.returnHomeCancel(SDKManager.getDeviceSDK(sn));
+                // 飞行类指令（如 takeoff、flyTo）都会先确保云端持有飞行控制权，
+                // 否则设备处于遥控器手动控制状态时会直接忽略该指令且不回复
+                // services_reply，从而导致 211001（无消息回复）超时。
+                // return_home / return_home_cancel 之前遗漏了这一步，此处补齐。
+                HttpResultResponse authority = seizeAuthority(sn, DroneAuthorityEnum.FLIGHT, null);
+                if (HttpResultResponse.CODE_SUCCESS != authority.getCode()) {
+                    return authority;
+                }
+                boolean isReturnHome = RemoteDebugMethodEnum.RETURN_HOME == controlMethodEnum;
+                // 遥控器网关将无人机作为子设备管理，与 takeoffToPointRc 相同，
+                // 若不显式指定 device_list 携带无人机 SN，遥控器会直接丢弃该指令
+                // 且从不回复 services_reply，最终表现为 211001 超时。
+                DeviceDomainEnum gatewayDomain = deviceRedisService.getDeviceOnline(sn)
+                        .map(DeviceDTO::getDomain)
+                        .orElse(null);
+                response = DeviceDomainEnum.REMOTER_CONTROL == gatewayDomain
+                        ? (isReturnHome
+                                ? abstractWaylineService.returnHomeRc(SDKManager.getDeviceSDK(sn))
+                                : abstractWaylineService.returnHomeCancelRc(SDKManager.getDeviceSDK(sn)))
+                        : (isReturnHome
+                                ? abstractWaylineService.returnHome(SDKManager.getDeviceSDK(sn))
+                                : abstractWaylineService.returnHomeCancel(SDKManager.getDeviceSDK(sn)));
                 break;
             default:
                 response = abstractDebugService.remoteDebug(SDKManager.getDeviceSDK(sn), methodEnum,
@@ -157,8 +176,14 @@ public class ControlServiceImpl implements IControlService {
 
         TopicServicesResponse<ServicesReplyData> response;
         try {
-            response = abstractControlService.flyToPoint(
-                    SDKManager.getDeviceSDK(sn), mapper.convertValue(param, FlyToPointRequest.class));
+            // RC 网关需 device_list 寻址无人机，否则指令被静默丢弃（211001）。
+            DeviceDomainEnum flyToGatewayDomain = deviceRedisService.getDeviceOnline(sn)
+                    .map(DeviceDTO::getDomain)
+                    .orElse(null);
+            FlyToPointRequest request = mapper.convertValue(param, FlyToPointRequest.class);
+            response = DeviceDomainEnum.REMOTER_CONTROL == flyToGatewayDomain
+                    ? abstractControlService.flyToPointRc(SDKManager.getDeviceSDK(sn), request)
+                    : abstractControlService.flyToPoint(SDKManager.getDeviceSDK(sn), request);
         } catch (RuntimeException exception) {
             pointFlightTaskStore.recordUnknown(
                     sn, "flyto", param.getFlyToId(), exception.getMessage());
@@ -190,7 +215,13 @@ public class ControlServiceImpl implements IControlService {
         pointFlightTaskStore.recordCancelRequested(sn, false, "Cancel command is being sent.");
         TopicServicesResponse<ServicesReplyData> response;
         try {
-            response = abstractControlService.flyToPointStop(SDKManager.getDeviceSDK(sn));
+            // RC 网关需 device_list 寻址无人机，否则指令被静默丢弃（211001）。
+            DeviceDomainEnum stopGatewayDomain = deviceRedisService.getDeviceOnline(sn)
+                    .map(DeviceDTO::getDomain)
+                    .orElse(null);
+            response = DeviceDomainEnum.REMOTER_CONTROL == stopGatewayDomain
+                    ? abstractControlService.flyToPointStopRc(SDKManager.getDeviceSDK(sn))
+                    : abstractControlService.flyToPointStop(SDKManager.getDeviceSDK(sn));
         } catch (RuntimeException exception) {
             pointFlightTaskStore.recordCancelRequested(sn, true, exception.getMessage());
             throw exception;
@@ -203,7 +234,9 @@ public class ControlServiceImpl implements IControlService {
                     "FlyTo stop status is unknown. It is safe to retry the stop command.");
         }
         if (reply.getResult().isSuccess()) {
-            pointFlightTaskStore.recordCancelRequested(sn, false, "Cancel command accepted.");
+            // 设备已确认停止：进入终态并释放额度。若仅停留在 cancel_requested，
+            // 从未真正启动过的任务将阻塞后续指令直至 TTL 过期。
+            pointFlightTaskStore.recordCancelConfirmed(sn, "Cancel command accepted.");
             return HttpResultResponse.success();
         }
         pointFlightTaskStore.recordCancelFailure(sn, reply.getResult().toString());
@@ -317,14 +350,17 @@ public class ControlServiceImpl implements IControlService {
             DroneAuthorityEnum authority,
             DronePayloadParam param,
             boolean force) {
-        requireOnlineGatewayAndAircraft(sn);
+        DeviceDTO gatewayDevice = requireOnlineGatewayAndAircraft(sn);
         TopicServicesResponse<ServicesReplyData> response;
         switch (authority) {
             case FLIGHT:
                 if (!force && deviceService.checkAuthorityFlight(sn)) {
                     return HttpResultResponse.success();
                 }
-                response = abstractControlService.flightAuthorityGrab(SDKManager.getDeviceSDK(sn));
+                // RC 网关需 device_list 寻址无人机，否则指令被静默丢弃（211001）。
+                response = DeviceDomainEnum.REMOTER_CONTROL == gatewayDevice.getDomain()
+                        ? abstractControlService.flightAuthorityGrabRc(SDKManager.getDeviceSDK(sn))
+                        : abstractControlService.flightAuthorityGrab(SDKManager.getDeviceSDK(sn));
                 break;
             case PAYLOAD:
                 if (param == null || !StringUtils.hasText(param.getPayloadIndex())) {
@@ -335,8 +371,12 @@ public class ControlServiceImpl implements IControlService {
                             0, "已取得负载控制权", null);
                     return HttpResultResponse.success();
                 }
-                response = abstractControlService.payloadAuthorityGrab(SDKManager.getDeviceSDK(sn),
-                        new PayloadAuthorityGrabRequest().setPayloadIndex(new PayloadIndex(param.getPayloadIndex())));
+                PayloadAuthorityGrabRequest grabRequest = new PayloadAuthorityGrabRequest()
+                        .setPayloadIndex(new PayloadIndex(param.getPayloadIndex()));
+                // RC 网关需 device_list 寻址无人机，否则指令被静默丢弃（211001）。
+                response = DeviceDomainEnum.REMOTER_CONTROL == gatewayDevice.getDomain()
+                        ? abstractControlService.payloadAuthorityGrabRc(SDKManager.getDeviceSDK(sn), grabRequest)
+                        : abstractControlService.payloadAuthorityGrab(SDKManager.getDeviceSDK(sn), grabRequest);
                 break;
             default:
                 return HttpResultResponse.error(CloudSDKErrorEnum.INVALID_PARAMETER);
@@ -413,9 +453,20 @@ public class ControlServiceImpl implements IControlService {
             return HttpResultResponse.success();
         }
 
-        TopicServicesResponse<ServicesReplyData> response = abstractControlService.payloadControl(
-                SDKManager.getDeviceSDK(param.getSn()), param.getCmd().getCmd(),
-                mapper.convertValue(param.getData(), param.getCmd().getCmd().getClazz()));
+        // RC 网关下所有负载指令需 device_list 寻址无人机，否则指令被静默丢弃（211001）。
+        DeviceDomainEnum gatewayDomain = deviceRedisService.getDeviceOnline(param.getSn())
+                .map(DeviceDTO::getDomain)
+                .orElse(null);
+        TopicServicesResponse<ServicesReplyData> response;
+        if (DeviceDomainEnum.REMOTER_CONTROL == gatewayDomain) {
+            response = abstractControlService.payloadControlRc(
+                    SDKManager.getDeviceSDK(param.getSn()), param.getCmd().getCmd(),
+                    mapper.convertValue(param.getData(), param.getCmd().getCmd().getClazz()));
+        } else {
+            response = abstractControlService.payloadControl(
+                    SDKManager.getDeviceSDK(param.getSn()), param.getCmd().getCmd(),
+                    mapper.convertValue(param.getData(), param.getCmd().getCmd().getClazz()));
+        }
 
         ServicesReplyData serviceReply = response.getData();
         return serviceReply.getResult().isSuccess() ?
@@ -426,8 +477,10 @@ public class ControlServiceImpl implements IControlService {
     @Override
     public HttpResultResponse openTargetDetection(String sn, TargetDetectOpenRequest param) {
         requirePayloadAuthority(sn);
-        TopicServicesResponse<ServicesReplyData> response = abstractControlService.targetDetectOpen(
-                SDKManager.getDeviceSDK(sn), param);
+        // RC 网关需 device_list 寻址无人机，否则指令被静默丢弃（211001）。
+        TopicServicesResponse<ServicesReplyData> response = isRcGateway(sn)
+                ? abstractControlService.targetDetectOpenRc(SDKManager.getDeviceSDK(sn), param)
+                : abstractControlService.targetDetectOpen(SDKManager.getDeviceSDK(sn), param);
         ServicesReplyData reply = response.getData();
         return reply.getResult().isSuccess()
                 ? HttpResultResponse.success()
@@ -437,12 +490,19 @@ public class ControlServiceImpl implements IControlService {
     @Override
     public HttpResultResponse closeTargetDetection(String sn) {
         requirePayloadAuthority(sn);
-        TopicServicesResponse<ServicesReplyData> response = abstractControlService.targetDetectClose(
-                SDKManager.getDeviceSDK(sn));
+        TopicServicesResponse<ServicesReplyData> response = isRcGateway(sn)
+                ? abstractControlService.targetDetectCloseRc(SDKManager.getDeviceSDK(sn))
+                : abstractControlService.targetDetectClose(SDKManager.getDeviceSDK(sn));
         ServicesReplyData reply = response.getData();
         return reply.getResult().isSuccess()
                 ? HttpResultResponse.success()
                 : HttpResultResponse.error(reply.getResult());
+    }
+
+    private boolean isRcGateway(String gatewaySn) {
+        return DeviceDomainEnum.REMOTER_CONTROL == deviceRedisService.getDeviceOnline(gatewaySn)
+                .map(DeviceDTO::getDomain)
+                .orElse(null);
     }
 
     private DeviceDTO requireOnlineGatewayAndAircraft(String gatewaySn) {

@@ -67,11 +67,29 @@ public abstract class AbstractControlService {
                 ControlMethodEnum.FLIGHT_AUTHORITY_GRAB.getMethod());
     }
 
+    // RC 网关需 device_list 寻址无人机，理由同 flyToPointRc。
+    public TopicServicesResponse<ServicesReplyData> flightAuthorityGrabRc(GatewayManager gateway) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.FLIGHT_AUTHORITY_GRAB.getMethod(),
+                null,
+                List.of(Map.of("sn", gateway.getDroneSn())));
+    }
+
     public TopicServicesResponse<ServicesReplyData> payloadAuthorityGrab(GatewayManager gateway, PayloadAuthorityGrabRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
                 ControlMethodEnum.PAYLOAD_AUTHORITY_GRAB.getMethod(),
                 request);
+    }
+
+    // RC 网关需 device_list 寻址无人机（负载挂在机身上），理由同 flyToPointRc。
+    public TopicServicesResponse<ServicesReplyData> payloadAuthorityGrabRc(GatewayManager gateway, PayloadAuthorityGrabRequest request) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.PAYLOAD_AUTHORITY_GRAB.getMethod(),
+                request,
+                List.of(Map.of("sn", gateway.getDroneSn())));
     }
 
     public TopicServicesResponse<ServicesReplyData> drcModeEnter(GatewayManager gateway, DrcModeEnterRequest request) {
@@ -124,6 +142,19 @@ public abstract class AbstractControlService {
                 request);
     }
 
+    /**
+     * RC 网关把无人机作为子设备管理：与 takeoffToPointRc 相同，必须携带
+     * device_list 指向无人机 SN，否则遥控器会静默丢弃指令且不回复
+     * services_reply，云端表现为 211001 超时。
+     */
+    public TopicServicesResponse<ServicesReplyData> flyToPointRc(GatewayManager gateway, FlyToPointRequest request) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.FLY_TO_POINT.getMethod(),
+                request,
+                List.of(Map.of("sn", gateway.getDroneSn())));
+    }
+
     @CloudSDKVersion(since = CloudSDKVersionEnum.V1_0_2, exclude = GatewayTypeEnum.RC, include = GatewayTypeEnum.DOCK)
     public TopicServicesResponse<ServicesReplyData> flyToPointUpdate(GatewayManager gateway, FlyToPointUpdateRequest request) {
         return servicesPublish.publish(
@@ -136,6 +167,15 @@ public abstract class AbstractControlService {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
                 ControlMethodEnum.FLY_TO_POINT_STOP.getMethod());
+    }
+
+    // RC 网关需 device_list 寻址无人机，理由同 flyToPointRc。
+    public TopicServicesResponse<ServicesReplyData> flyToPointStopRc(GatewayManager gateway) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.FLY_TO_POINT_STOP.getMethod(),
+                null,
+                List.of(Map.of("sn", gateway.getDroneSn())));
     }
 
     public TopicServicesResponse<ServicesReplyData> cameraModeSwitch(GatewayManager gateway, CameraModeSwitchRequest request) {
@@ -179,7 +219,6 @@ public abstract class AbstractControlService {
                 request);
     }
 
-    @CloudSDKVersion(exclude = GatewayTypeEnum.RC)
     public TopicServicesResponse<ServicesReplyData> cameraAim(GatewayManager gateway, CameraAimRequest request) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
@@ -251,10 +290,28 @@ public abstract class AbstractControlService {
                 request);
     }
 
+    // RC 网关需 device_list 寻址无人机，理由同 flyToPointRc。
+    public TopicServicesResponse<ServicesReplyData> targetDetectOpenRc(GatewayManager gateway, TargetDetectOpenRequest request) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.TARGET_DETECT_OPEN.getMethod(),
+                request,
+                List.of(Map.of("sn", gateway.getDroneSn())));
+    }
+
     public TopicServicesResponse<ServicesReplyData> targetDetectClose(GatewayManager gateway) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
                 ControlMethodEnum.TARGET_DETECT_CLOSE.getMethod());
+    }
+
+    // RC 网关需 device_list 寻址无人机，理由同 flyToPointRc。
+    public TopicServicesResponse<ServicesReplyData> targetDetectCloseRc(GatewayManager gateway) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                ControlMethodEnum.TARGET_DETECT_CLOSE.getMethod(),
+                null,
+                List.of(Map.of("sn", gateway.getDroneSn())));
     }
 
     @CloudSDKVersion(since = CloudSDKVersionEnum.V1_0_2, include = GatewayTypeEnum.DOCK)
@@ -336,6 +393,15 @@ public abstract class AbstractControlService {
         } catch (InvocationTargetException e) {
             throw new CloudSDKException(e.getTargetException());
         }
+    }
+
+    // RC 网关的负载指令统一带 device_list 寻址无人机，否则被静默丢弃（211001）。
+    public TopicServicesResponse<ServicesReplyData> payloadControlRc(GatewayManager gateway, PayloadControlMethodEnum methodEnum, BaseModel request) {
+        return servicesPublish.publish(
+                gateway.getGatewaySn(),
+                methodEnum.getPayloadMethod().getMethod(),
+                request,
+                List.of(Map.of("sn", gateway.getDroneSn())));
     }
 
     @ServiceActivator(inputChannel = ChannelName.INBOUND_EVENTS_POI_STATUS_NOTIFY, outputChannel = ChannelName.OUTBOUND_EVENTS)
