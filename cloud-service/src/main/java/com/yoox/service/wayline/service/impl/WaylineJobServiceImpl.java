@@ -2,6 +2,7 @@ package com.yoox.service.wayline.service.impl;
 
 import com.yoox.great.context.page.Pagination;
 import com.yoox.great.context.page.PaginationData;
+import com.yoox.great.context.enums.device.DeviceDomainEnum;
 import com.yoox.great.mqtt.enums.device.DockModeCodeEnum;
 import com.yoox.great.mqtt.enums.device.DroneModeCodeEnum;
 import com.yoox.great.mqtt.enums.wayline.OutOfControlActionEnum;
@@ -10,6 +11,7 @@ import com.yoox.great.mqtt.enums.wayline.WaylineTypeEnum;
 import com.yoox.great.mqtt.core.EventsReceiver;
 import com.yoox.great.mqtt.model.device.OsdDock;
 import com.yoox.great.mqtt.model.device.OsdDockDrone;
+import com.yoox.great.mqtt.model.device.OsdRcDrone;
 import com.yoox.great.mqtt.model.wayline.FlighttaskProgress;
 import com.yoox.great.mqtt.model.wayline.FlighttaskProgressData;
 import com.yoox.great.mqtt.model.wayline.GetWaylineListResponse;
@@ -151,6 +153,36 @@ public class WaylineJobServiceImpl implements IWaylineJobService {
     }
 
     @Override
+    public Boolean updateJobIfNotEnded(WaylineJobDTO dto) {
+        return mapper.update(this.dto2Entity(dto),
+                new LambdaUpdateWrapper<WaylineJobEntity>()
+                        .eq(WaylineJobEntity::getJobId, dto.getJobId())
+                        .notIn(WaylineJobEntity::getStatus,
+                                WaylineJobStatusEnum.SUCCESS.getVal(),
+                                WaylineJobStatusEnum.CANCEL.getVal(),
+                                WaylineJobStatusEnum.FAILED.getVal())) > 0;
+    }
+
+    @Override
+    public int cancelJobsIfNotEnded(String workspaceId, Collection<String> jobIds) {
+        if (!StringUtils.hasText(workspaceId) || CollectionUtils.isEmpty(jobIds)) {
+            return 0;
+        }
+        WaylineJobEntity update = this.dto2Entity(WaylineJobDTO.builder()
+                .status(WaylineJobStatusEnum.CANCEL.getVal())
+                .completedTime(LocalDateTime.now())
+                .build());
+        return mapper.update(update,
+                new LambdaUpdateWrapper<WaylineJobEntity>()
+                        .eq(WaylineJobEntity::getWorkspaceId, workspaceId)
+                        .in(WaylineJobEntity::getJobId, jobIds)
+                        .notIn(WaylineJobEntity::getStatus,
+                                WaylineJobStatusEnum.SUCCESS.getVal(),
+                                WaylineJobStatusEnum.CANCEL.getVal(),
+                                WaylineJobStatusEnum.FAILED.getVal()));
+    }
+
+    @Override
     public PaginationData<WaylineJobDTO> getJobsByWorkspaceId(String workspaceId, long page, long pageSize) {
         Page<WaylineJobEntity> pageData = mapper.selectPage(
                 new Page<WaylineJobEntity>(page, pageSize),
@@ -205,16 +237,32 @@ public class WaylineJobServiceImpl implements IWaylineJobService {
         if (dockOpt.isEmpty() || !StringUtils.hasText(dockOpt.get().getChildDeviceSn())) {
             return WaylineJobStatusEnum.UNKNOWN;
         }
-        Optional<OsdDock> dockOsdOpt = deviceRedisService.getDeviceOsd(dockSn, OsdDock.class);
-        Optional<OsdDockDrone> deviceOsdOpt = deviceRedisService.getDeviceOsd(dockOpt.get().getChildDeviceSn(), OsdDockDrone.class);
-        if (dockOsdOpt.isEmpty() || deviceOsdOpt.isEmpty() || DockModeCodeEnum.WORKING != dockOsdOpt.get().getModeCode()) {
+        DeviceDTO gateway = dockOpt.get();
+        DroneModeCodeEnum modeCode;
+        if (DeviceDomainEnum.REMOTER_CONTROL == gateway.getDomain()) {
+            Optional<OsdRcDrone> deviceOsdOpt = deviceRedisService.getDeviceOsd(
+                    gateway.getChildDeviceSn(), OsdRcDrone.class);
+            if (deviceOsdOpt.isEmpty()) {
+                return WaylineJobStatusEnum.UNKNOWN;
+            }
+            modeCode = deviceOsdOpt.get().getModeCode();
+        } else if (DeviceDomainEnum.DOCK == gateway.getDomain()) {
+            Optional<OsdDock> dockOsdOpt = deviceRedisService.getDeviceOsd(dockSn, OsdDock.class);
+            Optional<OsdDockDrone> deviceOsdOpt = deviceRedisService.getDeviceOsd(
+                    gateway.getChildDeviceSn(), OsdDockDrone.class);
+            if (dockOsdOpt.isEmpty() || deviceOsdOpt.isEmpty()
+                    || DockModeCodeEnum.WORKING != dockOsdOpt.get().getModeCode()) {
+                return WaylineJobStatusEnum.UNKNOWN;
+            }
+            modeCode = deviceOsdOpt.get().getModeCode();
+        } else {
             return WaylineJobStatusEnum.UNKNOWN;
         }
 
-        OsdDockDrone osdDevice = deviceOsdOpt.get();
-        if (DroneModeCodeEnum.WAYLINE == osdDevice.getModeCode()
-                || DroneModeCodeEnum.MANUAL == osdDevice.getModeCode()
-                || DroneModeCodeEnum.TAKEOFF_AUTO == osdDevice.getModeCode()) {
+        if (DroneModeCodeEnum.WAYLINE == modeCode
+                || DroneModeCodeEnum.KML_ROUTE_MODE == modeCode
+                || DroneModeCodeEnum.MANUAL == modeCode
+                || DroneModeCodeEnum.TAKEOFF_AUTO == modeCode) {
             if (StringUtils.hasText(waylineRedisService.getPausedWaylineJobId(dockSn))) {
                 return WaylineJobStatusEnum.PAUSED;
             }

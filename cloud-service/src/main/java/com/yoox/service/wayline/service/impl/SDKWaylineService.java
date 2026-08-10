@@ -29,6 +29,7 @@ import org.springframework.messaging.MessageHeaders;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.net.URL;
 import java.sql.SQLException;
@@ -65,6 +66,16 @@ public class SDKWaylineService extends AbstractWaylineService {
 
     @Override
     public TopicEventsResponse<MqttReply> flighttaskProgress(TopicEventsRequest<EventsDataRequest<FlighttaskProgress>> response, MessageHeaders headers) {
+        if (response == null
+                || !StringUtils.hasText(response.getGateway())
+                || !StringUtils.hasText(response.getBid())
+                || response.getData() == null
+                || response.getData().getResult() == null
+                || response.getData().getOutput() == null
+                || response.getData().getOutput().getStatus() == null) {
+            log.warn("Ignoring malformed flighttask_progress event.");
+            return new TopicEventsResponse<>();
+        }
         EventsReceiver<FlighttaskProgress> eventsReceiver = new EventsReceiver<>();
         eventsReceiver.setResult(response.getData().getResult());
         eventsReceiver.setOutput(response.getData().getOutput());
@@ -72,7 +83,7 @@ public class SDKWaylineService extends AbstractWaylineService {
         eventsReceiver.setSn(response.getGateway());
 
         FlighttaskProgress output = eventsReceiver.getOutput();
-        log.info("Task progress: {}", output.getProgress().toString());
+        log.info("Task progress: {}", output.getProgress());
         if (!eventsReceiver.getResult().isSuccess()) {
             log.error("Task progress ===> Error: " + eventsReceiver.getResult());
         }
@@ -83,34 +94,57 @@ public class SDKWaylineService extends AbstractWaylineService {
         }
 
         FlighttaskStatusEnum statusEnum = output.getStatus();
-        waylineRedisService.setRunningWaylineJob(response.getGateway(), eventsReceiver);
-
-        if (statusEnum.isEnd()) {
-            WaylineJobDTO job = WaylineJobDTO.builder()
-                    .jobId(response.getBid())
-                    .status(WaylineJobStatusEnum.SUCCESS.getVal())
-                    .completedTime(LocalDateTime.now())
-                    .mediaCount(output.getExt().getMediaCount())
-                    .build();
-
-            // record the update of the media count.
-            if (Objects.nonNull(job.getMediaCount()) && job.getMediaCount() != 0) {
-                mediaRedisService.setMediaCount(response.getGateway(), job.getJobId(),
-                        MediaFileCountDTO.builder().deviceSn(deviceOpt.get().getChildDeviceSn())
-                                .jobId(response.getBid()).mediaCount(job.getMediaCount()).uploadedCount(0).build());
-            }
-
-            if (FlighttaskStatusEnum.OK != statusEnum) {
-                job.setCode(eventsReceiver.getResult().getCode());
-                job.setStatus(WaylineJobStatusEnum.FAILED.getVal());
-            }
-            waylineJobService.updateJob(job);
-            waylineRedisService.delRunningWaylineJob(response.getGateway());
-            waylineRedisService.delPausedWaylineJob(response.getBid());
+        Optional<WaylineJobDTO> jobOpt = waylineJobService.getJobByJobId(
+                deviceOpt.get().getWorkspaceId(), response.getBid());
+        boolean jobAlreadyTerminal = jobOpt
+                .map(WaylineJobDTO::getStatus)
+                .map(WaylineJobStatusEnum::find)
+                .map(WaylineJobStatusEnum::getEnd)
+                .orElse(false);
+        boolean acceptedForWebsocket = false;
+        if (!statusEnum.isEnd() && !jobAlreadyTerminal && jobOpt.isPresent()) {
+            long eventTimestamp = Optional.ofNullable(response.getTimestamp())
+                    .orElseGet(System::currentTimeMillis);
+            acceptedForWebsocket = waylineRedisService.applyWaylineJobProgress(
+                    response.getGateway(), response.getBid(), eventsReceiver,
+                    eventTimestamp, FlighttaskStatusEnum.PAUSED == statusEnum);
         }
 
-        webSocketMessageService.sendBatch(deviceOpt.get().getWorkspaceId(), UserTypeEnum.WEB.getVal(),
-                BizCodeEnum.FLIGHT_TASK_PROGRESS.getCode(), eventsReceiver);
+        if (statusEnum.isEnd()) {
+            if (!jobAlreadyTerminal && jobOpt.isPresent()) {
+                Integer mediaCount = Optional.ofNullable(output.getExt())
+                        .map(FlighttaskProgressExt::getMediaCount)
+                        .orElse(null);
+                WaylineJobDTO job = WaylineJobDTO.builder()
+                        .jobId(response.getBid())
+                        .status(FlighttaskStatusEnum.CANCELED == statusEnum
+                                ? WaylineJobStatusEnum.CANCEL.getVal()
+                                : WaylineJobStatusEnum.SUCCESS.getVal())
+                        .completedTime(LocalDateTime.now())
+                        .mediaCount(mediaCount)
+                        .build();
+
+                if (FlighttaskStatusEnum.OK != statusEnum
+                        && FlighttaskStatusEnum.CANCELED != statusEnum) {
+                    job.setCode(eventsReceiver.getResult().getCode());
+                    job.setStatus(WaylineJobStatusEnum.FAILED.getVal());
+                }
+                boolean updated = Boolean.TRUE.equals(waylineJobService.updateJobIfNotEnded(job));
+                acceptedForWebsocket = updated;
+                // Record media only when this event won the terminal-state transition.
+                if (updated && Objects.nonNull(job.getMediaCount()) && job.getMediaCount() != 0) {
+                    mediaRedisService.setMediaCount(response.getGateway(), job.getJobId(),
+                            MediaFileCountDTO.builder().deviceSn(deviceOpt.get().getChildDeviceSn())
+                                    .jobId(response.getBid()).mediaCount(job.getMediaCount()).uploadedCount(0).build());
+                }
+            }
+            waylineRedisService.clearWaylineJobState(response.getGateway(), response.getBid());
+        }
+
+        if (acceptedForWebsocket) {
+            webSocketMessageService.sendBatch(deviceOpt.get().getWorkspaceId(), UserTypeEnum.WEB.getVal(),
+                    BizCodeEnum.FLIGHT_TASK_PROGRESS.getCode(), eventsReceiver);
+        }
 
         return new TopicEventsResponse<>();
     }

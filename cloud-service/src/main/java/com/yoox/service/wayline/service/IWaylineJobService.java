@@ -21,6 +21,20 @@ public interface IWaylineJobService {
 
     Boolean updateJob(WaylineJobDTO dto);
 
+    /**
+     * Update a job only while its persisted state is non-terminal.
+     * This keeps delayed device events from reversing SUCCESS/CANCEL/FAILED.
+     */
+    Boolean updateJobIfNotEnded(WaylineJobDTO dto);
+
+    /**
+     * Atomically moves every matching non-terminal row to CANCEL in one SQL
+     * statement. The caller must query final states when the affected count is
+     * smaller than the requested count because a terminal progress event may
+     * have won the race.
+     */
+    int cancelJobsIfNotEnded(String workspaceId, Collection<String> jobIds);
+
     PaginationData<WaylineJobDTO> getJobsByWorkspaceId(String workspaceId, long page, long pageSize);
 
     WaylineJobStatusEnum getWaylineState(String dockSn);

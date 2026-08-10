@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { put } from './services/api'
+import { runSessionCleanup } from './services/session-cleanup'
 import { useSessionStore } from './stores/session'
 
 const route = useRoute()
@@ -13,6 +14,7 @@ const newPassword = ref('')
 const passwordConfirm = ref('')
 const passwordError = ref('')
 const passwordBusy = ref(false)
+const signOutBusy = ref(false)
 
 const navigation = [
   { to: '/', icon: '⌁', label: '运行总览' },
@@ -25,12 +27,24 @@ const navigation = [
 const isLogin = computed(() => route.path === '/login')
 const title = computed(() => String(route.meta.title ?? 'YOOX Cloud GCS'))
 
-function signOut() {
-  session.logout()
-  void router.push('/login')
+async function signOut() {
+  if (signOutBusy.value) return
+  signOutBusy.value = true
+  try {
+    // Keep the access token and workspace available until cockpit-owned DRC
+    // and livestream resources have had a chance to shut down cleanly.
+    await runSessionCleanup()
+    session.logout()
+    await router.push('/login')
+  } finally {
+    signOutBusy.value = false
+  }
 }
 
 function unauthorized() {
+  // api.ts has already removed the expired token. Start best-effort local
+  // cleanup (including the final MQTT zero vector), then leave immediately.
+  void runSessionCleanup()
   session.logout()
   void router.push('/login')
 }
@@ -49,7 +63,7 @@ async function changePassword() {
     })
     showPassword.value = false
     oldPassword.value = newPassword.value = passwordConfirm.value = ''
-    signOut()
+    await signOut()
   } catch (reason) {
     passwordError.value = reason instanceof Error ? reason.message : '密码修改失败'
   } finally {
@@ -88,7 +102,9 @@ onBeforeUnmount(() => window.removeEventListener('yoox:unauthorized', unauthoriz
         <div class="top-actions">
           <span class="protocol-badge">RTSP · P0</span>
           <button class="avatar" title="修改密码" @click="showPassword = true">{{ session.user?.username?.slice(0, 1).toUpperCase() }}</button>
-          <button class="ghost small" @click="signOut">退出</button>
+          <button class="ghost small" :disabled="signOutBusy" @click="signOut">
+            {{ signOutBusy ? '正在安全退出…' : '退出' }}
+          </button>
         </div>
       </header>
       <section class="content"><RouterView /></section>

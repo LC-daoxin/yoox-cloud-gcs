@@ -22,10 +22,18 @@ public class ConditionalWaylineJobKey {
 
     public ConditionalWaylineJobKey(String key) {
         if (Objects.isNull(key)) {
-            return;
+            throw new IllegalArgumentException("Conditional wayline job key must not be null.");
         }
-        String[] keyArr = key.split(RedisConst.DELIMITER);
-        new ConditionalWaylineJobKey(keyArr[0], keyArr[1], keyArr[2]);
+        String[] keyArr = key.split(RedisConst.DELIMITER, -1);
+        if (keyArr.length != 3
+                || keyArr[0].isBlank()
+                || keyArr[1].isBlank()
+                || keyArr[2].isBlank()) {
+            throw new IllegalArgumentException("Invalid conditional wayline job key: " + key);
+        }
+        this.workspaceId = keyArr[0];
+        this.dockSn = keyArr[1];
+        this.jobId = keyArr[2];
     }
 
     public String getKey() {

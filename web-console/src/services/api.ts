@@ -6,6 +6,7 @@ const TOKEN_KEY = 'yoox_access_token'
 export interface ApiRequestOptions {
   signal?: AbortSignal
   timeoutMs?: number
+  authToken?: string
 }
 
 export class ApiError extends Error {
@@ -32,7 +33,7 @@ export async function api<T>(
   const method = init.method ?? 'GET'
   const headers = new Headers(init.headers)
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-  const token = getToken()
+  const token = options.authToken ?? getToken()
   if (token) headers.set('x-auth-token', token)
 
   let requestPayload: unknown
@@ -111,8 +112,12 @@ export async function api<T>(
     payload
   })
   if (response.status === 401) {
-    setToken('')
-    window.dispatchEvent(new Event('yoox:unauthorized'))
+    // A late cleanup request may intentionally use an older per-request token.
+    // Its 401 must not log out a newer session that has since signed in.
+    if (token === getToken()) {
+      setToken('')
+      window.dispatchEvent(new Event('yoox:unauthorized'))
+    }
     throw new ApiError('登录已过期，请重新登录', 401, response.status)
   }
 

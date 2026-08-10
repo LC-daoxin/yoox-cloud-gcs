@@ -1,6 +1,7 @@
 package com.yoox.service.manage.service.impl;
 
 import com.yoox.api.livestream.AbstractLivestreamService;
+import com.yoox.great.context.response.HttpResultResponse;
 import com.yoox.great.context.enums.version.GatewayManager;
 import com.yoox.great.context.enums.version.GatewayTypeEnum;
 import com.yoox.great.mqtt.core.SDKManager;
@@ -17,6 +18,7 @@ import com.yoox.great.mqtt.model.livestream.LiveStartPushRequest3;
 import com.yoox.great.mqtt.model.livestream.LiveStopPushRequest;
 import com.yoox.great.mqtt.model.livestream.LivestreamRtspUrl;
 import com.yoox.service.manage.model.dto.DeviceDTO;
+import com.yoox.service.manage.model.dto.LiveDTO;
 import com.yoox.service.manage.model.dto.LiveStreamProperty;
 import com.yoox.service.manage.model.dto.LiveTypeDTO;
 import com.yoox.service.manage.service.ICapacityCameraService;
@@ -36,8 +38,10 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -78,9 +82,9 @@ class LiveStreamServiceImplTest {
                 .setPassword("secret")
                 .setPort(8554));
 
-        when(deviceService.getDeviceBySn(AIRCRAFT_SN)).thenReturn(Optional.of(
+        lenient().when(deviceService.getDeviceBySn(AIRCRAFT_SN)).thenReturn(Optional.of(
                 DeviceDTO.builder().deviceSn(AIRCRAFT_SN).build()));
-        when(deviceService.getDevicesByParams(any())).thenReturn(List.of(
+        lenient().when(deviceService.getDevicesByParams(any())).thenReturn(List.of(
                 DeviceDTO.builder().deviceSn(GATEWAY_SN).build()));
     }
 
@@ -97,7 +101,7 @@ class LiveStreamServiceImplTest {
         LiveTypeDTO request = liveRequest();
         request.setUrl("rtsp://publisher:secret@media.example:8554/test-stream");
 
-        liveStreamService.liveStart(request);
+        HttpResultResponse response = liveStreamService.liveStart(request);
 
         ArgumentCaptor<LiveStartPushRequest3> command =
                 ArgumentCaptor.forClass(LiveStartPushRequest3.class);
@@ -105,6 +109,18 @@ class LiveStreamServiceImplTest {
                 any(GatewayManager.class), command.capture());
         assertEquals(AIRCRAFT_SN + "-" + PAYLOAD_INDEX,
                 command.getValue().getVideo_id());
+        assertEquals(Boolean.TRUE, ((LiveDTO) response.getData()).getStartedByRequest());
+    }
+
+    @Test
+    void liveStartRejectsRtmpInRtspOnlyRuntime() {
+        LiveTypeDTO request = liveRequest();
+        request.setUrlType(UrlTypeEnum.RTMP);
+
+        HttpResultResponse response = liveStreamService.liveStart(request);
+
+        assertEquals(13013, response.getCode());
+        verifyNoInteractions(abstractLivestreamService);
     }
 
     @Test

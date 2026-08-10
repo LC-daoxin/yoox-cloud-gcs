@@ -1,7 +1,7 @@
 # YOOX Cloud GCS API 指南
 
 > 适用版本：1.0.0  
-> 更新日期：2026-07-29  
+> 更新日期：2026-08-10
 > 在线契约：`/swagger-ui/index.html`、`/v3/api-docs`  
 > 在线文档门户：`http://<YOOX_PUBLIC_HOST>:<YOOX_API_PORTAL_PORT>`（默认 8081，`api-portal` 静态站）
 
@@ -126,12 +126,24 @@ curl -sS "$BASE_URL/manage/api/v1/live/streams/start" \
   -d '{
     "video_id":"<device/camera/video id>",
     "url_type":2,
-    "video_quality":0
+    "video_quality":2
   }'
 ```
 
 可选字段 `url` 可覆盖平台生成的 RTSP 推流地址，仅供受控联调使用。`video_quality` 取值以设备
-能力上报和枚举为准，`0` 表示自动。
+能力上报和枚举为准；Web 驾驶舱默认使用 `2`（标清），用户可切换到 `3`（高清）。
+
+成功响应的 `data.reused=true` 表示返回了 MediaMTX 中已经就绪的 publisher；
+`data.started_by_request` 进一步区分来源：`false` 表示请求到达前就已存在，当前页面不得认领；
+`true` 表示本次请求已经下发设备启动指令（包括设备回复丢失后通过媒体状态恢复为成功），调用方
+应把它作为本次页面拥有的 publisher，在真正离开座舱时负责清理。
+
+多设备驾驶舱切换只关闭浏览器当前的 WHEP 播放会话，不向原设备发送 `streams/stop`。设备到
+MediaMTX 的 publisher 按 `drone_sn/payload_index` 保留；切回设备时先探测并复用已有 publisher，
+避免重复下发停止/启动指令和再次等待首帧。A→B→A 的设备切换不得调用停止接口；用户明确停止、
+设备离线或播放恢复确认 publisher 已失效时可以停止。真正离开座舱或退出登录时，还应停止当前
+页面通过 `started_by_request=true` 启动并持久追踪的 publisher；只复用且不属于本页面的 publisher
+不得随页面退出停止。调用方不得把 WHEP reader 断开等同于设备停止推流。
 
 停止：
 
@@ -185,6 +197,14 @@ connect -> enter -> MQTT 心跳/控制 -> exit
 同一用户刷新座舱时应申请新的浏览器 MQTT client；`enter` 会原子撤销旧 client 的 ACL 并把
 活跃租约接管到新 client，不会重复向设备下发 `drc_mode_enter`。不同用户仍不能接管该租约。
 
+部分遥控器固件会消费 `heart_beat` 但不回显心跳。浏览器在当前 MQTT 连接尚未收到链路确认时，
+会额外发送连续两帧全零 `drone_control`（`seq=0 → 1`）；两帧明确返回 `result=0` 同样证明上下行
+链路可用。零杆量在地面和空中都不包含位移、升降或偏航量，不能替换正常的每秒心跳。只有当前
+连接的有效心跳，或同一 MQTT 代际、Topic 和短时窗内连续匹配的两次零杆回包确认后，界面才开放
+非零控制量，因而首次进入 DRC 不需要再次点击。首轮零杆探针通常为 `seq=0 → 1`；丢包或被拒绝时保持
+锁定并让同一零向量的序号继续递增，不能回放 `0 → 1`，因为设备可能已消费旧帧。只有 `x/y/h/w`
+实际变化时才从 `seq=0` 重新计数；上一连接迟到、缺少 `result` 或 `output.seq` 不匹配的 ACK 不得解锁新连接。
+
 DRC MQTT 消息保持设备物模型信封：
 
 ```json
@@ -194,7 +214,7 @@ DRC MQTT 消息保持设备物模型信封：
   "timestamp": 1785319200000,
   "method": "drone_control",
   "data": {
-    "seq": 123,
+    "seq": 0,
     "x": 0,
     "y": 0,
     "h": 0,
@@ -210,7 +230,8 @@ DRC MQTT 消息保持设备物模型信封：
 - Topic：`thing/product/{gateway_sn}/drc/up`
 - Direction：`up`
 - Method：`hsi_info_push`
-- 距离单位：**米（m）**。字段值 `-1` 表示对应传感器未检测到障碍物；`0` 是有效距离，不能按“无数据”处理。
+- 当前项目 `HsiInfoPush` 协议定义的距离单位为**米（m）**，Web HUD 不做千倍换算；字段值
+  `-1` 表示对应传感器未检测到障碍物，`0` 是有效接触距离，不能按“无数据”处理。
 
 | 位置 | 字段 | Web HUD 映射 |
 | --- | --- | --- |
@@ -264,6 +285,56 @@ DRC MQTT 消息保持设备物模型信封：
 可用 `service_identifier` 与 payload 命令受机型、固件和设备能力限制；前端应按能力上报显示，
 不得把未验证指令作为固定按钮开放。
 
+飞行类 API 的 `{sn}` 是机巢或遥控器**网关 SN**，不是飞机 SN。建议按以下顺序调用：
+
+1. 从设备列表确认网关和子飞机均在线，并从 OSD 核验飞机模式、坐标和高度。
+2. `POST /authority/flight` 明确获取飞行控制权；切换设备后不得复用上一设备的本地控制权状态。
+3. 下发一次飞行指令，并通过 WebSocket 进度或状态查询确认结果；设备确认前不发送第二个同类指令。
+4. HTTP/MQTT 超时表示结果**未知**，不表示设备未执行。先查询状态或发送安全的停止/取消指令，
+   不得盲目重发起飞、指点飞行或返航。
+
+一键起飞到当前经纬度上方：
+
+```bash
+curl -sS "$BASE_URL/control/api/v1/devices/$GATEWAY_SN/jobs/takeoff-to-point" \
+  -H "x-auth-token: $TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "target_longitude":<TARGET_LONGITUDE>,
+    "target_latitude":<TARGET_LATITUDE>,
+    "target_height":30.0,
+    "max_speed":5
+  }'
+```
+
+指点飞行只允许在飞机已起飞且处于可控制模式时执行；`max_speed` 必须是 1–15 m/s 的整数：
+
+```bash
+curl -sS "$BASE_URL/control/api/v1/devices/$GATEWAY_SN/jobs/fly-to-point" \
+  -H "x-auth-token: $TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "max_speed":5,
+    "points":[{"longitude":<TARGET_LONGITUDE>,"latitude":<TARGET_LATITUDE>,"height":50.0}]
+  }'
+
+# 查询平台持久化的起飞/指点飞行状态；超时后先查此接口
+curl -sS "$BASE_URL/control/api/v1/devices/$GATEWAY_SN/jobs/point-flight/status" \
+  -H "x-auth-token: $TOKEN"
+
+# 结束指点飞行，可在停止结果未知时安全重试
+curl -sS -X DELETE "$BASE_URL/control/api/v1/devices/$GATEWAY_SN/jobs/fly-to-point" \
+  -H "x-auth-token: $TOKEN"
+```
+
+一键返航与取消返航均会在服务端确保平台持有飞行控制权。接口成功仅表示设备已受理，不代表已经
+到达返航点或完成悬停；必须继续观察飞机 OSD：
+
+```bash
+curl -sS -X POST "$BASE_URL/control/api/v1/devices/$GATEWAY_SN/jobs/return_home" \
+  -H "x-auth-token: $TOKEN"
+curl -sS -X POST "$BASE_URL/control/api/v1/devices/$GATEWAY_SN/jobs/return_home_cancel" \
+  -H "x-auth-token: $TOKEN"
+```
+
 > **遥控器（RC）网关与 `device_list` 寻址**
 >
 > 当网关为遥控器（`DeviceDomainEnum.REMOTER_CONTROL`，如 Autel 遥控器直连上云）时，
@@ -281,6 +352,18 @@ DRC MQTT 消息保持设备物模型信封：
 >
 > 机巢（DOCK）网关不需要 `device_list`，仍走原有下行路径。排查“MQTT 指令无回复(211001)”
 > 时，优先确认该指令在 RC 网关下是否已带 `device_list`。
+
+常见控制错误的处理原则：
+
+| 现象 | 含义与处理 |
+| --- | --- |
+| HTTP `401` / 业务码 `401` | Token 失效；重新登录后再查询状态，不直接重放飞行指令。 |
+| `210001` / device not registered | 网关 SN 不属于当前工作空间；重新查询设备列表并更正配置。 |
+| `211001` / no message reply | 指令已发出但未收到 `services_reply`，结果可能未知；检查设备在线、RC `device_list` 寻址和 MQTT 日志，再查任务状态。 |
+| gateway/aircraft offline | 网关或子飞机离线；两者恢复在线并收到新 OSD 后再操作。 |
+| current state does not support | 飞机模式、高度、任务或机巢状态不满足；以最新 OSD 修正前置条件。 |
+| point-flight already active | 先查询 `point-flight/status`；确认是指点飞行后执行停止，终态前不得新建起飞/指点任务。 |
+| HTTP read timeout / connection reset | 非幂等指令结果未知；保留目标 SN 和任务 ID，先通过状态接口、WebSocket 或 OSD 收敛。 |
 
 ### 3.5 航线与任务
 
@@ -319,13 +402,25 @@ curl -sS "$BASE_URL/wayline/api/v1/workspaces/$WORKSPACE_ID/waylines/file/upload
 }
 ```
 
-`rth_altitude` 范围 20–500 米，最低电量范围 50–90。枚举实际值以在线 OpenAPI 和设备能力为准。
+`rth_altitude` 范围 20–500 米，最低电量范围 15–100。枚举实际值以在线 OpenAPI 和设备能力为准。
 定时任务还需 `task_days`、`task_periods`。
 
 任务下发（`flighttask_prepare`）、执行（`flighttask_execute`）、暂停（`flighttask_pause`）、
 恢复（`flighttask_recovery`）、取消（`flighttask_undo`）在**遥控器（RC）网关**下同样自动携带
 `device_list` 寻址无人机（见 §3.4 说明）；`PUT /jobs/{job_id}` 的 `status=0` 暂停、`status=1` 恢复。
 任务进度经 WebSocket `flighttask_progress` 业务码实时推送，前端「航线任务」页据此实时刷新进度与状态。
+
+任务状态值为 `1=待执行`、`2=执行中`、`3=成功`、`4=已取消`、`5=失败`、`6=已暂停`。
+暂停只作用于执行中的任务，恢复只作用于暂停任务；重复调用会按当前任务 ID 做幂等判断，不能把同一
+网关上另一任务的状态当作目标任务。取消接受待执行、执行中和暂停任务；由于设备不允许直接撤销
+执行中的任务，服务端会先确认 `flighttask_pause`，再下发 `flighttask_undo`。只有撤销成功后才写入
+状态 `4` 并清理该任务的运行/暂停缓存；撤销失败时保留已暂停状态，便于人工重试或恢复。成功、
+失败终态不可取消。状态 `4=已取消` 可重复调用取消接口做幂等本地收敛：服务端只清理可能残留的
+运行/暂停缓存，不会再次向设备下发 `flighttask_undo`。
+
+任务创建、暂停、恢复或取消遇到超时时，先调用 `GET /jobs` 按 `job_id` 读取服务端状态，并继续
+监听 `flighttask_progress`。设备事件可能重复、乱序或晚于 HTTP 返回；客户端应按 `job_id` 关联，
+终态不可被较旧的非终态事件覆盖。示例程序见 [`docs/python-demo/demo_17_wayline.py`](python-demo/demo_17_wayline.py)。
 
 ### 3.6 媒体
 

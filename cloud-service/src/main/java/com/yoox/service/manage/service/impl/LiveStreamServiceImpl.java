@@ -77,12 +77,10 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
 
     @Override
     public HttpResultResponse liveStart(LiveTypeDTO liveParam) {
-        if (liveParam == null ||
-                (liveParam.getUrlType() != UrlTypeEnum.RTSP &&
-                        liveParam.getUrlType() != UrlTypeEnum.RTMP)) {
+        if (liveParam == null || liveParam.getUrlType() != UrlTypeEnum.RTSP) {
             return HttpResultResponse.error(
                     LiveErrorCodeEnum.URL_TYPE_NOT_SUPPORTED.getCode(),
-                    "Only RTSP and RTMP live streaming are supported.");
+                    "Only RTSP live streaming is enabled in the current runtime.");
         }
 
         HttpResultResponse<DeviceDTO> responseResult = this.checkBeforeLive(liveParam.getVideoId());
@@ -104,7 +102,7 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
                 configuredPlaybackUrl != null;
 
         if (canReusePublisher && isMediaPublisherReady(streamName)) {
-            return reusedLiveResponse(streamName, configuredPlaybackUrl);
+            return reusedLiveResponse(streamName, configuredPlaybackUrl, false);
         }
 
         LiveStartPushRequest3 request3 = new LiveStartPushRequest3();
@@ -130,7 +128,7 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
             // as the source of truth instead of surfacing a false 211001 failure.
             if (canReusePublisher && isMediaPublisherReady(streamName)) {
                 log.info("MQTT 启动直播未收到回复，但媒体流已就绪，按复用成功处理: stream={}", streamName);
-                return reusedLiveResponse(streamName, configuredPlaybackUrl);
+                return reusedLiveResponse(streamName, configuredPlaybackUrl, true);
             }
             throw exception;
         }
@@ -144,13 +142,14 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
         if (!response.getData().getResult().isSuccess()) {
             if (canReusePublisher && isMediaPublisherReady(streamName)) {
                 log.info("设备返回直播启动失败，但媒体流已就绪，按复用成功处理: stream={}", streamName);
-                return reusedLiveResponse(streamName, configuredPlaybackUrl);
+                return reusedLiveResponse(streamName, configuredPlaybackUrl, true);
             }
             return HttpResultResponse.error(response.getData().getResult());
         }
 
         LiveDTO live = new LiveDTO();
         live.setReused(false);
+        live.setStartedByRequest(true);
 
         String deviceRtspUrl = response.getData().getInfo();
         if (configuredPlaybackUrl != null && !configuredPlaybackUrl.trim().isEmpty()) {
@@ -296,11 +295,14 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
         return playbackUrl == null || playbackUrl.trim().isEmpty() ? null : playbackUrl;
     }
 
-    private HttpResultResponse<LiveDTO> reusedLiveResponse(String streamName, String playbackUrl) {
+    private HttpResultResponse<LiveDTO> reusedLiveResponse(
+            String streamName, String playbackUrl, boolean startedByRequest) {
         LiveDTO live = new LiveDTO();
         live.setUrl(playbackUrl);
         live.setReused(true);
-        log.info("复用 MediaMTX 已有发布流，不再下发 MQTT 启动指令: stream={}", streamName);
+        live.setStartedByRequest(startedByRequest);
+        log.info("复用 MediaMTX 发布流: stream={}, startedByRequest={}",
+                streamName, startedByRequest);
         return HttpResultResponse.success(live);
     }
 

@@ -13,6 +13,7 @@ import {
   type InteractionLogEntry,
   type InteractionTransport
 } from '../services/interaction-log'
+import { registerSessionCleanup } from '../services/session-cleanup'
 import { useSessionStore } from '../stores/session'
 import type { CapacityDevice, Device, DeviceTelemetry, OsdHost } from '../types'
 
@@ -28,6 +29,31 @@ interface DrcResumeMarker {
   dockSn: string
   workspaceId: string
   createdAt: number
+}
+interface LiveVideoId {
+  drone_sn: string
+  payload_index: string
+}
+interface StoredVideoPublishers {
+  workspaceId: string
+  publishers: Array<[string, LiveVideoId]>
+}
+type VideoStartOutcome = 'created' | 'preexisting' | 'ambiguous' | 'explicit-failure'
+interface InFlightVideoStart {
+  count: number
+  ownedBefore: boolean
+  mayHaveCreated: boolean
+  stopRequested: boolean
+  videoId: LiveVideoId
+}
+interface PendingDrcControlProbe {
+  mqttGeneration: number
+  client: MqttClient
+  replyTopics: string[]
+  requestId: string
+  controlSeq: number
+  publishedAt: number
+  handshakeStep: 0 | 1
 }
 interface CockpitSource {
   key: string
@@ -110,12 +136,22 @@ type DrcConnectionState = 'idle' | 'connecting' | 'online' | 'degraded' | 'offli
 type MapTargetMode = 'flyto' | 'lookAt'
 type DrcLandingMethod = 'drc_emergency_landing' | 'drc_force_landing'
 const CONTROL_REQUEST_OPTIONS = { timeoutMs: 15_000 } as const
+const LIVE_START_REQUEST_OPTIONS = { timeoutMs: 70_000 } as const
 const DRC_CONTROL_INTERVAL_MS = 100
+const DRC_PROBE_ACK_WINDOW_MS = 1_500
 const PENDING_DRC_EXIT_STORAGE_KEY = 'yoox.cockpit.pending-drc-exit'
 const DRC_RESUME_STORAGE_KEY = 'yoox.cockpit.drc-resume'
+const VIDEO_PUBLISHERS_STORAGE_KEY = 'yoox.cockpit.started-video-publishers'
 const DRC_RESUME_MAX_AGE_MS = 5 * 60_000
 
 const session = useSessionStore()
+// A cockpit instance belongs to one authenticated workspace for its complete
+// lifetime. Keep the value available while logout clears the reactive store.
+const cockpitWorkspaceId = session.workspaceId
+let cockpitCleanupToken = session.token
+watch(() => session.token, (token) => {
+  if (token) cockpitCleanupToken = token
+})
 const devices     = ref<Device[]>([])
 const capacity    = ref<CapacityDevice[]>([])
 const dockSn      = ref('')
@@ -135,7 +171,8 @@ const videoBox     = ref<HTMLDivElement>()
 const lens         = ref<'normal' | 'wide' | 'zoom' | 'ir'>('zoom')
 // 设备 live_status 确认的“当前在播镜头”（status===1 的 video_type），空串表示尚未收到
 const liveLensType = ref('')
-const videoQuality = ref<LiveQuality>(3)
+const videoQuality = ref<LiveQuality>(2)
+const reportedVideoQuality = ref<LiveQuality>()
 const qualitySwitching = ref(false)
 const layoutMode   = ref<CockpitLayout>('video')
 const videoState   = ref<WhepState | 'idle'>('idle')
@@ -202,7 +239,11 @@ const recording    = ref(false)
 const recordingSeconds = ref(0)
 const reportedLive = ref(false)
 const reusedPublisher = ref(false)
-const startedVideoId = ref<{ drone_sn: string; payload_index: string }>()
+const startedVideoIds = restoreStartedVideoPublishers()
+// A quality choice belongs to one device/payload publisher. A publisher starts
+// in SD on its first visit; later visits and WHEP retries retain an explicit HD
+// switch without leaking that preference to another device.
+const preferredVideoQualities = new Map<string, LiveQuality>()
 const deviceCardTelemetry = reactive<Record<string, DeviceCardTelemetry>>({})
 const interactionLogs = useInteractionLogs()
 const logOpen      = ref(false)
@@ -302,6 +343,8 @@ let drcPublishTopic = ''
 let heartbeatTimer = 0
 let heartbeatHealthTimer = 0
 let controlTimer   = 0
+let drcProbeFollowupTimer = 0
+let drcProbeRetryTimer = 0
 let topologyRefreshTimer = 0
 let videoWatchdogTimer = 0
 let videoReconnectTimer = 0
@@ -309,8 +352,10 @@ let topologyVideoReconnectReason = ''
 let disconnectedDockSn = ''
 let videoOperationGeneration = 0
 let videoStartTask: Promise<void> | undefined
+const inFlightVideoStarts = new Map<string, InFlightVideoStart>()
 let zeroBitrateSince = 0
 let videoConnectingSince = 0
+let activeVideoPublisherKey = ''
 let lastAutoVideoRetryAt = 0
 let cameraActionTipTimer = 0
 let errorDismissTimer = 0
@@ -326,10 +371,14 @@ let heartbeatSeq = 0
 let lastHeartbeatAckSeq = 0
 let nativeHeartbeatAckReceived = false
 let controlSeq = 0
+let drcProbeHandshakeStep: 0 | 1 = 0
 let lastControlVector = ''
 let lastControlPublishAt = 0
 let zeroControlPending = false
 let drcConnectedAt = 0
+let drcMqttGenerationCounter = 0
+let activeDrcMqttGeneration = 0
+let pendingDrcControlProbe: PendingDrcControlProbe | undefined
 let drcAircraftSn = ''
 let lastJoystickInvalidEventAt = 0
 let lastFlightAuthorityGrabAt = 0
@@ -344,7 +393,7 @@ function readPendingDrcExit(): PendingDrcExit | undefined {
     const raw = window.sessionStorage.getItem(PENDING_DRC_EXIT_STORAGE_KEY)
     if (!raw) return undefined
     const value = JSON.parse(raw) as Partial<PendingDrcExit>
-    if (!value.clientId || !value.dockSn || value.workspaceId !== session.workspaceId ||
+    if (!value.clientId || !value.dockSn || value.workspaceId !== cockpitWorkspaceId ||
         !Number.isFinite(value.createdAt) || Date.now() - Number(value.createdAt) > 3_600_000) {
       window.sessionStorage.removeItem(PENDING_DRC_EXIT_STORAGE_KEY)
       return undefined
@@ -359,9 +408,50 @@ function rememberPendingDrcExit(clientId: string, exitDockSn: string) {
   pendingDrcExit.value = {
     clientId,
     dockSn: exitDockSn,
-    workspaceId: session.workspaceId,
+    workspaceId: cockpitWorkspaceId,
     createdAt: Date.now()
   }
+}
+
+function restoreStartedVideoPublishers(): Map<string, LiveVideoId> {
+  const publishers = new Map<string, LiveVideoId>()
+  try {
+    const raw = window.sessionStorage.getItem(VIDEO_PUBLISHERS_STORAGE_KEY)
+    if (!raw) return publishers
+    const stored = JSON.parse(raw) as Partial<StoredVideoPublishers>
+    if (!stored.workspaceId || stored.workspaceId !== cockpitWorkspaceId ||
+        !Array.isArray(stored.publishers)) {
+      window.sessionStorage.removeItem(VIDEO_PUBLISHERS_STORAGE_KEY)
+      return publishers
+    }
+    for (const entry of stored.publishers.slice(0, 64)) {
+      if (!Array.isArray(entry) || entry.length !== 2) continue
+      const [key, videoId] = entry
+      if (typeof key !== 'string' || !videoId ||
+          typeof videoId.drone_sn !== 'string' ||
+          typeof videoId.payload_index !== 'string' ||
+          key !== `${videoId.drone_sn}/${videoId.payload_index}`) continue
+      publishers.set(key, {
+        drone_sn: videoId.drone_sn,
+        payload_index: videoId.payload_index
+      })
+    }
+  } catch { /* 存储不可用或数据损坏时从空集合开始 */ }
+  return publishers
+}
+
+function persistStartedVideoPublishers() {
+  try {
+    if (startedVideoIds.size === 0) {
+      window.sessionStorage.removeItem(VIDEO_PUBLISHERS_STORAGE_KEY)
+      return
+    }
+    const stored: StoredVideoPublishers = {
+      workspaceId: cockpitWorkspaceId,
+      publishers: [...startedVideoIds.entries()]
+    }
+    window.sessionStorage.setItem(VIDEO_PUBLISHERS_STORAGE_KEY, JSON.stringify(stored))
+  } catch { /* sessionStorage 不可用时仍保留当前页内所有权 */ }
 }
 
 watch(pendingDrcExit, (value) => {
@@ -381,13 +471,15 @@ let drcLandingGatewaySn = ''
 let drcLandingTimer = 0
 let componentExiting = false
 let pageUnloading = false
+let componentExitPromise: Promise<void> | undefined
+const unregisterSessionCleanup = registerSessionCleanup(exit)
 
 function readDrcResumeMarker(): DrcResumeMarker | undefined {
   try {
     const raw = window.sessionStorage.getItem(DRC_RESUME_STORAGE_KEY)
     if (!raw) return undefined
     const value = JSON.parse(raw) as Partial<DrcResumeMarker>
-    if (!value.dockSn || value.workspaceId !== session.workspaceId ||
+    if (!value.dockSn || value.workspaceId !== cockpitWorkspaceId ||
         !Number.isFinite(value.createdAt) ||
         Date.now() - Number(value.createdAt) > DRC_RESUME_MAX_AGE_MS) {
       window.sessionStorage.removeItem(DRC_RESUME_STORAGE_KEY)
@@ -402,7 +494,7 @@ function readDrcResumeMarker(): DrcResumeMarker | undefined {
 function rememberDrcResume(resumeDockSn: string) {
   drcResumeMarker.value = {
     dockSn: resumeDockSn,
-    workspaceId: session.workspaceId,
+    workspaceId: cockpitWorkspaceId,
     createdAt: Date.now()
   }
 }
@@ -574,6 +666,23 @@ const sources = computed<CockpitSource[]>(() => (selectedAircraftOnline.value ? 
     }))
   )))
 const selectedSource = computed(() => sources.value.find((source) => source.key === selectedVideoId.value))
+function videoPublisherKey(source: CockpitSource | undefined = selectedSource.value) {
+  return source ? `${source.deviceSn}/${source.cameraIndex}` : ''
+}
+
+function selectPreferredVideoQuality(source: CockpitSource | undefined) {
+  const publisherKey = videoPublisherKey(source)
+  if (!publisherKey) {
+    videoQuality.value = 2
+    reportedVideoQuality.value = undefined
+    return
+  }
+  if (!preferredVideoQualities.has(publisherKey)) {
+    preferredVideoQualities.set(publisherKey, 2)
+  }
+  videoQuality.value = preferredVideoQualities.get(publisherKey) ?? 2
+  reportedVideoQuality.value = undefined
+}
 const selectedMeasurementPayloadKey = computed(() => {
   const source = selectedSource.value
   return source ? `${source.deviceSn}/${source.cameraIndex}` : ''
@@ -691,15 +800,15 @@ const measureTone = computed(() => {
 })
 // 仅用于视频 HUD 的距离分级，不代表飞控的制动阈值。
 function obstacleRiskClass(distance: number) {
-  if (distance <= 0) return 'unknown'
+  if (distance < 0) return 'unknown'
   if (distance <= 3) return 'danger'
   if (distance <= 6) return 'warning'
   if (distance <= 10) return 'caution'
   return 'clear'
 }
 function nearestObstacleDistance(distances: number[]) {
-  const positiveDistances = distances.filter((distance) => distance > 0)
-  return positiveDistances.length > 0 ? Math.min(...positiveDistances) : -1
+  const detectedDistances = distances.filter((distance) => distance >= 0)
+  return detectedDistances.length > 0 ? Math.min(...detectedDistances) : -1
 }
 const nearestObstacle = computed(() => ({
   front: nearestObstacleDistance(obstacleSegments.front),
@@ -726,13 +835,9 @@ const obstacleHudStateLabel = computed(() => {
 })
 const selectedCockpitWayline = computed(() =>
   cockpitWaylines.value.find((wayline) => wayline.id === selectedWaylineId.value))
-const waylineTaskBattery = computed(() => {
-  const dock = selectedDock.value
-  return dock ? dockCardStats(dock).battery : -1
-})
 const waylineTaskFormValid = computed(() =>
   Number.isFinite(waylineTaskForm.rthAltitude) && waylineTaskForm.rthAltitude >= 20 && waylineTaskForm.rthAltitude <= 500 &&
-  Number.isFinite(waylineTaskForm.minBatteryCapacity) && waylineTaskForm.minBatteryCapacity >= 50 && waylineTaskForm.minBatteryCapacity <= 90 &&
+  Number.isFinite(waylineTaskForm.minBatteryCapacity) && waylineTaskForm.minBatteryCapacity >= 15 && waylineTaskForm.minBatteryCapacity <= 100 &&
   Number.isFinite(waylineTaskForm.takeoffAltitude) && waylineTaskForm.takeoffAltitude >= 1 && waylineTaskForm.takeoffAltitude <= 1500 &&
   Number.isFinite(waylineTaskForm.firstWaypointSpeed) && waylineTaskForm.firstWaypointSpeed >= 1 && waylineTaskForm.firstWaypointSpeed <= 25 &&
   Number.isFinite(waylineTaskForm.returnSpeed) && waylineTaskForm.returnSpeed >= 1 && waylineTaskForm.returnSpeed <= 25)
@@ -747,14 +852,9 @@ const waylineTaskBlockedReason = computed(() => {
     return 'DRC 状态正在切换，请稍候'
   }
   if (operationPanelState.value === 'task') return '当前飞机已有任务正在执行'
-  if (operationPanelState.value === 'airborne') return '飞机已在空中，不能创建立即起飞航线任务'
   if (telemetry.pointFlightActive) return '当前存在指点飞行任务，请先结束任务'
   if (!selectedCockpitWayline.value) return '请选择要执行的航线'
   if (!waylineTaskFormValid.value) return '请检查任务参数是否在允许范围内'
-  const battery = waylineTaskBattery.value
-  if (battery > 0 && battery < waylineTaskForm.minBatteryCapacity) {
-    return `当前无人机电量 ${battery.toFixed(0)}%，低于任务最低电量 ${waylineTaskForm.minBatteryCapacity}%`
-  }
   if (!waylineTaskConfirmed.value) return '请先确认飞行安全检查项'
   return ''
 })
@@ -1064,7 +1164,10 @@ async function selectDock(sn: string) {
   const previousDockSn = dockSn.value
   dockSelectionPending.value = true
   try {
-    await stopVideo()
+    // Switching the cockpit view only closes this browser's WHEP reader. Keep
+    // the device publisher alive so switching back can reuse the existing
+    // MediaMTX stream instead of issuing another device stop/start cycle.
+    await detachVideoForDeviceSwitch()
     if (
       state.value !== 'idle' || drcEnterPending.value || flightAuthorityPending.value ||
       payloadAuthorityPending.value || mapTargetPending.value || payloadCommandPending.value > 0 ||
@@ -1115,9 +1218,16 @@ async function selectDock(sn: string) {
     clearMeasuredTargetMarker()
     clearRemoteControllerMarker()
     syncSelections()
+    // An unseen publisher starts at SD. A publisher visited earlier keeps its
+    // explicit preference, so A(HD) -> B -> A resumes A in HD.
+    selectPreferredVideoQuality(selectedSource.value)
     await loadPointFlightState(sn)
   } finally {
     dockSelectionPending.value = false
+  }
+  if (dockSn.value === sn && selectedVideoId.value && videoState.value === 'idle') {
+    await nextTick()
+    void startVideo()
   }
 }
 
@@ -1139,6 +1249,7 @@ watch(selectedVideoId, async (videoId, previousVideoId) => {
   payloadZoomTarget.value = undefined
   hydrateAuthorityState()
   if (!videoId || videoId === previousVideoId) return
+  selectPreferredVideoQuality(selectedSource.value)
   await nextTick()
   if (videoState.value === 'idle') void startVideo()
 }, { flush: 'post' })
@@ -1216,7 +1327,7 @@ watch(selectedAircraftSn, (aircraftSn) => {
 
 async function loadCockpitData() {
   const [deviceData, liveData] = await Promise.all([
-    get<Device[]>(`/manage/api/v1/devices/${session.workspaceId}/devices`),
+    get<Device[]>(`/manage/api/v1/devices/${cockpitWorkspaceId}/devices`),
     get<CapacityDevice[]>('/manage/api/v1/live/capacity')
   ])
   devices.value = deviceData
@@ -1775,9 +1886,11 @@ function applyLiveStatus(message: DeviceTelemetry) {
   const liveQuality = Number(liveItem?.video_quality ?? liveItem?.videoQuality)
   // 实时更新当前在播镜头类型，驱动镜头组高亮与置顶
   liveLensType.value = liveType
-  // 画质档位以设备 live_status 为准。不能根据 videoHeight 反推：切换后的旧
-  // WebRTC 会话可能暂时保留上一组解码尺寸，且同一尺寸也可能对应不同码率档。
-  if (liveQuality === 2 || liveQuality === 3) videoQuality.value = liveQuality
+  // live_status 只描述当前设备/当前 payload 的实际状态，不覆盖该 publisher 的
+  // 用户偏好。否则 A 的高清上报会在切到 B 的首个 start 前污染默认标清参数。
+  reportedVideoQuality.value = liveQuality === 2 || liveQuality === 3
+    ? liveQuality
+    : undefined
   const wasReportedLive = reportedLive.value
   reportedLive.value = !!liveItem
   if (!wasReportedLive && reportedLive.value) {
@@ -2115,7 +2228,7 @@ async function loadCockpitWaylines() {
   waylineTaskError.value = ''
   try {
     const data = await get<unknown>(
-      `/wayline/api/v1/workspaces/${session.workspaceId}/waylines?page=1&page_size=100&order_by=update_time%20desc`)
+      `/wayline/api/v1/workspaces/${cockpitWorkspaceId}/waylines?page=1&page_size=100&order_by=update_time%20desc`)
     if (requestSeq !== waylineTaskLoadSeq) return
     cockpitWaylines.value = listFrom<CockpitWayline>(data)
     if (!cockpitWaylines.value.some((wayline) => wayline.id === selectedWaylineId.value)) {
@@ -2170,7 +2283,7 @@ async function startWaylineTask() {
       throw new Error('飞机状态已变化，只有待机状态可开始航线任务')
     }
 
-    await post(`/wayline/api/v1/workspaces/${session.workspaceId}/flight-tasks`, {
+    await post(`/wayline/api/v1/workspaces/${cockpitWorkspaceId}/flight-tasks`, {
       name: `${file.name}-座舱任务`.slice(0, 64),
       file_id: file.id,
       dock_sn: targetDockSn,
@@ -2271,7 +2384,7 @@ async function loadHmsAlarms() {
   hmsLoading.value = true
   try {
     const results = await Promise.all(sns.map((sn) =>
-      get<HmsAlarm[]>(`/manage/api/v1/devices/${session.workspaceId}/devices/hms/${encodeURIComponent(sn)}`)))
+      get<HmsAlarm[]>(`/manage/api/v1/devices/${cockpitWorkspaceId}/devices/hms/${encodeURIComponent(sn)}`)))
     if (requestSeq !== hmsLoadSeq) return
     hmsAlarms.value = []
     results.forEach((alarms, index) => mergeHmsAlarms(Array.isArray(alarms) ? alarms : [], sns[index]))
@@ -2304,7 +2417,7 @@ async function markHmsRead() {
   hmsError.value = ''
   try {
     await Promise.all(sns.map((sn) =>
-      put(`/manage/api/v1/devices/${session.workspaceId}/devices/hms/${encodeURIComponent(sn)}`)))
+      put(`/manage/api/v1/devices/${cockpitWorkspaceId}/devices/hms/${encodeURIComponent(sn)}`)))
     hmsAlarms.value = []
     latestHms.value = undefined
   } catch (reason) {
@@ -2464,6 +2577,7 @@ onMounted(async () => {
   window.addEventListener('blur', releaseKeys)
   window.addEventListener('beforeunload', markPageUnloading)
   window.addEventListener('pagehide', markPageUnloading)
+  window.addEventListener('pageshow', markPageVisible)
   document.addEventListener('focusin', handleControlFocusIn)
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
@@ -2481,12 +2595,19 @@ onBeforeUnmount(async () => {
   window.clearInterval(videoWatchdogTimer)
   window.removeEventListener('beforeunload', markPageUnloading)
   window.removeEventListener('pagehide', markPageUnloading)
-  if (pageUnloading && (active.value || state.value === 'connecting')) {
-    preserveDrcForReload()
-  } else {
-    await exit()
+  window.removeEventListener('pageshow', markPageVisible)
+  try {
+    if (pageUnloading && (active.value || state.value === 'connecting')) {
+      preserveDrcForReload()
+    } else {
+      await exit()
+    }
+  } finally {
+    // Keep the handler registered while an async unmount cleanup is in flight.
+    // A global logout during that window must await the same idempotent promise.
+    unregisterSessionCleanup()
+    if (map) { map.destroy?.(); map = undefined }
   }
-  if (map) { map.destroy?.(); map = undefined }
 })
 
 // ────────── DRC 控制 ──────────
@@ -2495,11 +2616,19 @@ function markPageUnloading() {
   pageUnloading = true
 }
 
+function markPageVisible() {
+  // pagehide can be followed by pageshow when the browser restores this page
+  // from BFCache. It is no longer unloading and must perform normal cleanup on
+  // the next route change.
+  pageUnloading = false
+}
+
 function preserveDrcForReload() {
   window.clearInterval(heartbeatTimer)
   window.clearInterval(heartbeatHealthTimer)
   window.clearInterval(controlTimer)
   releaseKeys()
+  invalidateDrcMqttGeneration(client)
   try { client?.end(true) } catch { /* 页面正在卸载 */ }
   client = undefined
   drcMqttConnected.value = false
@@ -2583,12 +2712,12 @@ async function performEnter(): Promise<boolean> {
     return false
   }
   try {
-    enteringBroker = await post<Broker>(`/control/api/v1/workspaces/${session.workspaceId}/drc/connect`, {
+    enteringBroker = await post<Broker>(`/control/api/v1/workspaces/${cockpitWorkspaceId}/drc/connect`, {
       client_id: '', expire_sec: 3600
     }, CONTROL_REQUEST_OPTIONS)
     if (!enteringTargetValid(enteringDockSn, enteringAircraftSn)) throw new Error('设备或飞行控制权状态已变化，已取消进入 DRC')
     deviceDrcEnterAttempted = true
-    enteringAcl = await post<Acl>(`/control/api/v1/workspaces/${session.workspaceId}/drc/enter`, {
+    enteringAcl = await post<Acl>(`/control/api/v1/workspaces/${cockpitWorkspaceId}/drc/enter`, {
       client_id: enteringBroker.client_id, dock_sn: enteringDockSn, expire_sec: 3600,
       device_info: { osd_frequency: 10, hsi_frequency: 1 }
     }, CONTROL_REQUEST_OPTIONS)
@@ -2632,7 +2761,7 @@ async function performEnter(): Promise<boolean> {
         error.value = `${enterError}；${exitMessage}`
       }
     } else if (deviceDrcEnterAttempted && enteringBroker) {
-      await post(`/control/api/v1/workspaces/${session.workspaceId}/drc/exit`, {
+      await post(`/control/api/v1/workspaces/${cockpitWorkspaceId}/drc/exit`, {
         client_id: enteringBroker.client_id, dock_sn: enteringDockSn, expire_sec: 3600,
         device_info: { osd_frequency: 10, hsi_frequency: 1 }
       }, CONTROL_REQUEST_OPTIONS).catch((exitReason) => {
@@ -2651,6 +2780,7 @@ async function performEnter(): Promise<boolean> {
       ? '进入失败，本地通道已关闭，但设备退出未确认'
       : enterError
     const failedClient = client
+    invalidateDrcMqttGeneration(failedClient)
     client = undefined
     failedClient?.end(true)
     drcMqttConnected.value = false
@@ -2693,6 +2823,39 @@ function resolveBrowserDrcAddress(address: string) {
   return resolved.toString()
 }
 
+function clearDrcControlProbeHandshake() {
+  window.clearTimeout(drcProbeFollowupTimer)
+  drcProbeFollowupTimer = 0
+  window.clearTimeout(drcProbeRetryTimer)
+  drcProbeRetryTimer = 0
+  pendingDrcControlProbe = undefined
+  drcProbeHandshakeStep = 0
+}
+
+function restartDrcControlProbeHandshake() {
+  clearDrcControlProbeHandshake()
+  // A retry is still the same zero vector. Keep advancing its sequence because
+  // the device may have consumed the previous frame even when its ACK was lost.
+  // Only an actual vector change starts again at seq=0.
+  zeroControlPending = true
+}
+
+function activateDrcMqttGeneration(mqttClient: MqttClient, resetControlSequence = true) {
+  clearDrcControlProbeHandshake()
+  activeDrcMqttGeneration = ++drcMqttGenerationCounter
+  if (resetControlSequence) {
+    controlSeq = 0
+    lastControlVector = ''
+  }
+  return activeDrcMqttGeneration
+}
+
+function invalidateDrcMqttGeneration(mqttClient?: MqttClient) {
+  if (mqttClient && pendingDrcControlProbe && pendingDrcControlProbe.client !== mqttClient) return
+  clearDrcControlProbeHandshake()
+  activeDrcMqttGeneration = 0
+}
+
 function connectMqtt(config: Broker, permissions: Acl, aircraftSn: string) {
   return new Promise<void>((resolve, reject) => {
     drcMqttConnected.value = false
@@ -2702,6 +2865,7 @@ function connectMqtt(config: Broker, permissions: Acl, aircraftSn: string) {
       reconnectPeriod: 1500, connectTimeout: 8000, clean: true
     })
     client = mqttClient
+    let mqttGeneration = activateDrcMqttGeneration(mqttClient)
     const isCurrentClient = () => client === mqttClient
     let settled = false
     const resolveOnce = () => {
@@ -2727,7 +2891,7 @@ function connectMqtt(config: Broker, permissions: Acl, aircraftSn: string) {
         drcMqttConnected.value = true
         mqttClient.on('message', (topic, payload) => {
           if (!isCurrentClient() || selectedAircraftSn.value !== aircraftSn) return
-          handleMessage(topic, payload, aircraftSn)
+          handleMessage(topic, payload, aircraftSn, mqttClient, mqttGeneration)
         })
         mqttClient.on('connect', () => {
           if (!isCurrentClient()) return
@@ -2739,7 +2903,6 @@ function connectMqtt(config: Broker, permissions: Acl, aircraftSn: string) {
             lastHeartbeatAckAt.value = 0
             lastHeartbeatAckSeq = heartbeatSeq
             nativeHeartbeatAckReceived = false
-            lastControlVector = ''
             drcConnectionState.value = 'connecting'
             drcStatusMessage.value = 'DRC MQTT 已重连，等待心跳确认'
             releaseKeys()
@@ -2748,12 +2911,16 @@ function connectMqtt(config: Broker, permissions: Acl, aircraftSn: string) {
         })
         mqttClient.on('reconnect', () => {
           if (!isCurrentClient()) return
+          // Transport reconnect is not a new REST DRC session. Preserve the
+          // last vector/sequence so a zero-vector retry cannot replay seq=0.
+          mqttGeneration = activateDrcMqttGeneration(mqttClient, false)
           drcMqttConnected.value = false
           drcConnectionState.value = 'connecting'
           drcStatusMessage.value = 'DRC MQTT 正在重连…'
         })
         mqttClient.on('offline', () => {
           if (!isCurrentClient()) return
+          clearDrcControlProbeHandshake()
           drcMqttConnected.value = false
           drcConnectionState.value = 'offline'
           drcStatusMessage.value = 'DRC MQTT 已离线'
@@ -2800,6 +2967,7 @@ function connectMqtt(config: Broker, permissions: Acl, aircraftSn: string) {
         return
       }
       drcMqttConnected.value = false
+      invalidateDrcMqttGeneration(mqttClient)
       if (state.value === 'active') {
         drcConnectionState.value = 'offline'
         drcStatusMessage.value = 'DRC MQTT 连接已关闭'
@@ -2854,10 +3022,16 @@ function publish(method: string, data: unknown = ''): string | undefined {
 function heartbeat() {
   publish('heart_beat', { seq: ++heartbeatSeq, timestamp: Date.now() })
   // Autel Cloud API marks heartBeatDown as unsupported for RC gateways. Some RC
-  // firmware therefore consumes/ignores heart_beat without echoing it. In standby,
-  // send a zero-vector control probe alongside the documented heartbeat: its
-  // result=0 reply proves both DRC directions without ever allowing movement.
-  if (operationPanelState.value === 'ground') publishControl(true)
+  // firmware therefore consumes/ignores heart_beat without echoing it. Send a
+  // zero-vector control probe while the current MQTT generation is still being
+  // verified (and continuously in standby). Without this airborne bootstrap,
+  // drcControlsReady blocks drone_control while waiting for an ACK that affected
+  // RC firmware never sends, so the first DRC entry can deadlock until reconnect.
+  if (operationPanelState.value === 'ground' ||
+      drcConnectionState.value !== 'online' ||
+      lastHeartbeatAckAt.value < drcConnectedAt) {
+    publishControl(true)
+  }
 }
 
 function checkHeartbeatHealth() {
@@ -2869,6 +3043,8 @@ function checkHeartbeatHealth() {
   if (baseline > 0 && Date.now() - baseline > 4_000 && drcConnectionState.value !== 'degraded') {
     drcConnectionState.value = 'degraded'
     drcStatusMessage.value = '超过 4 秒未收到 DRC 链路回包，已停止控制输出'
+    lastHeartbeatAckAt.value = 0
+    restartDrcControlProbeHandshake()
     releaseKeys()
   }
 }
@@ -2879,10 +3055,23 @@ function hsiBoolean(value: unknown): boolean | undefined {
   return undefined
 }
 
+function exactInteger(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) ? value : undefined
+  }
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  if (!/^-?\d+$/.test(text)) return undefined
+  const parsed = Number(text)
+  return Number.isSafeInteger(parsed) ? parsed : undefined
+}
+
 function hsiDistance(value: unknown): number {
   if (value === null || value === undefined || value === '') return -1
-  const distance = Number(value)
-  return Number.isFinite(distance) && distance >= 0 ? distance : -1
+  const distanceMeters = Number(value)
+  // HsiInfoPush in this project defines DRC distances in metres. Keep
+  // -1/invalid as unavailable and preserve 0 as a valid contact distance.
+  return Number.isFinite(distanceMeters) && distanceMeters >= 0 ? distanceMeters : -1
 }
 
 function hsiSegmentDistances(data: Record<string, unknown>, prefix: string, count: number) {
@@ -2955,6 +3144,19 @@ const effectiveYawScale = computed(() => {
 
 function publishControl(forceZero = false) {
   if (forceZero) zeroControlPending = true
+  const awaitingCurrentGenerationAck = drcConnectedAt > 0 &&
+    lastHeartbeatAckAt.value < drcConnectedAt
+  if (forceZero && awaitingCurrentGenerationAck &&
+      pendingDrcControlProbe?.mqttGeneration === activeDrcMqttGeneration) {
+    if (Date.now() - pendingDrcControlProbe.publishedAt <= DRC_PROBE_ACK_WINDOW_MS) {
+      // Never replace a still-valid handshake frame.
+      return
+    }
+    // A lost first or second ACK must not make the operator enter DRC twice.
+    // Restart the two-frame zero verification in this generation while controls
+    // remain locked; the unchanged zero vector keeps an increasing sequence.
+    restartDrcControlProbeHandshake()
+  }
   if (operationPanelState.value === 'ground' && lastControlVector !== '0/0/0/0') {
     zeroControlPending = true
   }
@@ -2986,7 +3188,24 @@ function publishControl(forceZero = false) {
   })
   if (requestId) {
     lastControlPublishAt = now
-    if (shouldPublishZero) zeroControlPending = false
+    if (shouldPublishZero) {
+      zeroControlPending = false
+      if (awaitingCurrentGenerationAck && client && activeDrcMqttGeneration > 0 && drcConnectedAt > 0) {
+        const probe: PendingDrcControlProbe = {
+          mqttGeneration: activeDrcMqttGeneration,
+          client,
+          replyTopics: drcPublishTopic
+            ? [drcPublishTopic.replace(/\/down$/, '/up')]
+            : [],
+          requestId,
+          controlSeq,
+          publishedAt: now,
+          handshakeStep: drcProbeHandshakeStep
+        }
+        pendingDrcControlProbe = probe
+        scheduleDrcControlProbeRetry(probe)
+      }
+    }
   }
 }
 
@@ -3060,7 +3279,78 @@ async function closeMqttClientGracefully(mqttClient: MqttClient | undefined) {
   })
 }
 
-function handleMessage(_topic: string, payload: Uint8Array, sessionAircraftSn: string) {
+function drcControlProbeMatches(
+  message: Record<string, unknown>,
+  data: Record<string, unknown>,
+  output: Record<string, unknown>,
+  topic: string,
+  mqttClient: MqttClient,
+  mqttGeneration: number,
+  receivedAt = Date.now()
+) {
+  const probe = pendingDrcControlProbe
+  if (!probe || probe.client !== mqttClient || mqttClient !== client ||
+      probe.mqttGeneration !== mqttGeneration || mqttGeneration !== activeDrcMqttGeneration ||
+      !probe.replyTopics.includes(topic) || probe.publishedAt < drcConnectedAt ||
+      receivedAt < probe.publishedAt || receivedAt - probe.publishedAt > DRC_PROBE_ACK_WINDOW_MS) {
+    return false
+  }
+  const rawSeq = output.seq ?? data.seq
+  const replySeq = exactInteger(rawSeq)
+  if (replySeq === undefined || replySeq !== probe.controlSeq) return false
+
+  const replyIds = [
+    message.tid, message.bid,
+    (message.data as Record<string, unknown> | undefined)?.tid,
+    (message.data as Record<string, unknown> | undefined)?.bid,
+    data.tid, data.bid,
+    output.tid, output.bid
+  ].map((value) => String(value ?? '')).filter(Boolean)
+
+  // Some firmware omits correlation IDs, so seq is mandatory. If it does send
+  // any tid/bid, at least one must also identify this exact probe; an old reply
+  // cannot bypass request correlation merely because its seq happens to match.
+  return replyIds.length === 0 || replyIds.includes(probe.requestId)
+}
+
+function scheduleDrcControlProbeRetry(probe: PendingDrcControlProbe) {
+  window.clearTimeout(drcProbeRetryTimer)
+  drcProbeRetryTimer = window.setTimeout(() => {
+    drcProbeRetryTimer = 0
+    if (pendingDrcControlProbe !== probe || probe.client !== client || !client?.connected ||
+        !active.value || probe.mqttGeneration !== activeDrcMqttGeneration ||
+        lastHeartbeatAckAt.value >= drcConnectedAt) return
+    // Do not depend on the one-second heartbeat cadence here: retry exactly
+    // after the bounded ACK window so a lost response cannot require another
+    // operator click (or leave the first DRC entry stuck near two seconds).
+    restartDrcControlProbeHandshake()
+    publishControl(true)
+  }, DRC_PROBE_ACK_WINDOW_MS)
+}
+
+function scheduleSecondDrcControlProbe(firstProbe: PendingDrcControlProbe) {
+  window.clearTimeout(drcProbeRetryTimer)
+  drcProbeRetryTimer = 0
+  drcProbeHandshakeStep = 1
+  drcStatusMessage.value = '零杆链路已确认 1/2，正在验证连续回包…'
+  window.clearTimeout(drcProbeFollowupTimer)
+  const waitMs = Math.max(0, DRC_CONTROL_INTERVAL_MS - (Date.now() - lastControlPublishAt))
+  drcProbeFollowupTimer = window.setTimeout(() => {
+    drcProbeFollowupTimer = 0
+    if (client !== firstProbe.client || !client?.connected || !active.value ||
+        activeDrcMqttGeneration !== firstProbe.mqttGeneration ||
+        drcConnectionState.value === 'online' || lastHeartbeatAckAt.value >= drcConnectedAt) return
+    publishControl(true)
+  }, waitMs)
+}
+
+function handleMessage(
+  _topic: string,
+  payload: Uint8Array,
+  sessionAircraftSn: string,
+  mqttClient: MqttClient,
+  mqttGeneration: number
+) {
   try {
     const message = JSON.parse(new TextDecoder().decode(payload))
     addInteractionLog({
@@ -3071,25 +3361,42 @@ function handleMessage(_topic: string, payload: Uint8Array, sessionAircraftSn: s
       payload: message
     })
     const data = message.data?.data ?? message.data ?? {}
-    const result = Number(message.data?.result ?? data.result ?? 0)
+    const rawResult = message.data?.result ?? data.result
+    const hasExplicitResult = rawResult !== undefined && rawResult !== null && rawResult !== ''
+    const parsedResult = hasExplicitResult ? exactInteger(rawResult) : undefined
+    const result = parsedResult ?? Number.NaN
     const output = message.data?.output ?? data.output ?? data
     if (message.method === 'heart_beat') {
-      const timestamp = Number(output.timestamp ?? data.timestamp)
-      const echoedSeq = Number(output.seq ?? data.seq)
-      if (!Number.isFinite(timestamp) || timestamp < drcConnectedAt ||
-          !Number.isFinite(echoedSeq) || echoedSeq <= lastHeartbeatAckSeq || echoedSeq > heartbeatSeq) return
+      const timestamp = exactInteger(output.timestamp ?? data.timestamp)
+      const echoedSeq = exactInteger(output.seq ?? data.seq)
+      if (timestamp === undefined || timestamp < drcConnectedAt ||
+          echoedSeq === undefined || echoedSeq <= lastHeartbeatAckSeq || echoedSeq > heartbeatSeq) return
       lastHeartbeatAckSeq = echoedSeq
+      const heartbeatSucceeded = !hasExplicitResult || result === 0
+      if (!heartbeatSucceeded) {
+        drcConnectionState.value = 'degraded'
+        drcStatusMessage.value = Number.isFinite(result)
+          ? `心跳回包异常（${result}）`
+          : '心跳回包 result 无效'
+        lastHeartbeatAckAt.value = 0
+        restartDrcControlProbeHandshake()
+        releaseKeys()
+        return
+      }
       nativeHeartbeatAckReceived = true
       latency.value = Math.max(0, Date.now() - timestamp)
+      if (drcControlRejected.value) {
+        drcConnectionState.value = 'degraded'
+        drcStatusMessage.value = drcControlFailure.value || '飞行控制仍被设备拒绝，正在重试零杆探针'
+        return
+      }
       lastHeartbeatAckAt.value = Date.now()
-      drcConnectionState.value = result === 0 && !drcControlRejected.value ? 'online' : 'degraded'
-      if (result !== 0) drcStatusMessage.value = `心跳回包异常（${result}）`
-      else if (!drcControlRejected.value) drcStatusMessage.value = '心跳正常'
-      if (result === 0 && !drcControlRejected.value && pressed.size > 0 && operationPanelState.value !== 'ground') {
+      drcConnectionState.value = 'online'
+      clearDrcControlProbeHandshake()
+      drcStatusMessage.value = '心跳正常'
+      if (pressed.size > 0 && operationPanelState.value !== 'ground') {
         syncSticksFromKeys()
-      } else if (result === 0 && pressed.size > 0) {
-        releaseKeys()
-      } else if (result !== 0) {
+      } else if (pressed.size > 0) {
         releaseKeys()
       }
     }
@@ -3097,6 +3404,41 @@ function handleMessage(_topic: string, payload: Uint8Array, sessionAircraftSn: s
       applyHsiTelemetry(data as Record<string, unknown>)
     }
     if (message.method === 'drone_control') {
+      const waitingForGenerationAck = drcConnectedAt > 0 &&
+        lastHeartbeatAckAt.value < drcConnectedAt
+      // Once an acknowledged generation becomes degraded, only a validated
+      // native heartbeat or an explicit MQTT reconnect may reopen controls.
+      // Do not let an unrelated late control ACK recover it implicitly.
+      if (!waitingForGenerationAck && drcConnectionState.value !== 'online') return
+      const matchedProbe = pendingDrcControlProbe
+      if (waitingForGenerationAck && !drcControlProbeMatches(
+        message as Record<string, unknown>,
+        data as Record<string, unknown>, output as Record<string, unknown>,
+        _topic, mqttClient, mqttGeneration)) return
+      if (waitingForGenerationAck && matchedProbe) {
+        // Unlike native heart_beat, a control probe must explicitly report
+        // result=0. Missing/malformed result stays pending until the bounded
+        // timeout restarts the handshake.
+        if (!hasExplicitResult || !Number.isFinite(result)) return
+        if (result !== 0) {
+          drcControlRejected.value = true
+          drcConnectionState.value = 'degraded'
+          drcStatusMessage.value = `设备拒绝零杆链路探针（${result}），控制保持锁定并自动重试`
+          drcControlFailure.value = drcStatusMessage.value
+          error.value = drcStatusMessage.value
+          // Keep this rejected probe pending until its 1.5 s retry deadline.
+          // releaseKeys() remains safe because publishControl refuses to replace
+          // a current pending probe; the retry continues the same vector's seq.
+          releaseKeys()
+          return
+        }
+        pendingDrcControlProbe = undefined
+        if (matchedProbe.handshakeStep === 0) {
+          scheduleSecondDrcControlProbe(matchedProbe)
+          return
+        }
+        clearDrcControlProbeHandshake()
+      }
       if (result === 0) {
         drcControlRejected.value = false
         drcControlFailure.value = ''
@@ -3125,13 +3467,14 @@ function handleMessage(_topic: string, payload: Uint8Array, sessionAircraftSn: s
       } else {
         drcControlRejected.value = true
         drcConnectionState.value = 'degraded'
-        drcStatusMessage.value = `设备拒绝飞行控制（${result}），已停止输出并重置指令序号`
+        drcStatusMessage.value = `设备拒绝飞行控制（${result}），已停止输出`
         drcControlFailure.value = drcStatusMessage.value
         // 文档没有给出 result 对应表，非 0 也可能只是序号错误。先安全归零并
-        // 重置 seq，但不伪造“飞行权已丢失”；真正夺权由
-        // joystick_invalid_notify(reason=4) 或 control_source_change 判定。
-        controlSeq = 0
-        lastControlVector = ''
+        // 重新锁定为当前代次探针验证；同一零向量的 seq 继续递增，只有从非零向量
+        // 变为零向量时才从 0 开始。真正夺权由 joystick_invalid_notify(reason=4)
+        // 或 control_source_change 判定。
+        lastHeartbeatAckAt.value = 0
+        restartDrcControlProbeHandshake()
         releaseKeys()
         error.value = drcStatusMessage.value
       }
@@ -3665,6 +4008,76 @@ function videoOperationIsCurrent(operation: number, sourceKey: string) {
     !componentExiting
 }
 
+function streamStartOutcomeUncertain(reason: unknown) {
+  if (!(reason instanceof ApiError)) return true
+  return reason.status === 0 || reason.status === 408 || reason.status >= 500 ||
+    reason.code === 211001
+}
+
+function beginVideoStartRequest(publisherKey: string, videoId: LiveVideoId) {
+  let pending = inFlightVideoStarts.get(publisherKey)
+  if (!pending) {
+    pending = {
+      count: 0,
+      ownedBefore: startedVideoIds.has(publisherKey),
+      mayHaveCreated: false,
+      stopRequested: false,
+      videoId
+    }
+    inFlightVideoStarts.set(publisherKey, pending)
+  }
+  pending.count += 1
+  // Until the mutating request settles, preserve a recovery record. A timeout
+  // can mean that the device started even though this browser saw no response.
+  if (!startedVideoIds.has(publisherKey)) {
+    startedVideoIds.set(publisherKey, videoId)
+    persistStartedVideoPublishers()
+  }
+}
+
+async function finishVideoStartRequest(
+  publisherKey: string,
+  outcome: VideoStartOutcome
+): Promise<boolean> {
+  const pending = inFlightVideoStarts.get(publisherKey)
+  if (!pending) return startedVideoIds.has(publisherKey)
+  if (outcome === 'created' || outcome === 'ambiguous') pending.mayHaveCreated = true
+  pending.count = Math.max(0, pending.count - 1)
+  if (pending.count > 0) return pending.ownedBefore || pending.mayHaveCreated
+
+  inFlightVideoStarts.delete(publisherKey)
+  const ownsPublisher = pending.ownedBefore || pending.mayHaveCreated
+  if (ownsPublisher) startedVideoIds.set(publisherKey, pending.videoId)
+  else startedVideoIds.delete(publisherKey)
+  persistStartedVideoPublishers()
+
+  // All starts for this key have now settled. Only the last one may clean up,
+  // which prevents an earlier response from stopping ahead of a later start.
+  if ((componentExiting || pending.stopRequested) && ownsPublisher) {
+    const stopped = await stopVideoPublisher(pending.videoId)
+    if (stopped) {
+      startedVideoIds.delete(publisherKey)
+      persistStartedVideoPublishers()
+    }
+  }
+  return ownsPublisher
+}
+
+async function stopVideoPublisher(videoId: LiveVideoId): Promise<boolean> {
+  try {
+    // The caller may be a late /start completion after the user has already
+    // logged out locally. Retain the most recent cockpit token only for this
+    // bounded resource cleanup so the new publisher is not leaked.
+    await post('/manage/api/v1/live/streams/stop', { video_id: videoId }, {
+      ...CONTROL_REQUEST_OPTIONS,
+      authToken: cockpitCleanupToken
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
 function startVideo(): Promise<void> {
   if (videoStartTask) return videoStartTask
   const sourceKey = selectedSource.value?.key
@@ -3690,6 +4103,13 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
   const source = selectedSource.value
   if (!source) return
   const videoId = { drone_sn: source.deviceSn, payload_index: source.cameraIndex }
+  const publisherKey = `${videoId.drone_sn}/${videoId.payload_index}`
+  let startRequestAcknowledged = false
+  let explicitStartFailure = false
+  const requestedQuality = preferredVideoQualities.get(publisherKey) ?? 2
+  preferredVideoQualities.set(publisherKey, requestedQuality)
+  videoQuality.value = requestedQuality
+  activeVideoPublisherKey = publisherKey
   const updateVideoState = (value: WhepState) => {
     if (!videoOperationIsCurrent(operation, sourceKey)) return
     const wasPlaying = videoPlaying.value
@@ -3721,38 +4141,84 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
 
     if (reusedExistingStream) {
       reusedPublisher.value = true
-      videoPlaying.value = true
       videoConnectingSince = 0
       videoError.value = ''
-      // 复用 MediaMTX 中已有推流时，设备可能仍停留在上一次使用的红外镜头。
-      // 主动下发默认镜头，保证画面、按钮高亮和倍率范围三者一致。
-      await post('/manage/api/v1/live/streams/switch', {
-        video_id: {
-          drone_sn: source.deviceSn,
-          payload_index: source.cameraIndex
-        },
-        video_type: lens.value
-      }).catch((reason) => {
-        if (videoOperationIsCurrent(operation, sourceKey)) {
-          videoError.value = reason instanceof Error ? reason.message : '默认变焦镜头切换失败'
-        }
-      })
-      if (!videoOperationIsCurrent(operation, sourceKey)) return
+      // Reusing WHEP must still apply this publisher's desired lens and quality.
+      // An unseen publisher starts as SD; revisiting the same publisher and its
+      // retries retain an explicit user-selected HD preference. Keep quality
+      // controls locked until both defaults finish so an older SD update cannot
+      // race with and overwrite a user's HD click.
+      qualitySwitching.value = true
+      try {
+        await post('/manage/api/v1/live/streams/switch', {
+          video_id: {
+            drone_sn: source.deviceSn,
+            payload_index: source.cameraIndex
+          },
+          video_type: lens.value
+        }).catch((reason) => {
+          if (videoOperationIsCurrent(operation, sourceKey)) {
+            videoError.value = reason instanceof Error ? reason.message : '默认变焦镜头切换失败'
+          }
+        })
+        if (!videoOperationIsCurrent(operation, sourceKey)) return
+        const desiredQuality = preferredVideoQualities.get(publisherKey) ?? requestedQuality
+        videoQuality.value = desiredQuality
+        await post('/manage/api/v1/live/streams/update', {
+          video_id: videoId,
+          video_quality: desiredQuality
+        }).catch((reason) => {
+          if (videoOperationIsCurrent(operation, sourceKey)) {
+            videoError.value = reason instanceof Error ? reason.message : '默认清晰度应用失败'
+          }
+        })
+        if (!videoOperationIsCurrent(operation, sourceKey)) return
+      } finally {
+        qualitySwitching.value = false
+      }
+      videoPlaying.value = true
       return
     }
 
     // No playable publisher exists, so ask the selected device to start one.
     reusedPublisher.value = false
     videoState.value = 'connecting'
-    const response = await post<{ url: string }>('/manage/api/v1/live/streams/start', {
-      video_id: videoId,
-      url_type: 2,
-      video_quality: videoQuality.value,
-      video_type: lens.value
-    })
+    beginVideoStartRequest(publisherKey, videoId)
+    let response: {
+      url: string
+      reused?: boolean
+      started_by_request?: boolean
+      startedByRequest?: boolean
+    }
+    try {
+      response = await post<{
+        url: string
+        reused?: boolean
+        started_by_request?: boolean
+        startedByRequest?: boolean
+      }>('/manage/api/v1/live/streams/start', {
+        video_id: videoId,
+        url_type: 2,
+        video_quality: requestedQuality,
+        video_type: lens.value
+      }, LIVE_START_REQUEST_OPTIONS)
+      startRequestAcknowledged = true
+      const startedByRequest = response.started_by_request ?? response.startedByRequest
+      await finishVideoStartRequest(
+        publisherKey,
+        startedByRequest === false ? 'preexisting' : 'created')
+    } catch (reason) {
+      if (!startRequestAcknowledged) {
+        explicitStartFailure = !streamStartOutcomeUncertain(reason)
+        await finishVideoStartRequest(
+          publisherKey,
+          explicitStartFailure ? 'explicit-failure' : 'ambiguous')
+      }
+      throw reason
+    }
     if (!videoOperationIsCurrent(operation, sourceKey)) return
+    reusedPublisher.value = response.reused === true
     if (!response.url || response.url.toLowerCase().startsWith('rtsp://')) throw new Error('WHEP 播放地址未配置')
-    startedVideoId.value = videoId
     let playbackError: unknown
     const playback = player.play(videoElement.value, response.url, {
       timeoutMs: 18_000,
@@ -3807,10 +4273,13 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
     // The first timeout may only mean a late encoder, so retry WHEP once without
     // disturbing the publisher. A second complete timeout means live_status can
     // be a stale "1"; stop that zombie session before the final start attempt.
-    const restartPublisher = retryAttempt === 1 && !!startedVideoId.value
-    await resetVideoSession(restartPublisher, () => videoOperationIsCurrent(operation, sourceKey))
+    const restartPublisher = retryAttempt === 1 && startedVideoIds.has(publisherKey)
+    await resetVideoSession(
+      restartPublisher,
+      () => videoOperationIsCurrent(operation, sourceKey),
+      publisherKey)
     if (!videoOperationIsCurrent(operation, sourceKey)) return
-    if (retryAttempt < 2 && selectedSource.value?.key === source.key) {
+    if (!explicitStartFailure && retryAttempt < 2 && selectedSource.value?.key === source.key) {
       videoError.value = restartPublisher
         ? `${message}，正在重建设备推流…`
         : `${message}，正在自动重试…`
@@ -3896,16 +4365,34 @@ async function recoverVideoEncoder(
 
 async function resetVideoSession(
   stopDevice: boolean,
-  isCurrent: () => boolean = () => true
+  isCurrent: () => boolean = () => true,
+  publisherKey = activeVideoPublisherKey
 ) {
   await player.stop()
   if (!isCurrent()) return
-  const videoId = startedVideoId.value
+  if (stopDevice) {
+    const pending = inFlightVideoStarts.get(publisherKey)
+    if (pending) pending.stopRequested = true
+  }
+  const source = selectedSource.value
+  // An explicit stop must also work after this page reused a publisher that
+  // was already running, even though that publisher is not in our ownership
+  // map. Internal detach/retry paths pass stopDevice=false and never hit this.
+  const videoId = startedVideoIds.get(publisherKey) ?? (
+    stopDevice && source && videoPublisherKey(source) === publisherKey
+      ? { drone_sn: source.deviceSn, payload_index: source.cameraIndex }
+      : undefined)
   if (stopDevice && videoId) {
-    startedVideoId.value = undefined
-    await post('/manage/api/v1/live/streams/stop', { video_id: videoId }).catch(() => undefined)
+    const stopped = await stopVideoPublisher(videoId)
+    if (stopped) {
+      startedVideoIds.delete(publisherKey)
+      persistStartedVideoPublishers()
+    } else if (isCurrent()) {
+      videoError.value = '停止设备推流未确认，已保留清理记录，请稍后重试'
+    }
     if (!isCurrent()) return
   }
+  if (activeVideoPublisherKey === publisherKey) activeVideoPublisherKey = ''
   videoPlaying.value = false
   videoState.value = 'idle'
   videoBitrate.value = 0
@@ -3915,6 +4402,18 @@ async function resetVideoSession(
   reportedLive.value = false
   reusedPublisher.value = false
   liveLensType.value = ''
+  reportedVideoQuality.value = undefined
+}
+
+async function detachVideoForDeviceSwitch() {
+  window.clearTimeout(videoReconnectTimer)
+  videoReconnectTimer = 0
+  topologyVideoReconnectReason = ''
+  const operation = ++videoOperationGeneration
+  videoStartTask = undefined
+  // Publisher ownership remains keyed by device/payload, so a later explicit
+  // stop targets that device without leaking ownership into the next device.
+  await resetVideoSession(false, () => operation === videoOperationGeneration)
 }
 
 async function stopVideo() {
@@ -3924,6 +4423,24 @@ async function stopVideo() {
   const operation = ++videoOperationGeneration
   videoStartTask = undefined
   await resetVideoSession(true, () => operation === videoOperationGeneration)
+}
+
+async function stopStartedVideoPublishers() {
+  const publishers = [...startedVideoIds.entries()]
+  const results = await Promise.all(publishers.map(async ([publisherKey, videoId]) => {
+    // A start request can execute server-side after this page sends stop. Do
+    // not stop or delete its recovery record until that request settles; its
+    // success/error branch will perform a second, correctly ordered cleanup.
+    if ((inFlightVideoStarts.get(publisherKey)?.count ?? 0) > 0) {
+      return { publisherKey, stopped: false }
+    }
+    const stopped = await stopVideoPublisher(videoId)
+    return { publisherKey, stopped }
+  }))
+  for (const result of results) {
+    if (result.stopped) startedVideoIds.delete(result.publisherKey)
+  }
+  persistStartedVideoPublishers()
 }
 async function switchLens(value: 'normal' | 'wide' | 'zoom' | 'ir') {
   if (dockSelectionPending.value) return
@@ -4009,22 +4526,29 @@ async function grabPayloadAuthority(): Promise<boolean> {
 
 async function switchQuality(value: LiveQuality) {
   if (dockSelectionPending.value || value === videoQuality.value || qualitySwitching.value) return
-  const previousQuality = videoQuality.value
+  const source = selectedSource.value
+  if (!source) return
+  const publisherKey = videoPublisherKey(source)
+  const previousQuality = preferredVideoQualities.get(publisherKey) ?? videoQuality.value
+  preferredVideoQualities.set(publisherKey, value)
   videoQuality.value = value
-  if (!selectedSource.value || !videoPlaying.value) return
+  if (!videoPlaying.value) return
   qualitySwitching.value = true
   videoError.value = ''
   try {
     await post('/manage/api/v1/live/streams/update', {
       video_id: {
-        drone_sn: selectedSource.value.deviceSn,
-        payload_index: selectedSource.value.cameraIndex
+        drone_sn: source.deviceSn,
+        payload_index: source.cameraIndex
       },
       video_quality: value
     })
   } catch (reason) {
-    videoQuality.value = previousQuality
-    videoError.value = reason instanceof Error ? reason.message : '清晰度切换失败'
+    preferredVideoQualities.set(publisherKey, previousQuality)
+    if (videoPublisherKey() === publisherKey) {
+      videoQuality.value = previousQuality
+      videoError.value = reason instanceof Error ? reason.message : '清晰度切换失败'
+    }
   } finally {
     qualitySwitching.value = false
   }
@@ -4320,6 +4844,8 @@ async function submitMapTarget() {
         throw new Error('设备已切换，已取消 Look At')
       }
       const succeeded = await queuePayloadCommand('camera_look_at', {
+        // 与 camera_screen_drag 一致显式携带 locked=false：只转云台、不联动机头。
+        locked: false,
         latitude: Number(mapTarget.latitude.toFixed(6)),
         longitude: Number(mapTarget.longitude.toFixed(6)),
         height: Number(mapTarget.height.toFixed(1))
@@ -4546,6 +5072,7 @@ async function performLeaveDrc() {
   const exitingDockSn = exitingBroker ? dockSn.value : (pendingExit?.dockSn ?? '')
   const exitingClient = client
   const exitingTopic = drcPublishTopic
+  invalidateDrcMqttGeneration(exitingClient)
   state.value = exitClientId && exitingDockSn ? 'connecting' : 'idle'
   drcConnectionState.value = 'offline'
   drcStatusMessage.value = '正在归零控制量并退出 DRC…'
@@ -4562,7 +5089,7 @@ async function performLeaveDrc() {
 
   let exitConfirmed = true
   if (exitClientId && exitingDockSn) {
-    await post(`/control/api/v1/workspaces/${session.workspaceId}/drc/exit`, {
+    await post(`/control/api/v1/workspaces/${cockpitWorkspaceId}/drc/exit`, {
       client_id: exitClientId, dock_sn: exitingDockSn, expire_sec: 3600,
       device_info: { osd_frequency: 10, hsi_frequency: 1 }
     }, CONTROL_REQUEST_OPTIONS).catch((reason) => {
@@ -4585,7 +5112,6 @@ async function performLeaveDrc() {
   heartbeatSeq = 0
   lastHeartbeatAckSeq = 0
   nativeHeartbeatAckReceived = false
-  controlSeq = 0
   lastControlVector = ''
   lastControlPublishAt = 0
   zeroControlPending = false
@@ -4638,7 +5164,12 @@ function handleDrcAction() {
   void enter()
 }
 
-async function exit() {
+function exit(): Promise<void> {
+  if (!componentExitPromise) componentExitPromise = performExit()
+  return componentExitPromise
+}
+
+async function performExit() {
   componentExiting = true
   drcEnterCancelled = true
   resetPointFlightTracking()
@@ -4650,14 +5181,15 @@ async function exit() {
   releaseKeys()
   if (drcEnterPromise) await drcEnterPromise.catch(() => false)
   await leaveDrc('component-unmount')
-  // 退出座舱不下发 /streams/stop：设备推流留给用户手动点击"停止"或设备自身
-  // 空闲超时来管理，这样快速重新进入座舱时可以直接复用现有推流，无需重新
-  // 触发一遍首帧等待/切镜头恢复流程。
+  // Device switching only detaches WHEP, but a real cockpit exit must release
+  // every publisher started by this component so streams cannot become
+  // unreachable after the in-memory ownership map is destroyed.
   window.clearTimeout(videoReconnectTimer)
   videoReconnectTimer = 0
   const operation = ++videoOperationGeneration
   videoStartTask = undefined
   await resetVideoSession(false, () => operation === videoOperationGeneration)
+  await stopStartedVideoPublishers()
 }
 
 function toggleFullscreen() {
@@ -4787,7 +5319,7 @@ function toggleFullscreen() {
 
           <div class="wayline-task-grid">
             <label>返航高度（米）<input v-model.number="waylineTaskForm.rthAltitude" type="number" min="20" max="500" required /></label>
-            <label>最低电量（%）<input v-model.number="waylineTaskForm.minBatteryCapacity" type="number" min="50" max="90" required /></label>
+            <label>最低电量（%）<input v-model.number="waylineTaskForm.minBatteryCapacity" type="number" min="15" max="100" required /></label>
             <label>避障开关<select v-model.number="waylineTaskForm.barrierSwitchState"><option :value="1">开启避障</option><option :value="0">关闭避障</option></select></label>
             <label>起飞高度（米）<input v-model.number="waylineTaskForm.takeoffAltitude" type="number" min="1" max="1500" required /></label>
             <label>去首航点速度（m/s）<input v-model.number="waylineTaskForm.firstWaypointSpeed" type="number" min="1" max="25" required /></label>
@@ -5152,8 +5684,16 @@ function toggleFullscreen() {
           </button>
         </div>
         <div class="lens-group quality-group">
-          <button :class="{ active: videoQuality === 2 }" :disabled="dockSelectionPending || qualitySwitching" @click="switchQuality(2)">标清</button>
-          <button :class="{ active: videoQuality === 3 }" :disabled="dockSelectionPending || qualitySwitching" @click="switchQuality(3)">高清</button>
+          <button
+            :class="{ active: videoQuality === 2 }"
+            :disabled="dockSelectionPending || qualitySwitching || videoState === 'connecting' || videoState === 'waiting'"
+            :title="reportedVideoQuality === 2 ? '设备当前为标清' : '切换为标清'"
+            @click="switchQuality(2)">标清</button>
+          <button
+            :class="{ active: videoQuality === 3 }"
+            :disabled="dockSelectionPending || qualitySwitching || videoState === 'connecting' || videoState === 'waiting'"
+            :title="reportedVideoQuality === 3 ? '设备当前为高清' : '切换为高清'"
+            @click="switchQuality(3)">高清</button>
         </div>
       </div>
 
@@ -5251,7 +5791,7 @@ function toggleFullscreen() {
           </div>
           <div v-if="obstacleHudReady" class="obstacle-rail obstacle-rail-front" aria-label="前方四路雷达">
             <span
-              v-if="nearestObstacle.front > 0"
+              v-if="nearestObstacle.front >= 0"
               class="obstacle-rail-summary"
               :class="obstacleRiskClass(nearestObstacle.front)">机头 {{ fmtObstacle(nearestObstacle.front) }}m</span>
             <div
@@ -5259,13 +5799,13 @@ function toggleFullscreen() {
               :key="`front-${index}`"
               class="obstacle-segment obstacle-segment-horizontal"
               :class="obstacleRiskClass(distance)"
-              :aria-label="`前方 ${index + 1} 号雷达${distance > 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
+              :aria-label="`前方 ${index + 1} 号雷达${distance >= 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
               <i v-if="distance >= 0"></i>
             </div>
           </div>
           <div v-if="obstacleHudReady" class="obstacle-rail obstacle-rail-rear" aria-label="后方四路雷达">
             <span
-              v-if="nearestObstacle.rear > 0"
+              v-if="nearestObstacle.rear >= 0"
               class="obstacle-rail-summary"
               :class="obstacleRiskClass(nearestObstacle.rear)">机尾 {{ fmtObstacle(nearestObstacle.rear) }}m</span>
             <div
@@ -5273,13 +5813,13 @@ function toggleFullscreen() {
               :key="`rear-${index}`"
               class="obstacle-segment obstacle-segment-horizontal"
               :class="obstacleRiskClass(distance)"
-              :aria-label="`后方 ${index + 1} 号雷达${distance > 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
+              :aria-label="`后方 ${index + 1} 号雷达${distance >= 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
               <i v-if="distance >= 0"></i>
             </div>
           </div>
           <div v-if="obstacleHudReady" class="obstacle-rail obstacle-rail-left" aria-label="左侧三路雷达">
             <span
-              v-if="nearestObstacle.left > 0"
+              v-if="nearestObstacle.left >= 0"
               class="obstacle-rail-summary"
               :class="obstacleRiskClass(nearestObstacle.left)">{{ fmtObstacle(nearestObstacle.left) }}m</span>
             <div
@@ -5287,13 +5827,13 @@ function toggleFullscreen() {
               :key="`left-${index}`"
               class="obstacle-segment obstacle-segment-vertical"
               :class="obstacleRiskClass(distance)"
-              :aria-label="`左侧 ${index + 1} 号雷达${distance > 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
+              :aria-label="`左侧 ${index + 1} 号雷达${distance >= 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
               <i v-if="distance >= 0"></i>
             </div>
           </div>
           <div v-if="obstacleHudReady" class="obstacle-rail obstacle-rail-right" aria-label="右侧三路雷达">
             <span
-              v-if="nearestObstacle.right > 0"
+              v-if="nearestObstacle.right >= 0"
               class="obstacle-rail-summary"
               :class="obstacleRiskClass(nearestObstacle.right)">{{ fmtObstacle(nearestObstacle.right) }}m</span>
             <div
@@ -5301,18 +5841,18 @@ function toggleFullscreen() {
               :key="`right-${index}`"
               class="obstacle-segment obstacle-segment-vertical"
               :class="obstacleRiskClass(distance)"
-              :aria-label="`右侧 ${index + 1} 号雷达${distance > 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
+              :aria-label="`右侧 ${index + 1} 号雷达${distance >= 0 ? ` ${fmtObstacle(distance)} 米` : '无距离显示'}`">
               <i v-if="distance >= 0"></i>
             </div>
           </div>
           <div
-            v-if="obstacleHudReady && (telemetry.obstacleUp > 0 || telemetry.obstacleDown > 0)"
+            v-if="obstacleHudReady && (telemetry.obstacleUp >= 0 || telemetry.obstacleDown >= 0)"
             class="obstacle-vertical-pair">
             <span
-              v-if="telemetry.obstacleUp > 0"
+              v-if="telemetry.obstacleUp >= 0"
               :class="obstacleRiskClass(telemetry.obstacleUp)">上方 {{ fmtObstacle(telemetry.obstacleUp) }}m</span>
             <span
-              v-if="telemetry.obstacleDown > 0"
+              v-if="telemetry.obstacleDown >= 0"
               :class="obstacleRiskClass(telemetry.obstacleDown)">下方 {{ fmtObstacle(telemetry.obstacleDown) }}m</span>
           </div>
         </div>
