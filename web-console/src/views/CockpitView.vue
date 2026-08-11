@@ -85,6 +85,20 @@ interface PointFlightProgress {
   plannedPathPoints: Array<{ latitude: number; longitude: number; height: number }>
 }
 
+// 航线任务进度（flighttask_progress 事件）。字段严格对应 Autel 上报参数，
+// 航线任务不提供剩余距离/剩余时长/规划轨迹，故此处不含这些字段。
+interface WaylineTaskProgress {
+  jobId: string
+  status: string
+  currentStep: number
+  percent: number
+  wayPointIndex: number
+  mediaCount: number
+  flightId: string
+  trackId: string
+  resultCode: number
+}
+
 interface DetectedTarget {
   trackerId: string
   classId: number
@@ -214,6 +228,10 @@ const targetDetectionLensLabel = computed(() => displayLens.value === 'ir' ? '�
 const pointFlightProgress = ref<PointFlightProgress>()
 const pointFlightNoticeVisible = ref(false)
 const flyToStopPending = ref(false)
+const waylineProgress = ref<WaylineTaskProgress>()
+const waylinePausePending = ref(false)
+const waylineResumePending = ref(false)
+const waylineCancelPending = ref(false)
 const drcEnterPending = ref(false)
 const drcReconnectPending = ref(false)
 const drcConnectionState = ref<DrcConnectionState>('idle')
@@ -825,6 +843,9 @@ const operationPanelState = computed<OperationPanelState>(() => {
   // DRC 通信与心跳链路本身仍可在待机时预先建立。
   return 'ground'
 })
+// 航线执行（WAYLINE=5 / KML_ROUTE=39）与指点飞行（POI=20 / FLY_TO_POINT=37）
+// 共用任务面板，但数据来源与可用操作不同，需据此切换。
+const taskIsWayline = computed(() => [5, 39].includes(telemetry.modeCode))
 const obstacleHudVisible = computed(() =>
   active.value && operationPanelState.value !== 'ground')
 const obstacleHudReady = computed(() =>
@@ -1301,6 +1322,8 @@ watch(pointFlightMapActive, () => {
 // 短暂抖回地面时只归零，不主动退出 DRC，避免设备因云端停止心跳而立即超时。
 watch(operationPanelState, (nextState) => {
   if (nextState !== 'ground') return
+  // 离开任务状态即清除航线进度，避免下次进入任务面板残留上一段任务的数据。
+  waylineProgress.value = undefined
 
   if (
     pressed.size > 0 ||
@@ -2203,6 +2226,52 @@ function pointFlightStatusLabel(status?: string) {
   } as Record<string, string>)[status ?? ''] ?? '等待事件'
 }
 
+// 航线任务状态（flighttask_progress.status），对应 Autel 上报枚举。
+function waylineStatusLabel(status?: string) {
+  return ({
+    pending: '开始执行', sent: '已下发', in_progress: '执行中',
+    paused: '已暂停', ok: '执行成功', partially_done: '部分完成',
+    canceled: '取消或终止', failed: '失败', rejected: '拒绝', timeout: '超时'
+  } as Record<string, string>)[status ?? ''] ?? '等待事件'
+}
+
+// 航线执行步骤（flighttask_progress.progress.current_step），仅取关键节点。
+function waylineStepLabel(step?: number) {
+  if (step == null || step < 0) return '--'
+  return ({
+    0: '初始状态', 1: '启动前检查', 3: '航线执行中', 4: '返航中',
+    5: '等待任务下发', 7: '开机/开盖准备', 8: '等待飞控就绪', 9: '等待 RTK 上报',
+    10: '检查 RTK', 14: '下载任务文件', 15: '任务文件上传中', 17: '起飞参数设置',
+    18: 'flyto 起飞设置', 19: 'Home 点设置', 20: '触发执行航线', 21: '航线执行中',
+    22: '返航', 23: '降落', 29: '获取媒体数量', 46: '上传图片', 47: '任务完成'
+  } as Record<number, string>)[step] ?? `步骤 ${step}`
+}
+
+// 解析 flighttask_progress 事件（EventsReceiver 结构：{ result, output:{ ext, progress, status }, bid }）。
+function applyWaylineProgress(data: Record<string, unknown>) {
+  // 仅处理当前所选机巢的航线进度，避免多机巢时被其它设备事件覆盖。
+  const sn = String(data.sn ?? '')
+  if (sn && sn !== dockSn.value) return
+  const jobId = String(data.bid ?? '')
+  const output = (data.output ?? {}) as Record<string, any>
+  const ext = (output.ext ?? {}) as Record<string, any>
+  const progress = (output.progress ?? {}) as Record<string, any>
+  const wayPointIndex = Number(ext.current_waypoint_index)
+  const percent = Number(progress.percent)
+  const currentStep = Number(progress.current_step)
+  waylineProgress.value = {
+    jobId,
+    status: String(output.status ?? ''),
+    currentStep: Number.isFinite(currentStep) ? currentStep : -1,
+    percent: Number.isFinite(percent) ? percent : -1,
+    wayPointIndex: Number.isFinite(wayPointIndex) ? wayPointIndex : -1,
+    mediaCount: Number(ext.media_count ?? 0),
+    flightId: String(ext.flight_id ?? jobId),
+    trackId: String(ext.track_id ?? ''),
+    resultCode: Number(data.result ?? 0)
+  }
+}
+
 function resetWaylineTaskForm() {
   Object.assign(waylineTaskForm, {
     rthAltitude: 100,
@@ -2562,6 +2631,9 @@ onMounted(async () => {
     if (msg.biz_code === 'takeoff_to_point_progress') {
       applyPointFlightProgress('takeoff', msg.data as Record<string, unknown>, 'event')
     }
+    if (msg.biz_code === 'flighttask_progress') {
+      applyWaylineProgress(msg.data as Record<string, unknown>)
+    }
     if (msg.biz_code === 'joystick_invalid_notify') {
       receiveJoystickInvalid(msg.data as Record<string, unknown>)
     }
@@ -2677,7 +2749,7 @@ function enteringTargetValid(expectedDockSn: string, expectedAircraftSn: string)
 
 function isDrcOwnerConflict(reason: unknown): boolean {
   const message = reason instanceof Error ? reason.message : String(reason ?? '')
-  return /(?:session|lease) belongs to another owner/i.test(message)
+  return /(?:session|lease) belongs to another owner|does not belong to this user/i.test(message)
 }
 
 async function performEnter(): Promise<boolean> {
@@ -4726,6 +4798,55 @@ async function cancelReturnHome() {
   }
 }
 
+// 航线暂停：PUT jobs/{jobId} status=0（PAUSE），设备回 flighttask_pause。
+async function pauseWaylineJob() {
+  const jobId = waylineProgress.value?.jobId
+  if (!jobId || waylinePausePending.value || waylineResumePending.value || waylineCancelPending.value) return
+  waylinePausePending.value = true
+  error.value = ''
+  try {
+    await put(`/wayline/api/v1/workspaces/${cockpitWorkspaceId}/jobs/${encodeURIComponent(jobId)}`, { status: 0 })
+    showCameraActionTip('航线暂停指令调用成功（等待设备确认）')
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '航线暂停指令调用失败'
+  } finally {
+    waylinePausePending.value = false
+  }
+}
+
+// 航线恢复：PUT jobs/{jobId} status=1（RESUME），设备回 flighttask_recovery。
+async function resumeWaylineJob() {
+  const jobId = waylineProgress.value?.jobId
+  if (!jobId || waylinePausePending.value || waylineResumePending.value || waylineCancelPending.value) return
+  waylineResumePending.value = true
+  error.value = ''
+  try {
+    await put(`/wayline/api/v1/workspaces/${cockpitWorkspaceId}/jobs/${encodeURIComponent(jobId)}`, { status: 1 })
+    showCameraActionTip('航线恢复指令调用成功（等待设备确认）')
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '航线恢复指令调用失败'
+  } finally {
+    waylineResumePending.value = false
+  }
+}
+
+// 取消任务：DELETE jobs?job_id={jobId}，设备回 flighttask_undo。
+async function cancelWaylineJob() {
+  const jobId = waylineProgress.value?.jobId
+  if (!jobId || waylineCancelPending.value ||
+      !window.confirm('确认取消当前航线任务？取消后飞行器将退出航线执行。')) return
+  waylineCancelPending.value = true
+  error.value = ''
+  try {
+    await del(`/wayline/api/v1/workspaces/${cockpitWorkspaceId}/jobs?job_id=${encodeURIComponent(jobId)}`)
+    showCameraActionTip('取消航线任务指令调用成功（等待设备确认）')
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '取消航线任务指令调用失败'
+  } finally {
+    waylineCancelPending.value = false
+  }
+}
+
 async function emergencyStop() {
   if (dockSelectionPending.value || emergencyStopPending.value || drcLandingPending.value || !selectedDock.value) return
   if (!drcControlsReady.value) {
@@ -5140,6 +5261,8 @@ async function performLeaveDrc() {
       client_id: exitClientId, dock_sn: exitingDockSn, expire_sec: 3600,
       device_info: { osd_frequency: 10, hsi_frequency: 1 }
     }, CONTROL_REQUEST_OPTIONS).catch((reason) => {
+      // client key expired in Redis → session already cleaned up → treat as confirmed
+      if (isDrcOwnerConflict(reason)) return
       exitConfirmed = false
       rememberPendingDrcExit(exitClientId, exitingDockSn)
       error.value = reason instanceof Error ? reason.message : '设备未确认退出 DRC，本地控制通道已关闭'
@@ -6096,6 +6219,70 @@ function toggleFullscreen() {
               · 距离 {{ fmtTaskDistance(pointFlightProgress.remainingDistance) }}
               · 时间 {{ fmtDuration(pointFlightProgress.remainingTime) }}
             </p>
+          </div>
+
+          <!-- 航线执行任务面板：数据来自 flighttask_progress，操作为暂停/恢复/取消 -->
+          <div v-else-if="operationPanelState === 'task' && taskIsWayline" class="wayline-side">
+            <div class="task-side-summary wayline-summary">
+              <div><span>任务状态</span><strong>{{ waylineStatusLabel(waylineProgress?.status) }}</strong></div>
+              <div><span>执行步骤</span><strong>{{ waylineStepLabel(waylineProgress?.currentStep) }}</strong></div>
+              <div><span>执行进度</span><strong>{{ (waylineProgress?.percent ?? -1) >= 0 ? waylineProgress?.percent + '%' : '--' }}</strong></div>
+              <div><span>当前航点</span><strong>{{ (waylineProgress?.wayPointIndex ?? -1) >= 0 ? waylineProgress?.wayPointIndex : '--' }}</strong></div>
+              <div><span>媒体文件</span><strong>{{ waylineProgress?.mediaCount ?? '--' }}</strong></div>
+              <div><span>返回码</span><strong :class="{ 'danger-text': (waylineProgress?.resultCode ?? 0) !== 0 }">{{ waylineProgress?.resultCode ?? '--' }}</strong></div>
+              <div class="wayline-summary-id" :title="`flight_id: ${waylineProgress?.flightId || '--'}`">
+                <span>Flight ID</span><strong>{{ waylineProgress?.flightId || '--' }}</strong>
+              </div>
+            </div>
+            <div class="wayline-actions">
+              <button
+                v-if="waylineProgress?.status !== 'paused'"
+                class="deck-btn btn-wayline"
+                :disabled="!waylineProgress?.jobId || waylinePausePending || waylineResumePending || waylineCancelPending"
+                @click="pauseWaylineJob">
+                {{ waylinePausePending ? '暂停中…' : '航线暂停' }}
+              </button>
+              <button
+                v-else
+                class="deck-btn btn-wayline"
+                :disabled="!waylineProgress?.jobId || waylinePausePending || waylineResumePending || waylineCancelPending"
+                @click="resumeWaylineJob">
+                {{ waylineResumePending ? '恢复中…' : '航线恢复' }}
+              </button>
+              <button
+                class="deck-btn btn-cancel"
+                :disabled="!waylineProgress?.jobId || waylineCancelPending"
+                @click="cancelWaylineJob">
+                {{ waylineCancelPending ? '取消中…' : '取消任务' }}
+              </button>
+              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending" @click="returnHome">
+                {{ returnHomePending ? '发送中…' : '返航' }}
+              </button>
+              <button
+                v-if="telemetry.modeCode === 9"
+                class="deck-btn btn-cancel"
+                :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                @click="cancelReturnHome">
+                {{ returnHomeCancelPending ? '发送中…' : '取消返航' }}
+              </button>
+              <button class="deck-btn btn-stop" :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending" @click="emergencyStop">
+                {{ emergencyStopPending ? '等待确认' : '刹车悬停' }}<br><small>[Space]</small>
+              </button>
+              <button
+                class="deck-btn btn-emergency-land"
+                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                title="成功=直接降落；失败时设备转为避障并识别二维码降落"
+                @click="drcLanding('drc_emergency_landing')">
+                {{ drcLandingPending === 'drc_emergency_landing' ? '等待确认…' : '紧急降落' }}
+              </button>
+              <button
+                class="deck-btn btn-force-land"
+                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                title="不考虑障碍物直接强制降落"
+                @click="drcLanding('drc_force_landing')">
+                {{ drcLandingPending === 'drc_force_landing' ? '等待确认…' : '强制降落' }}
+              </button>
+            </div>
           </div>
 
           <div v-else-if="operationPanelState === 'task'" class="task-side">
@@ -7647,8 +7834,8 @@ function toggleFullscreen() {
   text-overflow: ellipsis; white-space: nowrap;
 }
 .task-side {
-  display: grid; grid-template-columns: minmax(0, 1fr) 86px;
-  grid-template-rows: auto minmax(0, 1fr); gap: 5px 8px; width: 100%; min-width: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr) 118px;
+  grid-template-rows: auto minmax(0, 1fr); gap: 5px 6px; width: 100%; min-width: 0;
 }
 .task-side-summary {
   grid-column: 1 / -1;
@@ -7657,8 +7844,38 @@ function toggleFullscreen() {
 .task-side-summary div { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .task-side-summary span { color: #768395; font-size: 9px; }
 .task-side-summary strong { overflow: hidden; color: #eef2f6; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.task-side > .direction-grid { grid-column: 1; grid-row: 2; }
-.task-side > .deck-btns { grid-column: 2; grid-row: 2; }
+.task-side > .direction-grid { grid-column: 1; grid-row: 2; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 3px; }
+.task-side > .direction-grid kbd { width: 28px; }
+.task-side > .direction-grid button { min-height: 40px; }
+/* 任务面板按钮改为纵向单列，保证不再被挤在窄列里重叠 */
+.task-side > .deck-btns {
+  grid-column: 2; grid-row: 2;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+}
+.task-side > .deck-btns .deck-btn { padding: 4px 6px; font-size: 10px; line-height: 1.2; }
+.task-side > .deck-btns .btn-stop { font-size: 11px; }
+.task-side > .deck-btns .btn-stop small { font-size: 8px; }
+
+/* ── 航线执行任务面板：全宽摘要 + 两列操作按钮，杜绝拥挤 ── */
+.wayline-side {
+  display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0;
+}
+.wayline-summary {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px 8px;
+}
+.wayline-summary div { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.wayline-summary span { color: #768395; font-size: 9px; }
+.wayline-summary strong { overflow: hidden; color: #eef2f6; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.wayline-summary strong.danger-text { color: #ff6d6d; }
+.wayline-summary-id { grid-column: 1 / -1; }
+.wayline-actions {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; width: 100%; min-width: 0;
+}
+.wayline-actions .deck-btn { padding: 5px 6px; font-size: 10px; line-height: 1.25; }
+.wayline-actions .btn-stop { font-size: 11px; }
+.wayline-actions .btn-stop small { font-size: 8px; }
+.btn-wayline { border-color: rgba(63,169,255,.4); color: #6bb8ff; background: rgba(63,169,255,.08); }
+.btn-wayline:hover:not(:disabled) { background: rgba(63,169,255,.18); }
 .deck-btn.btn-cancel { border-color: rgba(255,176,79,.45); color: #ffb04f; background: rgba(255,176,79,.08); }
 .direction-grid {
   display: grid; grid-template-columns: repeat(4, minmax(38px, 1fr)); gap: 0 6px;
@@ -7949,7 +8166,7 @@ function toggleFullscreen() {
 .cockpit-pro:is(.layout-map, .layout-video) .takeoff-side-fields input { font-size: 14px; }
 .cockpit-pro:is(.layout-map, .layout-video) .takeoff-side-action { font-size: 10px; }
 .cockpit-pro:is(.layout-map, .layout-video) .takeoff-side-action span { font-size: 20px; }
-.cockpit-pro:is(.layout-map, .layout-video) .task-side { grid-template-columns: 1fr 72px; gap: 4px 6px; }
+.cockpit-pro:is(.layout-map, .layout-video) .task-side { grid-template-columns: 1fr 108px; gap: 4px 6px; }
 .cockpit-pro:is(.layout-map, .layout-video) .task-side-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px 5px; }
 .cockpit-pro:is(.layout-map, .layout-video) .task-side-summary span { font-size: 7px; }
 .cockpit-pro:is(.layout-map, .layout-video) .task-side-summary strong { font-size: 8px; }
@@ -7958,6 +8175,12 @@ function toggleFullscreen() {
 .cockpit-pro:is(.layout-map, .layout-video) .direction-grid .direction-icon { font-size: 13px; }
 .cockpit-pro:is(.layout-map, .layout-video) .direction-grid kbd { width: 30px; height: 25px; font-size: 11px; }
 .cockpit-pro:is(.layout-map, .layout-video) .deck-btns { flex-direction: row; flex-wrap: wrap; gap: 4px; min-width: 0; }
+/* 任务面板按钮列在紧凑布局下仍保持纵向单列，避免重叠 */
+.cockpit-pro:is(.layout-map, .layout-video) .task-side > .deck-btns { flex-direction: column; flex-wrap: nowrap; }
+.cockpit-pro:is(.layout-map, .layout-video) .task-side > .deck-btns .deck-btn { flex: 0 0 auto; min-width: 0; }
+.cockpit-pro:is(.layout-map, .layout-video) .wayline-summary span { font-size: 7px; }
+.cockpit-pro:is(.layout-map, .layout-video) .wayline-summary strong { font-size: 8px; }
+.cockpit-pro:is(.layout-map, .layout-video) .wayline-actions .deck-btn { font-size: 9px; padding: 4px 5px; }
 .cockpit-pro:is(.layout-map, .layout-video) .deck-btn { padding: 5px 8px; font-size: 10px; flex: 1; min-width: 60px; }
 
 /* 视频优先且负载控制已开启时，两个控制栏各占自己的布局行。

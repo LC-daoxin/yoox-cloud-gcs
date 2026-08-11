@@ -341,4 +341,20 @@ public class WaylineJobServiceImpl implements IWaylineJobService {
                         .uploadedCount(uploadedSize).build());
         return builder.build();
     }
+
+    @Override
+    public Boolean deleteFinishedJob(String workspaceId, String jobId) {
+        WaylineJobEntity entity = mapper.selectOne(
+                new LambdaQueryWrapper<WaylineJobEntity>()
+                        .eq(WaylineJobEntity::getWorkspaceId, workspaceId)
+                        .eq(WaylineJobEntity::getJobId, jobId));
+        if (entity == null) {
+            return false;
+        }
+        WaylineJobStatusEnum status = WaylineJobStatusEnum.find(entity.getStatus());
+        if (!status.getEnd()) {
+            throw new IllegalStateException("任务尚未终结，无法删除。当前状态: " + status);
+        }
+        return mapper.deleteById(entity.getId()) > 0;
+    }
 }

@@ -19,10 +19,13 @@ interface Job {
   job_id: string
   job_name: string
   file_name: string
+  dock_sn: string
   dock_name: string
   execute_time: string
   status: number
   progress: number
+  code: number
+  username: string
 }
 
 const session = useSessionStore()
@@ -41,7 +44,6 @@ const jobForm = ref({
   rthAltitude: 100,
   outOfControlAction: 0,
   minBatteryCapacity: 60,
-  minStorageCapacity: 1024,
   waylinePrecisionType: 0,
   barrierSwitchState: 1,
   takeoffAltitude: 100,
@@ -117,9 +119,18 @@ function statusName(value: number) {
   return ({ 1: '待执行', 2: '进行中', 3: '成功', 4: '已取消', 5: '失败', 6: '已暂停' } as Record<number, string>)[value] ?? `状态 ${value}`
 }
 
+function isJobFinished(status: number) {
+  return [3, 4, 5].includes(status)
+}
+
+function errorCodeText(code: number | undefined) {
+  if (!code || code === 0) return ''
+  return `错误码 ${code}`
+}
+
 function openCreate() {
   const file = waylines.value[0]
-  const dock = devices.value.find((device) => Boolean(device.child_sn) || device.domain === 3)
+  const dock = devices.value.find((device) => Number(device.domain) === 3 || Boolean(device.aircraft_sn || device.child_device_sn || device.child_sn || device.children?.device_sn))
   jobForm.value = {
     name: file ? `${file.name}-任务` : '',
     fileId: file?.id ?? '',
@@ -127,7 +138,6 @@ function openCreate() {
     rthAltitude: 100,
     outOfControlAction: 0,
     minBatteryCapacity: 60,
-    minStorageCapacity: 1024,
     waylinePrecisionType: 0,
     barrierSwitchState: 1,
     takeoffAltitude: 100,
@@ -157,7 +167,6 @@ async function createJob() {
       rth_altitude: jobForm.value.rthAltitude,
       out_of_control_action: jobForm.value.outOfControlAction,
       min_battery_capacity: jobForm.value.minBatteryCapacity,
-      min_storage_capacity: jobForm.value.minStorageCapacity,
       wayline_precision_type: jobForm.value.waylinePrecisionType,
       barrier_switch_state: jobForm.value.barrierSwitchState,
       takeoff_altitude: jobForm.value.takeoffAltitude,
@@ -190,6 +199,16 @@ async function cancelJob(job: Job) {
     await load()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '任务取消失败'
+  }
+}
+
+async function deleteJob(job: Job) {
+  if (!window.confirm(`确认删除任务记录“${job.job_name}”？此操作仅移除记录，不会影响设备。`)) return
+  try {
+    await del(`/wayline/api/v1/workspaces/${session.workspaceId}/jobs/${encodeURIComponent(job.job_id)}`)
+    await load()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '任务删除失败'
   }
 }
 
@@ -251,8 +270,8 @@ onBeforeUnmount(() => unsubscribe?.())
       <div v-if="!loading && !waylines.length" class="empty">航线库为空，上传由航线编辑器导出的 KMZ 文件开始使用。</div>
     </article>
     <article v-else class="panel table-panel">
-      <table><thead><tr><th>任务</th><th>航线</th><th>执行机巢</th><th>计划时间</th><th>进度</th><th>状态</th><th>操作</th></tr></thead>
-        <tbody><tr v-for="job in jobs" :key="job.job_id"><td><strong>{{ job.job_name }}</strong></td><td>{{ job.file_name }}</td><td>{{ job.dock_name || '—' }}</td><td>{{ job.execute_time || '立即执行' }}</td><td><div class="progress"><i :style="{ width: `${job.progress || 0}%` }"></i></div></td><td><span class="online-tag"><i></i>{{ statusName(job.status) }}</span></td><td><div class="table-actions"><button v-if="job.status === 2" class="link-button" @click="changeJob(job, 0)">暂停</button><button v-if="job.status === 6" class="link-button" @click="changeJob(job, 1)">恢复</button><button v-if="[1, 2, 6].includes(job.status)" class="link-button danger-text" @click="cancelJob(job)">取消</button></div></td></tr></tbody>
+      <table><thead><tr><th>任务</th><th>航线</th><th>执行机巢</th><th>创建者</th><th>计划时间</th><th>进度</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody><tr v-for="job in jobs" :key="job.job_id"><td><strong>{{ job.job_name }}</strong></td><td>{{ job.file_name }}</td><td :title="job.dock_sn">{{ job.dock_name || '-' }}<br><small class="mono">{{ job.dock_sn || '-' }}</small></td><td>{{ job.username || '-' }}</td><td>{{ job.execute_time || '立即执行' }}</td><td><div class="progress"><i :style="{ width: `${job.progress || 0}%` }"></i></div></td><td><span class="online-tag"><i></i>{{ statusName(job.status) }}</span><small v-if="job.code && job.code !== 0" class="danger-text">{{ errorCodeText(job.code) }}</small></td><td><div class="table-actions"><button v-if="job.status === 2" class="link-button" @click="changeJob(job, 0)">暂停</button><button v-if="job.status === 6" class="link-button" @click="changeJob(job, 1)">恢复</button><button v-if="[1, 2, 6].includes(job.status)" class="link-button danger-text" @click="cancelJob(job)">取消</button><button v-if="isJobFinished(job.status)" class="link-button danger-text" @click="deleteJob(job)">删除</button></div></td></tr></tbody>
       </table>
       <div v-if="!loading && !jobs.length" class="empty">暂无飞行任务。任务创建接口已开放，可由调度系统或 API 客户端调用。</div>
     </article>
@@ -267,12 +286,11 @@ onBeforeUnmount(() => unsubscribe?.())
             <select v-model="jobForm.fileId" required><option v-for="file in waylines" :key="file.id" :value="file.id">{{ file.name }}</option></select>
           </label>
           <label>执行机巢
-            <select v-model="jobForm.dockSn" required><option v-for="device in devices.filter((item) => Boolean(item.child_sn) || item.domain === 3)" :key="device.device_sn" :value="device.device_sn">{{ device.nickname || device.device_name || device.device_sn }}</option></select>
+            <select v-model="jobForm.dockSn" required><option v-for="device in devices.filter((item) => Number(item.domain) === 3 || Boolean(item.aircraft_sn || item.child_device_sn || item.child_sn || item.children?.device_sn))" :key="device.device_sn" :value="device.device_sn">{{ device.nickname || device.device_name || '未命名' }}（{{ device.device_sn }}）</option></select>
           </label>
           <div class="field-grid">
             <label>返航高度（米）<input v-model.number="jobForm.rthAltitude" type="number" min="20" max="500" required /></label>
             <label>最低电量（%）<input v-model.number="jobForm.minBatteryCapacity" type="number" min="15" max="100" required /></label>
-            <label>最低存储（MB）<input v-model.number="jobForm.minStorageCapacity" type="number" min="0" /></label>
             <label>失控动作<select v-model.number="jobForm.outOfControlAction"><option :value="0">返航</option><option :value="1">悬停</option><option :value="2">降落</option></select></label>
             <label>航线精度<select v-model.number="jobForm.waylinePrecisionType"><option :value="0">GPS 任务</option><option :value="1">高精度 RTK 任务</option></select></label>
             <label>避障开关<select v-model.number="jobForm.barrierSwitchState"><option :value="1">打开避障</option><option :value="0">关闭避障</option></select></label>

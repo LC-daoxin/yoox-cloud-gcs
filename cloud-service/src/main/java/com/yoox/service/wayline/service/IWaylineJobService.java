@@ -38,4 +38,9 @@ public interface IWaylineJobService {
     PaginationData<WaylineJobDTO> getJobsByWorkspaceId(String workspaceId, long page, long pageSize);
 
     WaylineJobStatusEnum getWaylineState(String dockSn);
+
+    /**
+     * 删除已终结的飞行任务记录（成功/取消/失败），不允许删除进行中的任务。
+     */
+    Boolean deleteFinishedJob(String workspaceId, String jobId);
 }

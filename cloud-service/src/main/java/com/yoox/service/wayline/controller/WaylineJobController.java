@@ -65,4 +65,11 @@ public class WaylineJobController {
         flighttaskService.updateJobStatus(workspaceId, jobId, param);
         return HttpResultResponse.success();
     }
+
+    @DeleteMapping("/{workspace_id}/jobs/{job_id}")
+    public HttpResultResponse deleteJob(@PathVariable(name = "workspace_id") String workspaceId,
+                                        @PathVariable(name = "job_id") String jobId) {
+        boolean isDel = waylineJobService.deleteFinishedJob(workspaceId, jobId);
+        return isDel ? HttpResultResponse.success() : HttpResultResponse.error("任务不存在或仍在进行中，无法删除。");
+    }
 }
