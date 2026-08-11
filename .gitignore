@@ -35,6 +35,7 @@ build/
 /mvnw
 /mvnw.cmd
 .env.*
+!.env
 !.env.example
 !.env.nano1
 **/node_modules/
