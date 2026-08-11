@@ -1,6 +1,7 @@
 package com.yoox.service.assignment;
 
 import com.yoox.great.context.enums.device.DeviceDomainEnum;
+import com.yoox.great.context.enums.version.GatewayManager;
 import com.yoox.great.mqtt.core.SDKManager;
 import com.yoox.great.redis.RedisConst;
 import com.yoox.great.redis.RedisOpsUtils;
@@ -38,6 +39,10 @@ public class ApplicationBootInitial implements CommandLineRunner {
                         .build())
                 .forEach(this::registerPersistedGateway);
 
+        // 运行期兜底：定时任务误判离线或任何原因清掉内存注册后，只要还能按网关 SN
+        // 从持久化数据重建，getDeviceSDK 就地自愈，避免「Redis 在线但 SDK 未注册」。
+        SDKManager.setRegistrationRecovery(this::recoverGatewayRegistration);
+
         int start = RedisConst.DEVICE_ONLINE_PREFIX.length();
         RedisOpsUtils.getAllKeys(RedisConst.DEVICE_ONLINE_PREFIX + "*")
                 .stream()
@@ -54,22 +59,30 @@ public class ApplicationBootInitial implements CommandLineRunner {
 
     private void registerPersistedGateway(DeviceDTO gateway) {
         try {
-            String childThingVersion = Optional.ofNullable(gateway.getChildDeviceSn())
-                    .flatMap(deviceService::getDeviceBySn)
-                    .map(DeviceDTO::getThingVersion)
-                    .orElse(null);
-            SDKManager.registerDevice(
-                    gateway.getDeviceSn(),
-                    gateway.getChildDeviceSn(),
-                    gateway.getDomain(),
-                    gateway.getType(),
-                    gateway.getSubType(),
-                    gateway.getThingVersion(),
-                    childThingVersion);
+            recoverGatewayRegistration(gateway.getDeviceSn());
             log.info("Restored persisted gateway in SDK registry: {}", gateway.getDeviceSn());
         } catch (RuntimeException exception) {
             log.warn("Unable to restore gateway {} in SDK registry: {}",
                     gateway.getDeviceSn(), exception.getMessage());
         }
+    }
+
+    private GatewayManager recoverGatewayRegistration(String gatewaySn) {
+        return deviceService.getDeviceBySn(gatewaySn)
+                .map(gateway -> {
+                    String childThingVersion = Optional.ofNullable(gateway.getChildDeviceSn())
+                            .flatMap(deviceService::getDeviceBySn)
+                            .map(DeviceDTO::getThingVersion)
+                            .orElse(null);
+                    return SDKManager.registerDevice(
+                            gateway.getDeviceSn(),
+                            gateway.getChildDeviceSn(),
+                            gateway.getDomain(),
+                            gateway.getType(),
+                            gateway.getSubType(),
+                            gateway.getThingVersion(),
+                            childThingVersion);
+                })
+                .orElse(null);
     }
 }

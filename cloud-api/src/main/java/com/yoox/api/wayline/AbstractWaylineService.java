@@ -164,25 +164,22 @@ public abstract class AbstractWaylineService {
     }
 
     /**
-     * Autel RC gateways manage the aircraft as a sub-device: without an
-     * explicit device_list addressing the drone SN (same convention as
-     * {@code takeoffToPointRc}), the RC silently drops the command and never
-     * sends a services_reply, surfacing as a 211001 timeout on the cloud side.
+     * return_home 是网关级整机指令：官方文档只发送 method=return_home、data=null 到
+     * {@code thing/product/{gateway_sn}/services}，不带 device_list。RC 网关已知道自己
+     * 的无人机，额外的 device_list 会让固件把它当作不支持的「无人机直达」指令静默丢弃，
+     * 从而永不回复 services_reply，云端表现为 211001 超时。因此 RC 与普通网关一样走
+     * 网关级发布，仅保留独立方法以绕开 returnHomeCancel 上的 {@code @CloudSDKVersion(exclude=RC)}。
      */
     public TopicServicesResponse<ServicesReplyData> returnHomeRc(GatewayManager gateway) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
-                WaylineMethodEnum.RETURN_HOME.getMethod(),
-                null,
-                List.of(Map.of("sn", gateway.getDroneSn())));
+                WaylineMethodEnum.RETURN_HOME.getMethod());
     }
 
     public TopicServicesResponse<ServicesReplyData> returnHomeCancelRc(GatewayManager gateway) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
-                WaylineMethodEnum.RETURN_HOME_CANCEL.getMethod(),
-                null,
-                List.of(Map.of("sn", gateway.getDroneSn())));
+                WaylineMethodEnum.RETURN_HOME_CANCEL.getMethod());
     }
 
     @ServiceActivator(inputChannel = ChannelName.INBOUND_REQUESTS_FLIGHTTASK_RESOURCE_GET, outputChannel = ChannelName.OUTBOUND_REQUESTS)

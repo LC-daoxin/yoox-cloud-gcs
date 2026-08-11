@@ -115,9 +115,9 @@ public class ControlServiceImpl implements IControlService {
                     return authority;
                 }
                 boolean isReturnHome = RemoteDebugMethodEnum.RETURN_HOME == controlMethodEnum;
-                // 遥控器网关将无人机作为子设备管理，与 takeoffToPointRc 相同，
-                // 若不显式指定 device_list 携带无人机 SN，遥控器会直接丢弃该指令
-                // 且从不回复 services_reply，最终表现为 211001 超时。
+                // return_home 是网关级整机指令：官方文档不带 device_list（详见
+                // AbstractWaylineService.returnHomeRc）。RC 仅用独立方法绕开
+                // returnHomeCancel 上的 @CloudSDKVersion(exclude=RC) 限制。
                 DeviceDomainEnum gatewayDomain = deviceRedisService.getDeviceOnline(sn)
                         .map(DeviceDTO::getDomain)
                         .orElse(null);

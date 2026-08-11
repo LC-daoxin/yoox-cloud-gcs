@@ -401,6 +401,8 @@ public class SDKDeviceService extends AbstractDeviceService {
 
     private void markOnlineFromOsd(DeviceDTO device, String gatewaySn, boolean wasOnline) {
         deviceRedisService.setDeviceOnline(device);
+        // SDKManager 未注册时会经 registrationRecovery 钩子自愈（见 ApplicationBootInitial），
+        // 这里只负责续期 Redis 在线状态。
         if (wasOnline || !StringUtils.hasText(device.getWorkspaceId())) {
             return;
         }

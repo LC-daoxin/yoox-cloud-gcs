@@ -3297,7 +3297,6 @@ function drcControlProbeMatches(
   }
   const rawSeq = output.seq ?? data.seq
   const replySeq = exactInteger(rawSeq)
-  if (replySeq === undefined || replySeq !== probe.controlSeq) return false
 
   const replyIds = [
     message.tid, message.bid,
@@ -3307,10 +3306,13 @@ function drcControlProbeMatches(
     output.tid, output.bid
   ].map((value) => String(value ?? '')).filter(Boolean)
 
-  // Some firmware omits correlation IDs, so seq is mandatory. If it does send
-  // any tid/bid, at least one must also identify this exact probe; an old reply
-  // cannot bypass request correlation merely because its seq happens to match.
-  return replyIds.length === 0 || replyIds.includes(probe.requestId)
+  // 相关性优先级：显式 tid/bid 回显能唯一标识本探针。Autel EVO RC 固件回复
+  // drone_control 时恒返回 output.seq=0（不回显发送的 seq），因此只有在回包完全
+  // 不带 tid/bid 时才回退到严格的 seq 匹配。上方的 ACK 时间窗仍防重放。
+  if (replyIds.length > 0) {
+    return replyIds.includes(probe.requestId)
+  }
+  return replySeq !== undefined && replySeq === probe.controlSeq
 }
 
 function scheduleDrcControlProbeRetry(probe: PendingDrcControlProbe) {
