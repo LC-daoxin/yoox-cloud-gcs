@@ -34,9 +34,9 @@ build/
 /.mvn/
 /mvnw
 /mvnw.cmd
-.env
 .env.*
 !.env.example
+!.env.nano1
 **/node_modules/
 
 # 离线部署包：镜像 tar 包和含密码的 .env.template 不入 Git
