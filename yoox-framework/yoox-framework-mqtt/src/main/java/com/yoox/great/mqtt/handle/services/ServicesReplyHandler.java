@@ -33,11 +33,19 @@ public class ServicesReplyHandler {
                 .readValue(payload, new TypeReference<TopicServicesResponse<ServicesReplyReceiver>>() {
                 });
         String topic = String.valueOf(message.getHeaders().get(MqttHeaders.RECEIVED_TOPIC));
-        log.info("【services_reply】设备回复:{}", receiver.getData());
+        // 诊断日志：完整打印回复来源与关联 ID，便于与【services下发】日志对账。
+        log.info("【services_reply】topic={} method={} tid={} bid={} 原文={}",
+                topic, receiver.getMethod(), receiver.getTid(), receiver.getBid(),
+                new String(payload, java.nio.charset.StandardCharsets.UTF_8));
 
         Chan chan = Chan.getInstance(receiver.getTid(), false);
         CommonTopicRequest<?> request = Objects.isNull(chan) ? null : chan.getRequest();
         if (Objects.isNull(chan)) {
+            // 无同步等待方：要么是迟到回复（云端已按 211001 超时放弃），要么是
+            // 云端未发起的指令（如浏览器直发 DRC 的 drc_emergency_landing）。
+            log.warn("【services_reply】无主回复（无等待方，可能为迟到回复或浏览器直发指令的回执）"
+                            + " topic={} method={} tid={}",
+                    topic, receiver.getMethod(), receiver.getTid());
             eventPublisher.publishEvent(new ServicesReplyReceivedEvent(topic, receiver, null));
             return;
         }

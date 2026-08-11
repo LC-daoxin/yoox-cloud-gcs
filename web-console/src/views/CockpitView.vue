@@ -925,8 +925,8 @@ const gimbalResetOptions = [
 ] as const
 // camera_screen_drag 每次调用会让云台持续运动一小段时间。使用低速档，避免一次
 // 点按就快速扫到俯仰限位；长按仍通过周期刷新实现连续、可控的微调。
-const payloadGimbalPitchSpeed = 1
-const payloadGimbalYawSpeed = 0.1
+const payloadGimbalPitchSpeed = 0.8
+const payloadGimbalYawSpeed = 0.3
 const payloadZoomDisplay = computed(() =>
   payloadZoomTarget.value ?? activeZoomFactor.value)
 const filteredInteractionLogs = computed(() => {
@@ -3500,12 +3500,44 @@ function handleMessage(
     if (message.method === 'drc_emergency_landing' || message.method === 'drc_force_landing') {
       const method = message.method as DrcLandingMethod
       const expectedTopic = `thing/product/${drcLandingGatewaySn}/services_reply`
-      if (!drcLandingPending.value || drcLandingPending.value !== method ||
-          !drcLandingRequestId || _topic !== expectedTopic) return
+      // 诊断日志：任何被忽略的降落回包都在交互日志中记录原因，避免静默丢弃难以排查。
+      const ignoreLanding = (reason: string) => {
+        addInteractionLog({
+          transport: 'MQTT',
+          direction: 'INFO',
+          topic: _topic,
+          summary: `${method} 回包被忽略：${reason}`,
+          payload: {
+            reason,
+            pending: drcLandingPending.value || '(无待确认降落请求)',
+            expectedTopic,
+            actualTopic: _topic,
+            expectedRequestId: drcLandingRequestId || '(空)',
+            replyTid: message.tid ?? null,
+            replyBid: message.bid ?? null,
+            result: hasExplicitResult ? result : '(无result)'
+          }
+        })
+      }
+      if (!drcLandingPending.value || drcLandingPending.value !== method) {
+        ignoreLanding(drcLandingPending.value
+          ? `待确认方法为 ${drcLandingPending.value}，与回包方法不一致`
+          : '前端已超时或没有待确认的降落请求（可能为迟到回包）')
+        return
+      }
+      if (!drcLandingRequestId || _topic !== expectedTopic) {
+        ignoreLanding(!drcLandingRequestId
+          ? '本地请求 ID 已清空'
+          : `回包 topic 与期望不符（期望 ${expectedTopic}）`)
+        return
+      }
       const replyIds = [message.tid, message.bid]
         .map((value) => String(value ?? ''))
         .filter(Boolean)
-      if (replyIds.length > 0 && !replyIds.includes(drcLandingRequestId)) return
+      if (replyIds.length > 0 && !replyIds.includes(drcLandingRequestId)) {
+        ignoreLanding(`回包 tid/bid（${replyIds.join('/')}）与请求 ID ${drcLandingRequestId} 不匹配`)
+        return
+      }
       window.clearTimeout(drcLandingTimer)
       drcLandingTimer = 0
       drcLandingRequestId = ''
@@ -4761,6 +4793,19 @@ async function drcLanding(method: DrcLandingMethod) {
       drcLandingRequestId = ''
       drcLandingGatewaySn = ''
       drcLandingTimer = 0
+      // 诊断日志：留存超时上下文，便于与 services_reply 迟到回包对账。
+      addInteractionLog({
+        transport: 'MQTT',
+        direction: 'INFO',
+        summary: `${method} 等待回包超时（5s）`,
+        payload: {
+          method,
+          requestId,
+          gatewaySn,
+          expectedReplyTopic: `thing/product/${gatewaySn}/services_reply`,
+          note: '未收到 services_reply；请核对本面板稍后是否出现同 tid 的迟到回包，以及后端 api 日志中的【services_reply】记录'
+        }
+      })
       showCameraActionTip(`${label}指令已发送，设备暂未返回调用结果`)
     }
   }, 5_000)

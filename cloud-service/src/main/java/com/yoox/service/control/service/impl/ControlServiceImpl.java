@@ -98,8 +98,10 @@ public class ControlServiceImpl implements IControlService {
         DebugMethodEnum methodEnum = controlMethodEnum.getDebugMethodEnum();
         RemoteDebugHandler data = checkDebugCondition(sn, param, controlMethodEnum);
 
+        log.info("【控制指令】收到请求 sn={} method={}", sn, controlMethodEnum.getMethod());
         boolean isExist = deviceRedisService.checkDeviceOnline(sn);
         if (!isExist) {
+            log.warn("【控制指令】网关不在线，拒绝执行 sn={} method={}", sn, controlMethodEnum.getMethod());
             return HttpResultResponse.error("The dock is offline.");
         }
         TopicServicesResponse response;
@@ -112,6 +114,8 @@ public class ControlServiceImpl implements IControlService {
                 // return_home / return_home_cancel 之前遗漏了这一步，此处补齐。
                 HttpResultResponse authority = seizeAuthority(sn, DroneAuthorityEnum.FLIGHT, null);
                 if (HttpResultResponse.CODE_SUCCESS != authority.getCode()) {
+                    log.warn("【返航链路】抢占飞控权失败，终止 {} sn={} code={} message={}",
+                            controlMethodEnum.getMethod(), sn, authority.getCode(), authority.getMessage());
                     return authority;
                 }
                 boolean isReturnHome = RemoteDebugMethodEnum.RETURN_HOME == controlMethodEnum;
@@ -121,6 +125,9 @@ public class ControlServiceImpl implements IControlService {
                 DeviceDomainEnum gatewayDomain = deviceRedisService.getDeviceOnline(sn)
                         .map(DeviceDTO::getDomain)
                         .orElse(null);
+                log.info("【返航链路】飞控权就绪，准备下发 {} sn={} gatewayDomain={} 分支={}",
+                        controlMethodEnum.getMethod(), sn, gatewayDomain,
+                        DeviceDomainEnum.REMOTER_CONTROL == gatewayDomain ? "RC(网关级,无device_list)" : "普通网关");
                 response = DeviceDomainEnum.REMOTER_CONTROL == gatewayDomain
                         ? (isReturnHome
                                 ? abstractWaylineService.returnHomeRc(SDKManager.getDeviceSDK(sn))
@@ -134,6 +141,8 @@ public class ControlServiceImpl implements IControlService {
                         Objects.nonNull(methodEnum.getClazz()) ? mapper.convertValue(data, methodEnum.getClazz()) : null);
         }
         ServicesReplyData serviceReply = (ServicesReplyData) response.getData();
+        log.info("【控制指令】设备回复 sn={} method={} result={} success={}",
+                sn, controlMethodEnum.getMethod(), serviceReply.getResult(), serviceReply.getResult().isSuccess());
         if (!serviceReply.getResult().isSuccess()) {
             return HttpResultResponse.error(serviceReply.getResult());
         }
@@ -355,8 +364,11 @@ public class ControlServiceImpl implements IControlService {
         switch (authority) {
             case FLIGHT:
                 if (!force && deviceService.checkAuthorityFlight(sn)) {
+                    log.info("【抢权】飞控权缓存命中，跳过发送 flight_authority_grab sn={}", sn);
                     return HttpResultResponse.success();
                 }
+                log.info("【抢权】发送 flight_authority_grab sn={} domain={} force={}",
+                        sn, gatewayDevice.getDomain(), force);
                 // RC 网关需 device_list 寻址无人机，否则指令被静默丢弃（211001）。
                 response = DeviceDomainEnum.REMOTER_CONTROL == gatewayDevice.getDomain()
                         ? abstractControlService.flightAuthorityGrabRc(SDKManager.getDeviceSDK(sn))
@@ -367,10 +379,14 @@ public class ControlServiceImpl implements IControlService {
                     return HttpResultResponse.error(CloudSDKErrorEnum.INVALID_PARAMETER);
                 }
                 if (!force && checkPayloadAuthority(sn, param.getPayloadIndex())) {
+                    log.info("【抢权】负载控制权缓存命中，跳过发送 payload_authority_grab sn={} payload={}",
+                            sn, param.getPayloadIndex());
                     publishPayloadAuthorityState(sn, param.getPayloadIndex(), true,
                             0, "已取得负载控制权", null);
                     return HttpResultResponse.success();
                 }
+                log.info("【抢权】发送 payload_authority_grab sn={} payload={} domain={} force={}",
+                        sn, param.getPayloadIndex(), gatewayDevice.getDomain(), force);
                 PayloadAuthorityGrabRequest grabRequest = new PayloadAuthorityGrabRequest()
                         .setPayloadIndex(new PayloadIndex(param.getPayloadIndex()));
                 // RC 网关需 device_list 寻址无人机，否则指令被静默丢弃（211001）。
@@ -383,6 +399,8 @@ public class ControlServiceImpl implements IControlService {
         }
 
         ServicesReplyData serviceReply = response.getData();
+        log.info("【抢权】设备回复 sn={} authority={} result={} success={}",
+                sn, authority, serviceReply.getResult(), serviceReply.getResult().isSuccess());
         if (!serviceReply.getResult().isSuccess()) {
             return HttpResultResponse.error(serviceReply.getResult());
         }
@@ -446,10 +464,13 @@ public class ControlServiceImpl implements IControlService {
 
     @Override
     public HttpResultResponse payloadCommands(PayloadCommandsParam param) throws Exception {
+        log.info("【负载指令】收到请求 sn={} cmd={} data={}",
+                param.getSn(), param.getCmd().getCmd(), toJsonSafely(param.getData()));
         PayloadCommandsHandler handler = param.getCmd().getClazz()
                 .getDeclaredConstructor(DronePayloadParam.class)
                 .newInstance(param.getData());
         if (!handler.checkCondition(param.getSn())) {
+            log.info("【负载指令】命中幂等/无操作分支，未下发 sn={} cmd={}", param.getSn(), param.getCmd().getCmd());
             return HttpResultResponse.success();
         }
 
@@ -457,6 +478,12 @@ public class ControlServiceImpl implements IControlService {
         DeviceDomainEnum gatewayDomain = deviceRedisService.getDeviceOnline(param.getSn())
                 .map(DeviceDTO::getDomain)
                 .orElse(null);
+        Object requestModel = mapper.convertValue(param.getData(), param.getCmd().getCmd().getClazz());
+        // 打印 Jackson 实际序列化结果：可核对 payload_index/locked 等字段是否被 @JsonIgnore 丢弃。
+        log.info("【负载指令】准备下发 sn={} cmd={} gatewayDomain={} 分支={} 实际data={}",
+                param.getSn(), param.getCmd().getCmd(), gatewayDomain,
+                DeviceDomainEnum.REMOTER_CONTROL == gatewayDomain ? "RC(带device_list)" : "普通网关",
+                toJsonSafely(requestModel));
         TopicServicesResponse<ServicesReplyData> response;
         if (DeviceDomainEnum.REMOTER_CONTROL == gatewayDomain) {
             response = abstractControlService.payloadControlRc(
@@ -469,9 +496,20 @@ public class ControlServiceImpl implements IControlService {
         }
 
         ServicesReplyData serviceReply = response.getData();
+        log.info("【负载指令】设备回复 sn={} cmd={} result={} success={}",
+                param.getSn(), param.getCmd().getCmd(), serviceReply.getResult(),
+                serviceReply.getResult().isSuccess());
         return serviceReply.getResult().isSuccess() ?
                 HttpResultResponse.success()
                 : HttpResultResponse.error(serviceReply.getResult());
+    }
+
+    private String toJsonSafely(Object value) {
+        try {
+            return mapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return String.valueOf(value);
+        }
     }
 
     @Override
