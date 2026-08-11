@@ -1,10 +1,12 @@
 """
-demo_06_gimbal_pitch.py -- 云台控制（camera_aim 指点 + camera_screen_drag 速度 + gimbal_reset 复位）
+demo_06_gimbal_pitch.py -- 云台控制（camera_screen_drag 速度 + gimbal_reset 复位）
 
-三类接口：
-  1. camera_aim         -- 屏幕坐标指点（单次指向目标点）
-  2. camera_screen_drag -- 持续速度控制（pitch/yaw 角速度，度/秒）
-  3. gimbal_reset       -- 云台复位（4 种模式）
+两类接口：
+  1. camera_screen_drag -- 持续速度控制（pitch/yaw 角速度，度/秒）
+  2. gimbal_reset       -- 云台复位（4 种模式）
+
+camera_aim（屏幕坐标指点）不在本 demo 的维护范围内；
+需要屏幕指点功能请使用 demo_16_look_at.py（camera_look_at，基于 GPS 坐标）。
 
 运行：
     python3 demo_06_gimbal_pitch.py
@@ -28,25 +30,15 @@ DEFAULT_DRAG_SPEED = 0.1
 
 def _payload_command(token, cmd: str, data: dict):
     try:
-        return send_payload_command(token, cmd, data, timeout=10)
+        # payload 指令路径用网关（遥控器/机巢）SN，服务端会寻址到无人机负载
+        return send_payload_command(token, cmd, data, sn=DOCK_SN, timeout=10)
     except DemoError as exc:
         print_error_and_hint(exc)
         return None
 
 
-def camera_aim(token, x: float, y: float, camera_type: str = "zoom", locked: bool = False):
-    """屏幕坐标指点控制：x/y 为 0.0~1.0 归一化坐标"""
-    return _payload_command(token, "camera_aim", {
-        "payload_index": PAYLOAD_INDEX,
-        "x": x,
-        "y": y,
-        "locked": locked,
-        "camera_type": camera_type,
-    })
-
-
 def camera_screen_drag(token, pitch_speed: float, yaw_speed: float, locked: bool = False):
-    """画面拖动速度控制：pitch_speed/yaw_speed 单位为度/秒"""
+    """画面拖动速度控制：pitch_speed/yaw_speed 单位为度/秒；locked=true 时机头联动转向"""
     return _payload_command(token, "camera_screen_drag", {
         "payload_index": PAYLOAD_INDEX,
         "locked": locked,
@@ -82,19 +74,12 @@ if __name__ == "__main__":
         print(f"[*] 负载索引: {PAYLOAD_INDEX}\n")
 
         token = login()
-        seize_payload_authority(token, PAYLOAD_INDEX)
+        seize_payload_authority(token, PAYLOAD_INDEX, sn=DOCK_SN)
     except DemoError as exc:
         print_error_and_hint(exc)
         raise SystemExit(1)
 
     print(f"""═══ 云台控制指令 ═══
-
-── camera_aim（屏幕坐标指点） ──
-  up        指向上方  (x=0.5, y=0.0)
-  down      指向下方  (x=0.5, y=1.0)
-  left      指向左方  (x=0.0, y=0.5)
-  right     指向右方  (x=1.0, y=0.5)
-  center    画面中心  (x=0.5, y=0.5)
 
 ── camera_screen_drag（速度控制，度/秒） ──
   8 / w     仰角向上  (pitch_speed=-{DEFAULT_DRAG_SPEED})
@@ -126,18 +111,6 @@ if __name__ == "__main__":
         # ── 退出 ──
         if cmd == "q":
             break
-
-        # ── camera_aim 屏幕坐标指点 ──
-        elif cmd == "up":
-            _print_result("指向上方", camera_aim(token, x=0.5, y=0.0))
-        elif cmd == "down":
-            _print_result("指向下方", camera_aim(token, x=0.5, y=1.0))
-        elif cmd == "left":
-            _print_result("指向左方", camera_aim(token, x=0.0, y=0.5))
-        elif cmd == "right":
-            _print_result("指向右方", camera_aim(token, x=1.0, y=0.5))
-        elif cmd == "center":
-            _print_result("指向画面中心", camera_aim(token, x=0.5, y=0.5))
 
         # ── camera_screen_drag 速度控制 ──
         elif cmd in ("8", "w"):
