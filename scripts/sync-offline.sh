@@ -7,6 +7,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT_DIR/offline/nano-deploy/deploy"
 
 cp "$ROOT_DIR/compose.yml"                           "$DEST/compose.yml"
+cp "$ROOT_DIR/compose.nano.yml"                      "$DEST/compose.nano.yml"
 cp "$ROOT_DIR/scripts/preflight.sh"                  "$DEST/scripts/preflight.sh"
 cp "$ROOT_DIR/scripts/smoke-test.sh"                 "$DEST/scripts/smoke-test.sh"
 cp "$ROOT_DIR/deploy/emqx/acl.conf"                  "$DEST/deploy/emqx/acl.conf"

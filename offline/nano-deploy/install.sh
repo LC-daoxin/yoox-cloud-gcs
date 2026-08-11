@@ -115,7 +115,12 @@ printf '[✓] 配置有效\n'
 
 # ── 5. 启动服务 ───────────────────────────────────────────────────
 printf '\n=== [5/6] 启动服务（等待健康检查，最多 300 秒）===\n'
-docker compose --env-file .env up -d --remove-orphans --wait --wait-timeout 300
+# 若存在 compose.nano.yml 覆盖层，叠加使用以启用资源限制
+if [ -f "$TARGET_DIR/compose.nano.yml" ]; then
+    docker compose -f compose.yml -f compose.nano.yml --env-file .env up -d --remove-orphans --wait --wait-timeout 300
+else
+    docker compose --env-file .env up -d --remove-orphans --wait --wait-timeout 300
+fi
 printf '[✓] 所有服务已启动\n'
 
 # ── 6. 验证 ───────────────────────────────────────────────────────

@@ -1,0 +1,134 @@
+# Jetson Nano/Orin 资源管控覆盖层
+#
+# 用法（Nano 上）：
+#   docker compose -f compose.yml -f compose.nano.yml --env-file .env up -d --wait
+#
+# 目标：GCS 栈总内存 ≤ 3 GB、CPU ≤ 2.5 核，为 YOLOv5 和 OS 留出余量。
+# cpu_shares 比默认值(1024)低，确保 CPU 竞争时 Docker 外进程(YOLOv5)优先。
+
+services:
+
+  mysql:
+    # 覆盖命令，追加内存限制参数
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      - --innodb-buffer-pool-size=192M   # 默认会自动用 128M–1G，显式压低
+      - --innodb-log-file-size=32M
+      - --max-connections=64
+      - --tmp-table-size=16M
+      - --max-heap-table-size=16M
+      - --thread-cache-size=4
+    deploy:
+      resources:
+        limits:
+          cpus: "0.4"
+          memory: 480M
+        reservations:
+          memory: 192M
+    mem_swappiness: 0    # 禁止 swap，避免拖慢其他进程
+
+  mysql-init:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: 64M
+
+  redis:
+    # 限制 Redis 最大内存，超出后 LRU 淘汰
+    command:
+      - sh
+      - -ec
+      - exec redis-server --appendonly yes --requirepass "$${YOOX_REDIS_PASSWORD}" --maxmemory 64mb --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: 96M
+        reservations:
+          memory: 32M
+
+  minio:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 256M
+        reservations:
+          memory: 64M
+
+  minio-init:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 32M
+
+  emqx:
+    environment:
+      # Erlang VM 线程池与进程表收紧，减少空闲内存占用
+      EMQX_NODE__PROCESS_LIMIT: "1048576"
+      EMQX_NODE__MAX_PORTS: "1048576"
+      EMQX_LISTENERS__TCP__DEFAULT__MAX_CONNECTIONS: "100"
+      EMQX_LISTENERS__WS__DEFAULT__MAX_CONNECTIONS: "100"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.4"
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  emqx-init:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 32M
+
+  mediamtx:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  api:
+    environment:
+      # 固定堆大小比 MaxRAMPercentage 更可预测；SerialGC 在小内存场景暂停更短
+      JAVA_OPTS: >-
+        -XX:+UseContainerSupport
+        -Xms192m
+        -Xmx700m
+        -XX:+UseSerialGC
+        -XX:+ExitOnOutOfMemoryError
+        -Djava.awt.headless=true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 900M
+        reservations:
+          memory: 256M
+
+  web:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 64M
+        reservations:
+          memory: 16M
+
+  api-portal:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 48M
+        reservations:
+          memory: 16M
