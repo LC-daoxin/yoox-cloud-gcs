@@ -25,6 +25,9 @@ import java.util.Objects;
 public class MinIOServiceImpl implements IOssService {
 
     private MinioClient client;
+
+    /** 预签名 URL 下发给外部设备，host 必须用对外端点（未配置时与内部端点相同）。 */
+    private MinioClient externalClient;
     
     @Override
     public OssTypeEnum getOssType() {
@@ -50,7 +53,7 @@ public class MinIOServiceImpl implements IOssService {
     public URL getObjectUrl(String bucket, String objectKey) {
         try {
             return new URL(
-                    client.getPresignedObjectUrl(
+                    externalClient.getPresignedObjectUrl(
                                     GetPresignedObjectUrlArgs.builder()
                                             .method(Method.GET)
                                             .bucket(bucket)
@@ -106,7 +109,9 @@ public class MinIOServiceImpl implements IOssService {
     }
 
     public void createClient() {
-        if (Objects.nonNull(this.client)) {
+        // 以 externalClient 为完成标志：若上次初始化中途失败（如 region 非法），
+        // 仅判断 client 会让 externalClient 永远为 null。
+        if (Objects.nonNull(this.externalClient)) {
             return;
         }
         this.client = MinioClient.builder()
@@ -114,5 +119,21 @@ public class MinIOServiceImpl implements IOssService {
                 .credentials(OssConfiguration.accessKey, OssConfiguration.secretKey)
                 //.region(OssConfiguration.region)
                 .build();
+        // 预签名 URL 客户端：对外端点与内部端点相同时直接复用。
+        // 必须显式指定 region：跳过 GetBucketLocation 网络查询，使预签名成为纯本地
+        // 计算——桥接网络下容器无法回访宿主局域网 IP，联网查询会挂起导致 504。
+        // 注意 yml 空值会绑定为空串，region("") 会抛异常，需用 hasText 判断。
+        String externalEndpoint = OssConfiguration.publicEndpoint();
+        if (externalEndpoint.equals(OssConfiguration.endpoint)) {
+            this.externalClient = this.client;
+        } else {
+            String region = org.springframework.util.StringUtils.hasText(OssConfiguration.region)
+                    ? OssConfiguration.region : "us-east-1";
+            this.externalClient = MinioClient.builder()
+                    .endpoint(externalEndpoint)
+                    .credentials(OssConfiguration.accessKey, OssConfiguration.secretKey)
+                    .region(region)
+                    .build();
+        }
     }
 }

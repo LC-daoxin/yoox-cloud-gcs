@@ -3,6 +3,7 @@ package com.yoox.great.oss.model;
 import com.yoox.great.context.enums.oss.OssTypeEnum;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 @ConfigurationProperties(prefix = "oss")
 @Component
@@ -13,6 +14,16 @@ public class OssConfiguration {
     public static boolean enable;
 
     public static String endpoint;
+
+    /**
+     * 对外广播端点：预签名 URL、STS storage config 等下发给设备的地址。
+     * 容器内部 endpoint（compose 服务名）设备无法访问，未配置时回退为 endpoint。
+     */
+    public static String externalEndpoint;
+
+    public static String publicEndpoint() {
+        return StringUtils.hasText(externalEndpoint) ? externalEndpoint : endpoint;
+    }
 
     public static String accessKey;
 
@@ -40,6 +51,10 @@ public class OssConfiguration {
 
     public void setEndpoint(String endpoint) {
         OssConfiguration.endpoint = endpoint;
+    }
+
+    public void setExternalEndpoint(String externalEndpoint) {
+        OssConfiguration.externalEndpoint = externalEndpoint;
     }
 
     public void setAccessKey(String accessKey) {

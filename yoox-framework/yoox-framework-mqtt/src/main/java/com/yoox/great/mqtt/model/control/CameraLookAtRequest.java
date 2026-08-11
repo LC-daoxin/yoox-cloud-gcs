@@ -2,7 +2,6 @@ package com.yoox.great.mqtt.model.control;
 
 import com.yoox.great.context.base.BaseModel;
 import com.yoox.great.mqtt.model.device.PayloadIndex;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import javax.validation.constraints.Max;
 import javax.validation.constraints.Min;
@@ -15,14 +14,17 @@ public class CameraLookAtRequest extends BaseModel {
      * It is unofficial device_mode_key.
      * The format is *{type-subtype-gimbalindex}*.
      * Please read [Product Supported](https://developer.yoox.com/doc/cloud-api-tutorial/en/overview/product-support.html)
+     *
+     * 实测（RC 固件 1.9.1.203）：遥控器依赖 data.payload_index 将指令路由到负载，
+     * 缺失时会静默丢弃且不回复 services_reply，云端表现为 211001 超时。
      */
-    @JsonIgnore
+    @NotNull
     private PayloadIndex payloadIndex;
 
     /**
-     * Whether the relative location of drone head and gimbal is locked
+     * Whether the relative location of drone head and gimbal is locked.
+     * 可空：为空时不序列化，由固件按默认行为处理。
      */
-    @JsonIgnore
     private Boolean locked;
 
     /**
@@ -67,9 +69,17 @@ public class CameraLookAtRequest extends BaseModel {
                 '}';
     }
 
+    public PayloadIndex getPayloadIndex() {
+        return payloadIndex;
+    }
+
     public CameraLookAtRequest setPayloadIndex(PayloadIndex payloadIndex) {
         this.payloadIndex = payloadIndex;
         return this;
+    }
+
+    public Boolean getLocked() {
+        return locked;
     }
 
     public CameraLookAtRequest setLocked(Boolean locked) {

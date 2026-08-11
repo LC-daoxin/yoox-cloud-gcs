@@ -40,7 +40,7 @@ public class CreateJobParam {
     @NotNull
     private OutOfControlActionEnum outOfControlAction;
 
-    @Range(min = 50, max = 90)
+    @Range(min = 15, max = 100)
     private Integer minBatteryCapacity;
 
     private Integer minStorageCapacity;

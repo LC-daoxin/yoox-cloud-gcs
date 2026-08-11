@@ -23,18 +23,37 @@ class CameraLookAtImplTest {
         assertTrue(new CameraLookAtImpl(param).valid());
     }
 
+    /**
+     * 实测（RC 固件 1.9.1.203）：camera_look_at 与 camera_screen_drag 一样，
+     * 必须携带 payload_index 才能被遥控器路由到负载；缺失时指令被静默丢弃、
+     * 永不回复 services_reply，云端表现为 211001 超时。
+     */
     @Test
-    void mqttRequestSerializesOnlyOfficialRcCoordinates() {
+    void mqttRequestSerializesPayloadRoutingFields() {
         DronePayloadParam param = lookAtParam();
         CameraLookAtRequest request = mapper.convertValue(param, CameraLookAtRequest.class);
 
         JsonNode json = mapper.valueToTree(request);
 
-        assertEquals(3, json.size());
+        assertEquals(5, json.size());
+        assertEquals("10806-0-0", json.get("payload_index").asText());
+        assertFalse(json.get("locked").booleanValue());
         assertEquals(22.608532f, json.get("latitude").floatValue());
         assertEquals(113.83196f, json.get("longitude").floatValue());
         assertEquals(41.695f, json.get("height").floatValue());
-        assertFalse(json.has("payload_index"));
+    }
+
+    /** locked 可空：为空时不序列化该字段，仍需保留坐标与 payload_index。 */
+    @Test
+    void mqttRequestOmitsAbsentLockedFlag() {
+        DronePayloadParam param = lookAtParam();
+        param.setLocked(null);
+        CameraLookAtRequest request = mapper.convertValue(param, CameraLookAtRequest.class);
+
+        JsonNode json = mapper.valueToTree(request);
+
+        assertEquals(4, json.size());
+        assertEquals("10806-0-0", json.get("payload_index").asText());
         assertFalse(json.has("locked"));
     }
 

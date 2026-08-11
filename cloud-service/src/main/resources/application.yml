@@ -106,6 +106,8 @@ oss:
   enable: true
   provider: minio
   endpoint: ${YOOX_MINIO_ENDPOINT:http://minio:9000}
+  # 下发给设备的预签名 URL/STS 地址，留空时回退为 endpoint
+  external-endpoint: ${YOOX_MINIO_EXTERNAL_ENDPOINT:}
   access-key: ${YOOX_MINIO_ACCESS_KEY:yoox_minio}
   secret-key: ${YOOX_MINIO_SECRET_KEY:yoox_minio_change_me}
   bucket: ${YOOX_MINIO_BUCKET:yoox-store}

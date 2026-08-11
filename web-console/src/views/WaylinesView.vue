@@ -271,7 +271,7 @@ onBeforeUnmount(() => unsubscribe?.())
           </label>
           <div class="field-grid">
             <label>返航高度（米）<input v-model.number="jobForm.rthAltitude" type="number" min="20" max="500" required /></label>
-            <label>最低电量（%）<input v-model.number="jobForm.minBatteryCapacity" type="number" min="50" max="90" required /></label>
+            <label>最低电量（%）<input v-model.number="jobForm.minBatteryCapacity" type="number" min="15" max="100" required /></label>
             <label>最低存储（MB）<input v-model.number="jobForm.minStorageCapacity" type="number" min="0" /></label>
             <label>失控动作<select v-model.number="jobForm.outOfControlAction"><option :value="0">返航</option><option :value="1">悬停</option><option :value="2">降落</option></select></label>
             <label>航线精度<select v-model.number="jobForm.waylinePrecisionType"><option :value="0">GPS 任务</option><option :value="1">高精度 RTK 任务</option></select></label>
