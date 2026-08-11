@@ -173,6 +173,15 @@ make smoke
 3. 确认设备与 Mac 网络互通，且 Wi-Fi 未启用客户端隔离。
 4. 遥控器云服务登录地址使用 `http://<Mac局域网IP>:9000`。
 5. 设备还需要访问 MQTT `1883`、RTSP `8554` 和 WebRTC UDP `8000/8188/8189`。
+6. **Mac/Docker Desktop 的 RTSP 必须用 TCP 传输**：Docker Desktop 的 UDP 端口转发不可靠，
+   设备推流的 UDP 媒体包会丢失导致推流失败。须在 `.env` 中添加（或确认已存在）：
+
+   ```dotenv
+   YOOX_RTSP_TRANSPORTS=tcp
+   ```
+
+   部署到 Linux/Jetson Nano 时**不要**设置该变量，保持默认 `udp,tcp`（优先低延迟 UDP，
+   UDP 不通时自动回退 TCP）。
 
 如果切换了网络或 Mac 的 IP 发生变化，修改 `.env` 后重建相关服务：
 
@@ -180,6 +189,10 @@ make smoke
 docker compose --env-file .env up -d --build --force-recreate api web mediamtx
 make smoke
 ```
+
+> **YOOX_PUBLIC_HOST 必须与 Mac 当前局域网 IP 保持一致。** 切换 Wi-Fi 或手机热点后，如果
+> `YOOX_PUBLIC_HOST` 仍指向旧 IP，服务端下发给设备的 RTSP/MinIO 地址将无法连通，表现为推流失
+> 败、媒体回传 314004（DOWNLOAD_KMZ 失败）。修改后必须重启 `api`、`web`、`mediamtx` 才能生效。
 
 ## 7. 日常操作
 
