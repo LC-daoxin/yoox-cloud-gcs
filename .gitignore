@@ -38,6 +38,10 @@ build/
 .env.*
 !.env.example
 **/node_modules/
+
+# 离线部署包：镜像 tar 包和含密码的 .env.template 不入 Git
+offline/nano-deploy/images/*.tar.gz
+offline/nano-deploy/.env.template
 **/target/
 **/dist/
 **/.venv/

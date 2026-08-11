@@ -1,0 +1,64 @@
+authentication = [
+  {
+    mechanism = password_based
+    backend = built_in_database
+    user_id_type = username
+    password_hash_algorithm {
+      name = sha256
+      salt_position = suffix
+    }
+  }
+]
+
+# Aircraft and remote-controller clients resubscribe after reconnecting. Do not
+# retain MQTT 3.x sessions after a disconnect: stale QoS 2 packet identifiers
+# can otherwise be restored and make the device repeatedly reconnect.
+mqtt {
+  session_expiry_interval = 0s
+}
+
+listeners.ws.default {
+  bind = "0.0.0.0:8083"
+  websocket.mqtt_path = "/mqtt"
+  authentication = [
+    {
+      mechanism = jwt
+      from = password
+      use_jwks = false
+      algorithm = hmac-based
+      secret = "replace_with_a_random_secret_of_at_least_32_chars"
+      secret_base64_encoded = false
+      verify_claims = {
+        username = "${username}"
+        clientid = "${clientid}"
+      }
+      disconnect_after_expire = true
+    }
+  ]
+}
+
+authorization {
+  no_match = deny
+  deny_action = ignore
+  cache {
+    enable = false
+    max_size = 32
+    ttl = 5s
+  }
+  sources = [
+    {
+      type = redis
+      enable = true
+      redis_type = single
+      server = "redis:6379"
+      password = "yoox_redis_change_me"
+      database = 0
+      cmd = "HGETALL mqtt_acl:${clientid}"
+    },
+    {
+      type = file
+      enable = true
+      path = "/opt/emqx/etc/acl.conf"
+    }
+  ]
+}
