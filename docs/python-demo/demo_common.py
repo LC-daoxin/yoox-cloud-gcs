@@ -133,8 +133,13 @@ def api_call(
     timeout: float | None = None,
     allow_api_error: bool = False,
     base_url: str | None = None,
+    files: Any = None,
 ) -> dict[str, Any]:
-    """调用平台 API，不对动作请求进行隐式重试。"""
+    """调用平台 API，不对动作请求进行隐式重试。
+
+    传入 ``files`` 时改用 multipart/form-data 上传（如 KMZ 航线），requests
+    会自动设置边界与 Content-Type，此时不应再传 ``json_body``。
+    """
     method = method.upper()
     mutating = method in {"POST", "PUT", "PATCH", "DELETE"}
     headers = {"x-auth-token": token} if token else {}
@@ -145,6 +150,8 @@ def api_call(
     }
     if json_body is not _NO_BODY:
         kwargs["json"] = json_body
+    if files is not None:
+        kwargs["files"] = files
 
     try:
         response = _SESSION.request(

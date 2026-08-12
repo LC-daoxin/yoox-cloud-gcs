@@ -82,15 +82,30 @@ ssh jetson@172.20.10.4 'docker version && docker compose version'
 
 ## 3. RTSP 传输协议说明
 
-RTSP 传输协议由 `.env` 中的 `YOOX_RTSP_TRANSPORTS` 控制，不同环境的设置不同：
+RTSP 传输协议由 `YOOX_RTSP_TRANSPORTS` 控制，传递到 mediamtx 容器：
+
+```yaml
+# compose.yml（mediamtx 服务）
+MTX_RTSPTRANSPORTS: ${YOOX_RTSP_TRANSPORTS:-udp,tcp}
+```
+
+该变量在 `compose.yml` 里有**内置默认值**：变量未设置（`.env` 中没有这一行）时
+mediamtx 自动取 `udp,tcp`。因此 `.env.nano1` **故意不写**这一项——缺省即最优。
+
+不同环境的设置不同：
 
 | 环境 | `YOOX_RTSP_TRANSPORTS` | 说明 |
 | --- | --- | --- |
-| Jetson Nano（Linux） | `udp,tcp`（默认，无需设置） | 优先低延迟 UDP；UDP 不通时自动回退 TCP |
+| Jetson Nano（Linux） | 不设置（默认 `udp,tcp`） | 优先低延迟 UDP；UDP 不通时自动回退 TCP |
 | Mac/Docker Desktop | **必须设置为 `tcp`** | Docker Desktop UDP 端口转发不可靠，强制 TCP 交织传输 |
 
-- **Nano 侧**（`.env.nano1`）：**不需要**设置 `YOOX_RTSP_TRANSPORTS`，保持默认 `udp,tcp` 即可。
-- **Mac 本地开发**（`.env`）：必须添加 `YOOX_RTSP_TRANSPORTS=tcp`，否则设备 UDP 推流包经 Docker 端口转发后会丢失。
+- **Nano 侧**（`.env.nano1`）：**不需要也不应该设置** `YOOX_RTSP_TRANSPORTS`。
+  Nano 是 Linux 主机、原生网络，UDP 端口映射可靠，`udp,tcp` 正是期望行为
+  （低延迟优先、不通回退 TCP）。
+- **Mac 本地开发**（`.env`）：必须添加 `YOOX_RTSP_TRANSPORTS=tcp`，否则设备 UDP
+  推流包经 Docker Desktop 端口转发后会丢失。
+- 若 Nano 处于 UDP 受限的特殊网络，可临时显式设 `tcp` 排除故障（见 §16.7），
+  排查后建议删除该行恢复默认。
 
 ## 4. Mac 上准备配置和构建镜像
 
@@ -302,8 +317,15 @@ docker compose --env-file .env up \
 如果 Nano 上同时运行 YOLOv5 等推理任务，叠加 `compose.nano.yml` 启用资源限制，
 将 GCS 栈总内存控制在 ≤ 3 GB、CPU ≤ 2.5 核：
 
+> **注意**：`compose.nano.yml` 是后期提交入库的文件。如果 Nano 上克隆仓库的时间较早，
+> 需先执行 `git pull --ff-only` 确保该文件存在，否则会报
+> `open compose.nano.yml: no such file or directory`。
+
 ```bash
 cd /home/jetson/1_projects/yoox-cloud-gcs
+
+# 若 compose.nano.yml 不存在，先拉取最新仓库文件
+git pull --ff-only
 
 docker compose -f compose.yml -f compose.nano.yml --env-file .env up \
   -d \

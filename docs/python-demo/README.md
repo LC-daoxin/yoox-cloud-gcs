@@ -83,7 +83,7 @@ YOOX_TARGET_MAX_SPEED=5
 | `demo_14_target_detection.py` | 开启/关闭目标识别 | dock |
 | `demo_15_emergency.py` | 返航/取消返航及 DRC 应急处置 | dock；DRC 另需 workspace |
 | `demo_16_look_at.py` | GPS Look At | dock、payload、目标坐标 |
-| `demo_17_wayline.py` | 航线下发执行、进度、暂停、继续、取消 | dock、workspace、KMZ |
+| `demo_17_wayline.py` | KMZ 上传、航线下发执行、进度、暂停、继续、取消 | dock、workspace、KMZ |
 
 ## 4. 飞行控制流程
 
@@ -151,20 +151,28 @@ POST /control/api/v1/devices/{sn}/jobs/return_home_cancel
 
 取消返航会使飞机悬停，脚本要求 `YES` 二次确认。若请求超时，先确认 `mode_code` 和现场状态，不要立即重复发送。
 
-### 4.4 航线下发、暂停、继续和取消
+### 4.4 航线上传、下发、暂停、继续和取消
 
-先在 Web 控制台上传可用 KMZ，再运行：
+直接运行，菜单项 6 可把本地 KMZ 上传到航线库（无需先去 Web 控制台）：
 
 ```bash
 ./run.sh demo_17_wayline.py
 ```
 
+上传时可直接输入本地 `.kmz` 路径，或在 `.env` 预设 `YOOX_WAYLINE_KMZ` 后回车使用。
+服务端会校验 KMZ 结构（`wpmz` 模板、UTF-8 编码）与内置的无人机/负载型号枚举，
+型号与当前设备不匹配的 KMZ 无法下发。
+
 | 菜单动作 | REST | 设备方法 |
 |---|---|---|
+| 上传 KMZ 航线文件 | `POST .../waylines/file/upload`（multipart） | —（入库，不下发设备） |
 | 下发并立即执行 | `POST .../flight-tasks` | `flighttask_prepare` + `flighttask_execute` |
 | 暂停执行中任务 | `PUT .../jobs/{job_id}`，`status=0` | `flighttask_pause` |
 | 继续已暂停任务 | `PUT .../jobs/{job_id}`，`status=1` | `flighttask_recovery` |
 | 取消任务 | `DELETE .../jobs?job_id=...` | `flighttask_undo` |
+
+任务类型：Demo 下发的是 **立即任务**（`task_type=0`）。服务端另支持定时（`1`）与
+条件（`2`）任务，需额外的执行时间/电量与存储就绪条件参数，本 Demo 不演示。
 
 状态约束：执行中 `2` 可暂停；已暂停 `6` 可继续；待执行 `1`、执行中 `2`、已暂停 `6` 均可取消；成功 `3`、失败 `5` 不可取消。已取消 `4` 可重复调用取消接口做幂等本地收敛，不会再次下发 `flighttask_undo`。脚本在每次动作前重新读取任务，避免使用过期列表。
 

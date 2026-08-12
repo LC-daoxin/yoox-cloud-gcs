@@ -1,4 +1,11 @@
-"""航线任务全流程：下发执行、进度上报、暂停、继续与取消。
+"""航线任务全流程：上传 KMZ、下发执行、进度上报、暂停、继续与取消。
+
+上传：菜单项 6 把本地 ``.kmz`` 以 multipart 上传到 ``waylines/file/upload``，
+服务端会校验 KMZ 结构（wpmz 模板、无人机/负载型号枚举、UTF-8 编码）。
+
+任务类型：本 Demo 下发的是 **立即任务**（``task_type=0``，prepare 成功后
+立即 execute）。服务端还支持定时（``1``）与条件（``2``）任务，但需额外
+的执行时间/就绪条件参数，不在本 Demo 演示范围内。
 
 REST 接口由当前 GCS 服务端负责转换为 ``flighttask_prepare/execute/pause/
 recovery/undo``。RC 网关的 ``device_list`` 也由服务端统一补齐，Demo 不直接
@@ -7,8 +14,10 @@ recovery/undo``。RC 网关的 ``device_list`` 也由服务端统一补齐，Dem
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
@@ -130,6 +139,40 @@ def _wait_job(
                 return job
         time.sleep(1)
     return None
+
+
+def upload_wayline(token: str) -> bool:
+    """上传本地 KMZ 到航线库（multipart）。后端校验 KMZ 结构与设备型号。"""
+    default = os.getenv("YOOX_WAYLINE_KMZ", "").strip()
+    prompt = f"输入本地 KMZ 路径{f'（回车用 {default}）' if default else ''}> "
+    raw = input(prompt).strip() or default
+    if not raw:
+        print("[!] 未提供 KMZ 路径")
+        return False
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        print(f"[✗] 文件不存在: {path}")
+        return False
+    if path.suffix.lower() != ".kmz":
+        print("[✗] 仅支持 .kmz（KMZ 内需含 wpmz 模板与匹配的无人机/负载型号）")
+        return False
+    print(f"[*] 上传航线文件: {path.name}（{path.stat().st_size} 字节）")
+    try:
+        with path.open("rb") as handle:
+            api_call(
+                token,
+                "POST",
+                f"/wayline/api/v1/workspaces/{WORKSPACE_ID}/waylines/file/upload",
+                action="上传 KMZ 航线文件",
+                files={"file": (path.name, handle, "application/vnd.google-earth.kmz")},
+                timeout=60,
+            )
+    except DemoApiError as exc:
+        print_error_and_hint(exc)
+        # 后端会校验 KMZ 结构（型号枚举、UTF-8、wpmz 模板）；格式不符返回 4xx。
+        return False
+    print("[✓] 上传成功；已加入航线库，可用菜单项 1 下发执行")
+    return True
 
 
 def create_job(token: str, wayline: dict[str, Any]) -> bool:
@@ -395,6 +438,7 @@ def menu(token: str) -> None:
         print("  3. 继续已暂停任务（flighttask_recovery）")
         print("  4. 取消待执行/执行中/已暂停任务；已取消任务可做幂等收敛")
         print("  5. 刷新任务列表")
+        print("  6. 上传 KMZ 航线文件到航线库")
         print("  0. 退出")
         choice_value = input("选择> ").strip()
         try:
@@ -403,7 +447,7 @@ def menu(token: str) -> None:
             if choice_value == "1":
                 waylines = list_waylines(token)
                 if not waylines:
-                    print("[!] 航线库为空，请先在 Web 控制台上传 KMZ")
+                    print("[!] 航线库为空，请先用菜单项 6 上传 KMZ，或在 Web 控制台上传")
                     continue
                 selected = choose(
                     waylines,
@@ -430,6 +474,8 @@ def menu(token: str) -> None:
                     print("  (无任务)")
                 for job in jobs:
                     print(f"  - {_job_line(job)}")
+            elif choice_value == "6":
+                upload_wayline(token)
             else:
                 print("[!] 无效选择")
         except DemoError as exc:
