@@ -107,51 +107,25 @@ git pull --ff-only
 git status --short
 ```
 
-### 4.2 为 Nano 准备 .env
+### 4.2 确认 Nano 配置
 
-从模板复制一份 Nano 专用配置：
+`.env.nano1` 已纳入仓库（`.gitignore` 显式允许），`git pull` 后直接可用，无需从模板复制。
+
+每次构建前，将版本号同步到当前提交短号：
 
 ```bash
-cp .env.example .env.nano1
+export YOOX_VERSION=nano1-$(git rev-parse --short HEAD)
+sed -i '' "s/^YOOX_VERSION=.*/YOOX_VERSION=$YOOX_VERSION/" .env.nano1
 ```
 
-编辑 `.env.nano1`，至少修改以下字段：
+如果 Nano 的局域网 IP 发生变化，同步更新：
 
-```dotenv
-COMPOSE_PROJECT_NAME=yoox-cloud-gcs
-
-# Nano 的局域网 IP
-YOOX_PUBLIC_HOST=172.20.10.4
-
-# 用提交短号作为镜像版本，方便回滚
-YOOX_VERSION=nano1-$(git rev-parse --short HEAD)
+```bash
+sed -i '' "s/^YOOX_PUBLIC_HOST=.*/YOOX_PUBLIC_HOST=<新IP>/" .env.nano1
 ```
-
-> `YOOX_VERSION` 不在 `.env.example` 中，需要手动添加。Compose 默认使用 `local`，
-> 设置独立版本号可以避免与 Mac 本地镜像混淆，也方便回滚。
 
 Nano 是 Linux 主机，**不需要**在 `.env.nano1` 中设置 `YOOX_RTSP_TRANSPORTS`，保持默认
 `udp,tcp`（优先 UDP，UDP 不通时自动回退 TCP）即可。
-
-同时替换所有 `change_me` 和 `replace_with` 值，包括但不限于：
-
-- `YOOX_DB_PASSWORD`、`YOOX_DB_ROOT_PASSWORD`
-- `YOOX_REDIS_PASSWORD`
-- `YOOX_JWT_SECRET`（至少 32 个字符）
-- `YOOX_MQTT_PASSWORD`
-- `YOOX_EMQX_DASHBOARD_PASSWORD`
-- `YOOX_MINIO_SECRET_KEY`
-- `YOOX_RTSP_PASSWORD`
-- `YOOX_CLOUD_APP_ID`、`YOOX_CLOUD_APP_KEY`、`YOOX_CLOUD_APP_LICENSE`
-- `YOOX_GRAFANA_ADMIN_PASSWORD`
-
-以下固定值**不要修改**，否则 preflight 会报错：
-
-```dotenv
-YOOX_MQTT_USERNAME=yoox-cloud
-YOOX_DEVICE_MQTT_USERNAME=pilot
-YOOX_DEVICE_MQTT_PASSWORD=pilot123
-```
 
 确认配置通过预检：
 
@@ -220,10 +194,10 @@ ls -lh /tmp/yoox-nano1-images.tar.gz
 
 ```bash
 scp /tmp/yoox-nano1-images.tar.gz jetson@172.20.10.4:/tmp/
-scp .env.nano1 jetson@172.20.10.4:/tmp/.env.nano1
 ```
 
-> 如果局域网带宽有限，也可以将文件拷贝到 U 盘，再在 Nano 上挂载读取。
+> `.env.nano1` 已在仓库中，Nano 上通过 `git pull` 获取，无需单独传输。
+> 如果局域网带宽有限，也可以将镜像包拷贝到 U 盘，再在 Nano 上挂载读取。
 
 ## 6. Nano 上克隆仓库
 
@@ -274,15 +248,15 @@ docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E 'yoox|mediamtx'
 
 ## 8. Nano 上配置 .env
 
-将 Mac 传过来的 `.env` 放到部署目录：
+`.env.nano1` 已在仓库中，克隆后直接复制使用：
 
 ```bash
-cp -p /tmp/.env.nano1 /home/jetson/1_projects/yoox-cloud-gcs/.env
+cp .env.nano1 /home/jetson/1_projects/yoox-cloud-gcs/.env
 chmod 600 /home/jetson/1_projects/yoox-cloud-gcs/.env
 ```
 
-> 项目 `.gitignore` 已配置 `!.env` 允许提交 `.env` 文件。但部署环境中的 `.env`
-> 含密码和设备凭据，建议保持 `600` 权限，不要将含真实密码的 `.env` 推送到公开仓库。
+> `.env.nano1` 与 `.env` 均已纳入仓库（`.gitignore` 显式允许 `!.env`、`!.env.nano1`），
+> Nano 侧无需额外传输，`git pull` 即可获取最新配置。部署目录下的 `.env` 建议保持 `600` 权限。
 
 确认关键配置：
 
@@ -512,7 +486,7 @@ sed -i '' "s/^YOOX_VERSION=.*/YOOX_VERSION=$YOOX_VERSION/" .env.nano1
 # 构建
 COMPOSE_BAKE=false docker compose --env-file .env.nano1 build api web api-portal mediamtx
 
-# 导出并传输
+# 导出并传输（.env.nano1 已在仓库，无需单独 scp）
 docker save \
   yoox/cloud-gcs-api:$YOOX_VERSION \
   yoox/cloud-gcs-web:$YOOX_VERSION \
@@ -523,7 +497,6 @@ docker save \
 gzip -f /tmp/yoox-nano1-images.tar
 
 scp /tmp/yoox-nano1-images.tar.gz jetson@172.20.10.4:/tmp/
-scp .env.nano1 jetson@172.20.10.4:/tmp/.env.nano1
 ```
 
 ### 13.2 Nano 侧
@@ -532,14 +505,14 @@ scp .env.nano1 jetson@172.20.10.4:/tmp/.env.nano1
 ssh jetson@172.20.10.4
 cd /home/jetson/1_projects/yoox-cloud-gcs
 
-# 拉取最新配置文件
+# 拉取最新配置文件（含 .env.nano1）
 git pull --ff-only
 
 # 加载新镜像
 gunzip -c /tmp/yoox-nano1-images.tar.gz | docker load
 
-# 更新 .env
-cp -p /tmp/.env.nano1 .env
+# 更新 .env（.env.nano1 随 git pull 同步，直接覆盖）
+cp .env.nano1 .env
 chmod 600 .env
 
 # 验证配置
