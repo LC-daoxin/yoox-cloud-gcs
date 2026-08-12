@@ -327,6 +327,13 @@ cd /home/jetson/1_projects/yoox-cloud-gcs
 # 若 compose.nano.yml 不存在，先拉取最新仓库文件
 git pull --ff-only
 
+# pull 可能更新了 .env.nano1 中的 YOOX_VERSION，必须重新同步到 .env
+cp .env.nano1 .env && chmod 600 .env
+
+# 确认 .env 版本号与已加载镜像一致，否则 Compose 会尝试 build（见 §16.9）
+grep YOOX_VERSION .env
+docker image ls --format '{{.Repository}}:{{.Tag}}' | grep yoox
+
 docker compose -f compose.yml -f compose.nano.yml --env-file .env up \
   -d \
   --remove-orphans \
@@ -782,6 +789,48 @@ docker inspect <容器名> --format '{{.State.OOMKilled}} {{.State.ExitCode}}'
 - 8GB Nano：检查 YOLOv5 是否占用过多内存，适当降低 YOLOv5 batch size。
 - 4GB Nano：按第 10.4 节进一步压低 GCS 各服务内存上限。
 - 临时方案：去掉 `compose.nano.yml` 中的 `memory` limit（不推荐，会导致整机卡顿）。
+
+### 16.9 Compose 触发 build 并报网络超时（`dial tcp ... i/o timeout`）
+
+**现象**：`docker compose up` 输出 `[+] Building`，随后报错类似：
+
+```
+failed to solve: DeadlineExceeded: maven:3.9-eclipse-temurin-17: failed to resolve source metadata ...: i/o timeout
+```
+
+**根本原因**：`.env` 中 `YOOX_VERSION` 与已加载镜像的 tag 不匹配，Compose 找不到镜像，
+回退到构建流程，但 Nano 无法访问 Docker Hub 拉取构建基础镜像。
+
+最常见触发场景：`git pull` 更新了仓库中的 `.env.nano1`（含新版本号），
+但忘记重新复制到 `.env`，导致 `.env` 里的 `YOOX_VERSION` 仍是旧版本。
+
+**诊断**：
+
+```bash
+# 查看 .env 中的版本号
+grep YOOX_VERSION .env
+
+# 查看已加载的镜像 tag
+docker image ls --format '{{.Repository}}:{{.Tag}}' | grep yoox
+```
+
+两者必须完全一致。
+
+**修复**：
+
+```bash
+# 将 .env.nano1 重新同步到 .env
+cp .env.nano1 .env
+chmod 600 .env
+grep YOOX_VERSION .env
+
+# 再次确认镜像 tag 与版本号匹配后，重新执行启动命令
+docker compose -f compose.yml -f compose.nano.yml --env-file .env up \
+  -d --remove-orphans --wait --wait-timeout 300
+```
+
+如果 `.env.nano1` 中的版本号与 Mac 传输的镜像 tag 也不一致（例如 Mac 侧用了更新的提交号
+但忘记 `scp` 新镜像），则需要重新在 Mac 上构建、导出并传输镜像。
 
 ## 17. 完成标准
 
