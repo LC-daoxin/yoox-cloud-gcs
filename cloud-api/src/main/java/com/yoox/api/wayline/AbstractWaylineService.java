@@ -164,22 +164,26 @@ public abstract class AbstractWaylineService {
     }
 
     /**
-     * return_home 是网关级整机指令：官方文档只发送 method=return_home、data=null 到
-     * {@code thing/product/{gateway_sn}/services}，不带 device_list。RC 网关已知道自己
-     * 的无人机，额外的 device_list 会让固件把它当作不支持的「无人机直达」指令静默丢弃，
-     * 从而永不回复 services_reply，云端表现为 211001 超时。因此 RC 与普通网关一样走
-     * 网关级发布，仅保留独立方法以绕开 returnHomeCancel 上的 {@code @CloudSDKVersion(exclude=RC)}。
+     * EVO RC 实测（固件 1.9.1.203，2026-08-12 MQTT 直连 A/B 验证）：return_home 必须
+     * 发送 data={}（空对象）并携带 device_list，固件才回复 services_reply；
+     * data:null（无论带不带 device_list）都会被静默丢弃 → 211001。
+     * 离线文档"data 为 null、不带 device_list"的说法与实机行为不符，以实测为准。
      */
     public TopicServicesResponse<ServicesReplyData> returnHomeRc(GatewayManager gateway) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
-                WaylineMethodEnum.RETURN_HOME.getMethod());
+                WaylineMethodEnum.RETURN_HOME.getMethod(),
+                Map.of(),
+                List.of(Map.of("sn", gateway.getDroneSn())));
     }
 
+    // 同 returnHomeRc：EVO RC 要求 data={} + device_list。
     public TopicServicesResponse<ServicesReplyData> returnHomeCancelRc(GatewayManager gateway) {
         return servicesPublish.publish(
                 gateway.getGatewaySn(),
-                WaylineMethodEnum.RETURN_HOME_CANCEL.getMethod());
+                WaylineMethodEnum.RETURN_HOME_CANCEL.getMethod(),
+                Map.of(),
+                List.of(Map.of("sn", gateway.getDroneSn())));
     }
 
     @ServiceActivator(inputChannel = ChannelName.INBOUND_REQUESTS_FLIGHTTASK_RESOURCE_GET, outputChannel = ChannelName.OUTBOUND_REQUESTS)

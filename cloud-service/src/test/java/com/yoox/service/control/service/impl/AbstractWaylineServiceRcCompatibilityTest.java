@@ -14,6 +14,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.List;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.Mockito.verify;
 
@@ -44,5 +47,25 @@ class AbstractWaylineServiceRcCompatibilityTest {
         assertDoesNotThrow(() -> waylineService.returnHome(rcGateway));
 
         verify(servicesPublish).publish(RC_SN, "return_home");
+    }
+
+    /**
+     * EVO RC 实测（2026-08-12 A/B）：return_home 必须 data={} + device_list 才有回复；
+     * data:null 的任何写法都被固件静默丢弃（211001）。
+     */
+    @Test
+    void rcReturnHomeRcSendsEmptyDataWithDeviceList() {
+        assertDoesNotThrow(() -> waylineService.returnHomeRc(rcGateway));
+
+        verify(servicesPublish).publish(
+                RC_SN, "return_home", Map.of(), List.of(Map.of("sn", "test-aircraft")));
+    }
+
+    @Test
+    void rcReturnHomeCancelRcSendsEmptyDataWithDeviceList() {
+        assertDoesNotThrow(() -> waylineService.returnHomeCancelRc(rcGateway));
+
+        verify(servicesPublish).publish(
+                RC_SN, "return_home_cancel", Map.of(), List.of(Map.of("sn", "test-aircraft")));
     }
 }

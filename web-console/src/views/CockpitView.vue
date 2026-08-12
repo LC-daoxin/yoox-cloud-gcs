@@ -301,7 +301,7 @@ const telemetry    = reactive({
   satellites: 0, rtkNumber: 0, gpsQuality: 0, gpsFixed: 0, battery: 0,
   heading: 0, pitch: 0, roll: 0, latitude: 0, longitude: 0,
   rcLatitude: 0, rcLongitude: 0,
-  gimbalReported: false, gimbalPitch: 0,
+  gimbalReported: false, gimbalPitch: 0, gimbalYaw: 0,
   zoomFactor: 1, irZoomFactor: 1,
   remainFlightTime: -1, remainWorkTime: -1, windSpeed: -1, windDirection: -1,
   modeCode: -1, gearLevel: -1, rcLostAction: -1,
@@ -947,7 +947,7 @@ const gimbalResetOptions = [
 // camera_screen_drag 每次调用会让云台持续运动一小段时间。使用低速档，避免一次
 // 点按就快速扫到俯仰限位；长按仍通过周期刷新实现连续、可控的微调。
 const payloadGimbalPitchSpeed = 0.8
-const payloadGimbalYawSpeed = 0.3
+const payloadGimbalYawSpeed = 0.6
 const payloadZoomDisplay = computed(() =>
   payloadZoomTarget.value ?? activeZoomFactor.value)
 const filteredInteractionLogs = computed(() => {
@@ -1034,7 +1034,7 @@ function syncSelections() {
         satellites: 0, rtkNumber: 0, gpsQuality: 0, gpsFixed: 0, battery: 0,
         heading: 0, pitch: 0, roll: 0, latitude: 0, longitude: 0,
         rcLatitude: 0, rcLongitude: 0,
-        gimbalReported: false, gimbalPitch: 0,
+        gimbalReported: false, gimbalPitch: 0, gimbalYaw: 0,
         zoomFactor: 1, irZoomFactor: 1,
         remainFlightTime: -1, remainWorkTime: -1,
         taskRemainingDistance: -1, taskRemainingTime: -1, pointFlightActive: false,
@@ -1225,7 +1225,7 @@ async function selectDock(sn: string) {
       satellites: 0, rtkNumber: 0, gpsQuality: 0, gpsFixed: 0, battery: 0,
       heading: 0, pitch: 0, roll: 0, latitude: 0, longitude: 0,
       rcLatitude: 0, rcLongitude: 0,
-      gimbalReported: false, gimbalPitch: 0,
+      gimbalReported: false, gimbalPitch: 0, gimbalYaw: 0,
       zoomFactor: 1, irZoomFactor: 1,
       remainFlightTime: -1, remainWorkTime: -1,
       taskRemainingDistance: -1, taskRemainingTime: -1, pointFlightActive: false,
@@ -1772,11 +1772,19 @@ function applyTelemetry(message: DeviceTelemetry) {
     payloadTelemetry?.gimbal_pitch ?? payloadTelemetry?.gimbalPitch ??
     selectedPayload?.gimbal_pitch ?? selectedPayload?.gimbalPitch ??
     selectedCamera?.gimbal_pitch ?? selectedCamera?.gimbalPitch)
+  const gimbalYaw = optionalTelemetryNumber(
+    payloadTelemetry?.gimbal_yaw ?? payloadTelemetry?.gimbalYaw ??
+    selectedPayload?.gimbal_yaw ?? selectedPayload?.gimbalYaw ??
+    selectedCamera?.gimbal_yaw ?? selectedCamera?.gimbalYaw)
   // 网关 OSD 与飞行器 OSD 会交替到达；网关包不含云台字段，不能因此清空
   // 飞行器负载节点刚上报的角度。设备切换/离线时再统一重置。
   if (gimbalPitch !== undefined) {
     telemetry.gimbalReported = true
     telemetry.gimbalPitch = gimbalPitch
+  }
+  // gimbal_yaw 为绝对方位角（与 attitude_head 同基准），Look At 兼容模式的闭环反馈。
+  if (gimbalYaw !== undefined) {
+    telemetry.gimbalYaw = gimbalYaw
   }
   // 可见光与红外各自维护倍率，避免切换镜头后沿用另一镜头的范围与刻度。
   telemetry.zoomFactor = Math.max(1, Math.min(160, telemetryNumber(
@@ -2348,9 +2356,8 @@ async function startWaylineTask() {
     if (selectedDock.value?.device_sn !== targetDockSn || !selectedAircraftOnline.value) {
       throw new Error('执行设备已离线或发生变化，航线任务未下发')
     }
-    if (operationPanelState.value !== 'ground') {
-      throw new Error('飞机状态已变化，只有待机状态可开始航线任务')
-    }
+    // 不再限制仅待机可下发：EVO RC 支持手动飞行中直接执行航线（已有任务时仍由
+    // waylineTaskBlockedReason 的 task 状态拦截防止重复下发）。
 
     await post(`/wayline/api/v1/workspaces/${cockpitWorkspaceId}/flight-tasks`, {
       name: `${file.name}-座舱任务`.slice(0, 64),
@@ -3762,6 +3769,84 @@ async function runPayloadGimbalLoop() {
   }
 }
 
+// ---- Look At 兼容模式 ----
+// EVO RC 固件（1.9.1.203）未实现 camera_look_at（9 种报文变体实测均被静默丢弃，
+// 而同链路 camera_screen_drag/payload_authority_grab 秒回）。改用 OSD 的
+// gimbal_yaw（绝对方位角）/gimbal_pitch 做反馈，camera_screen_drag 速度闭环
+// 把云台转向目标 GPS 点，效果等价于原生 Look At。
+let lookAtGeneration = 0
+
+function cancelLookAtCompat() {
+  lookAtGeneration += 1
+}
+
+function wrapDeg180(angle: number) {
+  return ((angle + 180) % 360 + 360) % 360 - 180
+}
+
+function bearingToTarget(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const toRad = Math.PI / 180
+  const dLng = (lng2 - lng1) * toRad
+  const y = Math.sin(dLng) * Math.cos(lat2 * toRad)
+  const x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) -
+    Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos(dLng)
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
+}
+
+function horizontalDistanceMeters(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const toRad = Math.PI / 180
+  const dLat = (lat2 - lat1) * toRad
+  const dLng = (lng2 - lng1) * toRad
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLng / 2) ** 2
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+async function runLookAtCompatLoop(target: { latitude: number; longitude: number; height: number }) {
+  const generation = ++lookAtGeneration
+  const gatewaySn = dockSn.value
+  const payloadIndex = selectedSource.value?.cameraIndex
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    if (generation !== lookAtGeneration) return
+    if (dockSelectionPending.value || dockSn.value !== gatewaySn ||
+        selectedSource.value?.cameraIndex !== payloadIndex) return
+    // 用户按下云台方向键即接管，兼容循环让位。
+    if (payloadGimbalMoving()) return
+    const bearing = bearingToTarget(
+      telemetry.latitude, telemetry.longitude, target.latitude, target.longitude)
+    const distance = Math.max(
+      horizontalDistanceMeters(
+        telemetry.latitude, telemetry.longitude, target.latitude, target.longitude),
+      0.5)
+    // 飞机椭球高（elevation）无 RTK 时上报 0，此时退化为相对起飞点高度差。
+    const aircraftAltitude = telemetry.altitude !== 0 ? telemetry.altitude : telemetry.height
+    const pitchTarget = clamp(
+      Math.atan2(target.height - aircraftAltitude, distance) * 180 / Math.PI, -90, 30)
+    const yawError = wrapDeg180(bearing - telemetry.gimbalYaw)
+    const pitchError = pitchTarget - telemetry.gimbalPitch
+    if (Math.abs(yawError) < 1.5 && Math.abs(pitchError) < 1.5) {
+      showCameraActionTip(`Look At 完成：云台已对准目标（方位 ${bearing.toFixed(0)}°/俯仰 ${pitchTarget.toFixed(0)}°）`)
+      return
+    }
+    // 比例控制：远快近慢；死区内停轴防止 OSD 滞后导致震荡。
+    const speedFor = (error: number) =>
+      Math.abs(error) < 0.8 ? 0 : +clamp(error * 0.4, -4, 4).toFixed(2)
+    const sent = await queuePayloadCommand('camera_screen_drag', {
+      locked: false,
+      pitch_speed: speedFor(pitchError),
+      yaw_speed: speedFor(yawError)
+    })
+    if (!sent || generation !== lookAtGeneration) return
+    // OSD 反馈约 1 Hz，节流等待新遥测后再修正。
+    await delay(300)
+  }
+  if (generation === lookAtGeneration) {
+    error.value = 'Look At 兼容模式超时（20s）未收敛，请重试或手动微调云台'
+  }
+}
+
 function syncPayloadGimbal() {
   if (!payloadGimbalLoop) payloadGimbalLoop = runPayloadGimbalLoop()
 }
@@ -3823,6 +3908,7 @@ async function adjustPayloadZoomFromShortcut(direction: -1 | 1) {
 
 function startPayloadControl(code: PayloadShortcutCode) {
   if (dockSelectionPending.value || !hasPayloadAuthority.value || payloadPressed.has(code)) return
+  cancelLookAtCompat()
   payloadPressed.add(code)
   syncPayloadGimbal()
   const control = payloadShortcutControls.find((item) => item.code === code)
@@ -3835,6 +3921,7 @@ function stopPayloadControl(code: PayloadShortcutCode) {
 }
 
 function releasePayloadControls() {
+  cancelLookAtCompat()
   const wasMovingGimbal = payloadPressed.size > 0
   payloadPressed.clear()
   if (wasMovingGimbal) syncPayloadGimbal()
@@ -5011,14 +5098,17 @@ async function submitMapTarget() {
       if (dockSelectionPending.value || selectedDock.value?.device_sn !== targetDockSn) {
         throw new Error('设备已切换，已取消 Look At')
       }
-      const succeeded = await queuePayloadCommand('camera_look_at', {
-        // 与 camera_screen_drag 一致显式携带 locked=false：只转云台、不联动机头。
-        locked: false,
+      // 固件未实现 camera_look_at（实测 9 种报文变体均被静默丢弃），
+      // 改走 camera_screen_drag 闭环兼容模式（runLookAtCompatLoop）。
+      if (!telemetry.gimbalReported) {
+        throw new Error('尚未收到云台角度遥测，无法执行 Look At，请稍候重试')
+      }
+      void runLookAtCompatLoop({
         latitude: Number(mapTarget.latitude.toFixed(6)),
         longitude: Number(mapTarget.longitude.toFixed(6)),
         height: Number(mapTarget.height.toFixed(1))
       })
-      if (succeeded) showCameraActionTip('Look At 指令已受理')
+      showCameraActionTip('Look At 兼容模式：正在转动云台对准目标…')
     }
   } catch (reason) {
     const restored = mode === 'flyto' && pointFlightIdentityPending && targetDockSn === dockSn.value
@@ -6259,7 +6349,6 @@ function toggleFullscreen() {
                 {{ returnHomePending ? '发送中…' : '返航' }}
               </button>
               <button
-                v-if="telemetry.modeCode === 9"
                 class="deck-btn btn-cancel"
                 :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
                 @click="cancelReturnHome">
@@ -6322,7 +6411,6 @@ function toggleFullscreen() {
                 {{ returnHomePending ? '发送中…' : '返航' }}
               </button>
               <button
-                v-if="telemetry.modeCode === 9"
                 class="deck-btn btn-cancel"
                 :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
                 @click="cancelReturnHome">
@@ -6379,7 +6467,6 @@ function toggleFullscreen() {
                 {{ returnHomePending ? '发送中…' : '返航' }}
               </button>
               <button
-                v-if="telemetry.modeCode === 9"
                 class="deck-btn btn-cancel"
                 :disabled="dockSelectionPending || state === 'connecting' || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
                 @click="cancelReturnHome">
