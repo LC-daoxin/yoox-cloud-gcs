@@ -139,13 +139,9 @@ def main() -> int:
   1. 一键返航       HTTP return_home
   2. 取消返航       HTTP return_home_cancel（悬停）
   3. 急停悬停       DRC drone_emergency_stop
-  4. 紧急降落       DRC drc_emergency_landing
-  5. 强制降落       DRC drc_force_landing（忽略障碍物）
   e. 建立 DRC 专用链路并启动心跳
   x. 退出 DRC
   q. 退出脚本
-
-  降落类指令互斥；设备回复成功只代表调用成功，不代表已经落地。
 """)
     try:
         while True:
@@ -165,14 +161,6 @@ def main() -> int:
                     session = drc.require_session()
                     if session and confirm("确认急停并原地悬停？"):
                         session.emergency_stop()
-                elif command == "4":
-                    session = drc.require_session()
-                    if session and confirm("确认紧急降落？"):
-                        session.emergency_landing()
-                elif command == "5":
-                    session = drc.require_session()
-                    if session and confirm("高风险：确认忽略障碍物强制降落？"):
-                        session.force_landing()
                 else:
                     print("[!] 未知操作")
             except DemoError as exc:

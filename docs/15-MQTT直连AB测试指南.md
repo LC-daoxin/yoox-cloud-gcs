@@ -23,26 +23,61 @@
 - 本地栈运行中（`docker compose ps` 确认 emqx healthy）；
 - MQQT 凭据取自项目根 `.env` 的 `YOOX_MQTT_USERNAME/PASSWORD`（脚本内置默认值与本地部署一致，生产环境请覆盖）；
 - Python 环境可用 `docs/python-demo/.venv/bin/python`（已装 paho-mqtt）；
-- **安全前提**：测试会真实触发指令。`return_home`/`fly_to_point`/`landing` 类指令会实际改变飞行，测试前确认飞机悬停或在地面；`camera_*` 与 `*_grab` 类指令无飞行风险。
+- **安全前提**：测试会真实触发指令。`return_home`/`fly_to_point`/`landing` 会改变飞行；`camera_look_at` 的 `locked:true` 可能联动机身航向，不能按普通相机参数测试看待。应由有资质人员在受控场地、满足设备手册安全条件时执行；当前无设备时只用 `--dry-run`。
 
 ## 3. 工具用法
 
-```bash
-# 1. 通用探测：对指定 method 发「空 data + device_list / 无 device_list」两变体 + 对照指令
-docs/python-demo/.venv/bin/python scripts/mqtt-services-abtest.py --method return_home
+脚本必须显式选择 `--dry-run`（只打印、不连接 MQTT）或 `--execute`（真实发布）。
+默认读取项目根 `.env` 和 `docs/python-demo/.env`；命令行参数优先，也可用
+`--env-file` 指定其他配置文件。不会把 MQTT 密码打印或写入结果文件。
 
-# 2. 自定义变体（字段全组合、子飞机 topic、空 data 与否）
+```bash
+# 1. 当前无设备时：离线生成 Look At 的完整 12 组字段矩阵。
+# 2 payload_index × 3 locked（缺省/false/true）× 2 device_list；
+# 前后各有一个 camera_screen_drag 对照报文，总计 14 条，发布数必须为 0。
 docs/python-demo/.venv/bin/python scripts/mqtt-services-abtest.py \
   --method camera_look_at \
-  --variant '{"data": {"latitude": 39.04187, "longitude": 117.724655, "height": 10}}' \
-  --variant '{"data": {"payload_index": "10806-0-0", "latitude": 39.04187, "longitude": 117.724655, "height": 10}}' \
-  --variant '{"data": {"latitude": 39.04187, "longitude": 117.724655, "height": 10}, "drone_topic": true}'
+  --gateway TEST_GATEWAY --drone TEST_DRONE \
+  --payload-index 10806-0-0 \
+  --latitude 39.04187 --longitude 117.724655 --height 30 \
+  --dry-run
 
-# 3. 设备 SN / broker 不同时覆盖默认值
-... --gateway TH-xxx --drone 1748xxx --host 127.0.0.1
+# 2. 真机接入且完成飞行安全确认后，替换下方 SN 占位符并使用 --execute。
+# 使用真实椭球高，不要传相对起飞点高度；默认只向网关 topic 发 12 组。
+docs/python-demo/.venv/bin/python scripts/mqtt-services-abtest.py \
+  --method camera_look_at \
+  --gateway TH-xxx --drone 1748xxx \
+  --payload-index 10806-0-0 \
+  --latitude 39.04187 --longitude 117.724655 --height 30 \
+  --host 127.0.0.1 --execute --output /tmp/look-at-abtest.json
+
+# 3. 如需额外验证子飞机下发 topic，把 12 组在两个 topic 各跑一遍（共 24 组）。
+... --method camera_look_at --topic-mode both ... --execute
+
+# 4. 飞机在空中时应按用例 ID 分阶段测试，避免直接执行 locked=true。
+# 可重复传 --case-id；前后 camera_screen_drag 对照仍会保留。
+... --method camera_look_at --case-id LA-G-P1-L0-D1 ... --execute
+
+# 要严格排除“尚未取得负载控制权”，可在同一 MQTT 连接中先抢权：
+... --method camera_look_at --case-id LA-G-P1-L0-D1 \
+  --grab-payload-authority --control-position before ... --execute
+
+# 5. 通用 method 默认仍生成 data={} × device_list 有/无两组。
+... --method return_home ... --execute
 ```
 
-变体 JSON 支持的键：`data`（null 或对象）、`no_device_list: true`（去掉 device_list）、`drone_topic: true`（发到子飞机 topic）。每个变体默认等回复 4 秒（`--wait` 可调）。
+自动矩阵的用例 ID 形如 `LA-G-P1-L0-D1`：`G/D` 表示网关/子飞机 topic，
+`P0/P1` 表示无/有 `payload_index`，`LX/L0/L1` 表示 `locked` 缺省/false/true，
+`D0/D1` 表示无/有 `device_list`。变体 JSON 支持 `data`（null 或对象）、
+`device_list`（bool）、`no_device_list: true`、`topic: gateway|drone`，以及用于
+探测 `need_reply` 等字段的 `top_level` 对象。每组默认等待 4 秒（`--wait` 可调）。
+
+脚本会等待 MQTT `CONNACK` 和两个 `services_reply` topic 的 `SUBACK` 后才发布，
+并按 `tid + bid` 关联回复。若只有 `tid` 匹配但 `bid` 缺失/错误，会单独报告
+`bid-mismatch`；当前后端同样会拒绝这种回复，最终仍可能表现为 211001。只有
+前后两个对照都收到 `method/tid/bid` 匹配且 `result=0` 的回复，脚本才认为本轮
+链路与权限基线成立；目标指令只要收到正确关联的回复，即使 result 非零，也能
+证明该 method 没有被静默丢弃，下一步应按 result 排查业务条件。
 
 ## 4. 实测记录：return_home（2026-08-12）
 
@@ -64,6 +99,11 @@ docs/python-demo/.venv/bin/python scripts/mqtt-services-abtest.py \
 
 **背景**：Look At 指令 211001。云端已按历史教训补齐 `payload_index`/`locked`/device_list，仍零回复。为排除报文因素，对字段、topic、编码方式逐一排列组合。
 
+> 源码校正：本仓库旁的原始 `Autel-Cloud-API` 中，`CameraLookAtRequest` 实际包含且
+> `@NotNull` 要求 `payload_index` 与 `locked`；其 `cameraLookAt` 方法还明确标注
+> `exclude = GatewayTypeEnum.RC`。因此“道通 Look At 没有这两个字段、支持 RC”不能
+> 由这份 SDK 源码推出。下表是特定 RC 固件的历史实测记录，不等同于全部道通产品。
+
 | # | data 字段组合 | device_list | 下发 topic | 回复 |
 |---|---|---|---|---|
 | A | 仅 `latitude/longitude/height`（纯文档格式） | ✔ | 网关 | ❌ |
@@ -80,7 +120,30 @@ docs/python-demo/.venv/bin/python scripts/mqtt-services-abtest.py \
 
 **结论**：9 种 `camera_look_at` 变体**全部**被静默丢弃，而同一 MQTT 链路、同一秒发出的两组对照指令均秒回。**排除报文/权限/链路因素后，结论为 RC 固件 1.9.1.203 未实现 camera_look_at**，云端任何格式改造均无效。
 
-**落地**：前端不再下发 `camera_look_at`，改用 `camera_screen_drag` 速度闭环兼容模式（`runLookAtCompatLoop`）：OSD `gimbal_yaw`/`gimbal_pitch` 做反馈、目标 GPS 算方位/俯仰、比例控制收敛到 1.5° 内。
+当前脚本已把核心三维字段补成严格的 12 组笛卡尔积。以后复测应保存脚本汇总和
+设备/RC 固件版本；在对照组未回复时，不得把目标组零回复归因于固件不支持。
+
+**当前策略**：历史上曾因该结果把前端降级为 `camera_screen_drag` 闭环兼容；现已按操作要求恢复原生 `camera_look_at`。地图 Look At 会发送 `payload_index`、`locked:false`、目标经纬度和椭球高；RC 分支由后端补顶层 `device_list`。若目标固件行为仍与上述历史记录一致，界面会继续收到 211001，此时应使用本文脚本复测并保存固件版本与汇总结果。
+
+### 5.1 RC 固件 1.9.1.217 复测（2026-08-14）
+
+飞机悬停期间仅执行了不会明确联动机身的安全子矩阵，未发送 `locked:true`：
+
+- 网关 `services` Topic；当前实际飞机与 `payload_index=10806-0-0`；
+- `payload_index` 有/无 × `locked` 缺省/false × `device_list` 有/无，共 8 组；
+- 8 组 `camera_look_at` 全部在 2–4 秒窗口内无同 `tid` 回复；
+- 每批前后 `camera_screen_drag` 零速度对照均返回 `result=0`，延迟 30–309 ms；
+- 又在同一 MQTT 连接内按顺序发送 `payload_authority_grab` → 零速度
+  `camera_screen_drag` → 标准 `camera_look_at`；前两条分别在 205 ms、38 ms
+  返回 `result=0`，而携带 `payload_index`、`locked:false`、`device_list` 的
+  Look At 在 4 秒内仍无同 `tid` 回复；
+- 云台 OSD 未显示 Look At 动作，飞机保持悬停。
+
+因此在 RC 固件 `1.9.1.217` 上再次确认：链路、Topic、负载索引和负载控制权均正常，
+但 `camera_look_at` 被固件静默丢弃。结合原始 SDK 的
+`@CloudSDKVersion(... exclude = GatewayTypeEnum.RC)`，**当前 RC 场景不存在能够成功的
+`camera_look_at` JSON 写法**。要实现地图 Look At，只能使用
+`camera_screen_drag` + 云台 OSD 角度反馈闭环、改用 SDK 支持的非 RC 网关，或等待固件新增该 method。
 
 ## 6. 判定流程总结
 

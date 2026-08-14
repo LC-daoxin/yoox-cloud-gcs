@@ -16,8 +16,6 @@ DRC 下行指令（thing/product/{sn}/drc/down）：
   | heart_beat            | {seq, timestamp}              | 心跳，必须 1 秒一次         |
   | drone_control         | {seq,x,y,h,w,freq,delay_time} | 摇杆飞行控制                |
   | drone_emergency_stop  | {}                            | 急停（立即刹停并悬停）      |
-  | drc_emergency_landing | {}                            | 紧急降落（避障+识别二维码） |
-  | drc_force_landing     | {}                            | 强制降落（忽略障碍物）      |
 
 DRC 上行消息（thing/product/{sn}/drc/up）：
   | method        | 说明                                              |
@@ -645,26 +643,6 @@ class DrcSession:
         if self.publish("drone_emergency_stop", {}):
             print("[!] 已发送急停指令 drone_emergency_stop（原地悬停）")
 
-    def emergency_landing(self):
-        """
-        紧急降落 drc_emergency_landing
-        会自动避障，并识别二维码降落点后降落。
-        注意：不要与 drc_force_landing 混用。
-        """
-        if self.publish("drc_emergency_landing", {}):
-            print("[!] 已发送紧急降落指令 drc_emergency_landing（避障 + 二维码识别降落）")
-            print("    回复将出现在 thing/product/{sn}/services_reply，result=0 表示成功")
-
-    def force_landing(self):
-        """
-        强制降落 drc_force_landing
-        不考虑障碍物，原地直接下降。
-        注意：不要与 drc_emergency_landing 混用。
-        """
-        if self.publish("drc_force_landing", {}):
-            print("[!] 已发送强制降落指令 drc_force_landing（忽略障碍物，直接下降）")
-            print("    回复将出现在 thing/product/{sn}/services_reply，result=0 表示成功")
-
     def joystick(self, x: float = 0, y: float = 0, h: float = 0, w: float = 0):
         """
         飞行控制摇杆 drone_control
@@ -786,7 +764,7 @@ def main() -> int:
 
         print("\nDRC 飞行指令（速度单位 m/s，偏航单位 度/s）：")
         print("  fwd/back/left/right/up/down/yaw <n>；hover 悬停；ping 查看心跳；q 退出")
-        print("  stop 急停悬停；land 紧急降落；fland 强制降落（降落类指令不要混用）\n")
+        print("  stop 急停悬停\n")
 
         while True:
             cmd = input("DRC指令: ").strip().lower().split()
@@ -804,12 +782,6 @@ def main() -> int:
                       else "  控制链路: 锁定（等待当前会话双帧零杆 ACK）")
             elif action == "stop":
                 session.emergency_stop()
-            elif action == "land":
-                if input("  [!] 确认紧急降落（避障+二维码识别）？输入 YES: ").strip() == "YES":
-                    session.emergency_landing()
-            elif action == "fland":
-                if input("  [!!] 确认强制降落（忽略障碍物）？输入 YES: ").strip() == "YES":
-                    session.force_landing()
             elif action == "hover":
                 session.joystick()
             elif action in {"up", "down", "fwd", "back", "left", "right", "yaw"}:

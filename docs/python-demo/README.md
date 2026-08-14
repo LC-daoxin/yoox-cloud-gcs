@@ -84,6 +84,8 @@ YOOX_TARGET_MAX_SPEED=5
 | `demo_15_emergency.py` | 返航/取消返航及 DRC 应急处置 | dock；DRC 另需 workspace |
 | `demo_16_look_at.py` | GPS Look At | dock、payload、目标坐标 |
 | `demo_17_wayline.py` | KMZ 上传、航线下发执行、进度、暂停、继续、取消 | dock、workspace、KMZ |
+| `demo_18_continuous_landing.py` | DRC 持续下降至待机，带 ACK/OSD/归零闭环 | dock、drone、workspace |
+| `demo_19_return_home.py` | 一键返航/取消返航，OSD 旁路监视 mode_code 确认 | dock；监视另需 MQTT |
 
 ## 4. 飞行控制流程
 
@@ -139,7 +141,31 @@ YOOX_TARGET_MAX_SPEED=5
 
 ### 4.3 一键返航与取消返航
 
-可在 `demo_09_dock_control.py` 或 `demo_15_emergency.py` 使用：
+专用脚本 `demo_19_return_home.py`，也可在 `demo_09_dock_control.py` 或
+`demo_15_emergency.py` 使用：
+
+```bash
+./run.sh demo_19_return_home.py rth     # 一键返航
+./run.sh demo_19_return_home.py cancel  # 取消返航（原地悬停）
+./run.sh demo_19_return_home.py watch   # 只监视当前 mode_code，不下发指令
+```
+
+脚本先 `flight_authority_grab`，再单次调用
+`POST .../{sn}/jobs/return_home`（或 `return_home_cancel`），随后通过 MQTT
+旁路监视飞机 OSD 的 `mode_code`：返航期望进入 `9`（RETURN_AUTO）并最终回到
+`0`；取消返航期望离开 `9` 转为悬停。
+
+MQTT 报文要点（2026-08-12 A/B 实测，见 `docs/15-MQTT直连AB测试指南.md`）：
+EVO RC 固件要求 `return_home`/`return_home_cancel` 发送 `data:{}`（空对象）
+并携带 `device_list:[{sn:无人机SN}]`，`data:null` 的任何写法都会被静默丢弃
+并报 211001。服务端 `returnHomeRc/returnHomeCancelRc` 已按实测格式实现，
+Demo 只走 REST，无需自行拼装机载指令。
+
+HTTP `code=0` 只代表设备接受调用，不代表已返航、悬停或落地，必须继续观察
+`mode_code` 和现场。取消返航会使飞机悬停，脚本要求 `YES` 二次确认。若请求
+超时，先确认 `mode_code` 和现场状态，不要立即重复发送。
+
+涉及的 REST 端点：
 
 ```text
 POST /control/api/v1/devices/{sn}/authority/flight
@@ -147,9 +173,7 @@ POST /control/api/v1/devices/{sn}/jobs/return_home
 POST /control/api/v1/devices/{sn}/jobs/return_home_cancel
 ```
 
-当前服务端也会在返航/取消返航内部确认控制权，并为 RC 网关显式寻址子设备；Demo 仍先显式抢权，以便在改变航迹前得到清晰的错误。HTTP `code=0` 只代表设备接受调用，不代表已经返航、悬停或落地，必须继续观察 OSD 和现场。
-
-取消返航会使飞机悬停，脚本要求 `YES` 二次确认。若请求超时，先确认 `mode_code` 和现场状态，不要立即重复发送。
+服务端也会在返航/取消返航内部再次确认控制权（与 Web 控制台一致的冗余保护）。
 
 ### 4.4 航线上传、下发、暂停、继续和取消
 
@@ -183,7 +207,15 @@ POST /control/api/v1/devices/{sn}/jobs/return_home_cancel
 `demo_11_livestream.py` 默认 `VIDEO_QUALITY=2`（标清），3 为高清。设备发布凭证由服务端配置，Demo 默认不传自定义 `url`，以便后端复用已有 MediaMTX publisher。开始直播返回成功不等于已有媒体帧；脚本使用不含发布凭据的 RTSP 播放路径做 `ffprobe` 探测，错误输出会脱敏。无论探测结果如何，脚本都不会在开始前自动停止现有 publisher；只有设备明确返回“直播已开始”、MediaMTX 又确认无媒体时，才会要求操作者输入 `YES` 后执行一次停止再开始。未安装 `ffprobe` 时状态是“无法探测”而不是“无流”。菜单 6 只对可安全切回的 `normal/wide/zoom/ir` 镜头执行临时切换恢复，`thermal` 等不支持类型会在任何镜头切换前终止。
 
 DRC 必须使用 `/drc/connect` 返回的专用 Broker 凭证和 `/drc/enter` 返回的 pub/sub ACL，不能把 DRC 指令直接发到普通 MQTT 连接。`demo_12` 和 `demo_15` 会等待 MQTT `CONNACK` 与订阅 `SUBACK`，随后立即发送心跳和连续两帧全零 `drone_control` 探针（`seq=0→1`）。只有当前 DRC 会话、当前 `drc/up` Topic、短时窗内的两帧回包都带显式 `result=0` 且 `output.seq` 依次匹配时才解锁非零摇杆；若回包携带 `tid/bid`，还必须匹配对应请求 ID。重连会重新锁定并重新握手，迟到、乱序、缺少 `seq` 或结果不明的 ACK 均不会解锁。这同时规避了部分 RC 固件不回显 `heart_beat` 导致“第一次进入 DRC 无心跳/无法控制”的问题。
-脚本会订阅 ACL 中全部 `sub` Topic，其中选择与控制 `drc/down` 对应的 `drc/up`，并直接接收紧急/强制降落的 `services_reply`。
+脚本会订阅 ACL 中全部 `sub` Topic，并选择与控制 `drc/down` 对应的 `drc/up`。
+
+`demo_18_continuous_landing.py` 是独立的持续降落示例，以 10 Hz 连续发送 `drone_control` 的负向 `h`。它要求配置 `YOOX_DRONE_SN`，通过平台 WebSocket 监控目标飞机 OSD：当前下降帧必须收到严格关联 `tid/bid` 的成功 ACK（固件正确回显时也校验 `output.seq`），3 秒内必须观测到负垂速或高度下降，并在 `mode_code=0`（待机/已落地）时自动归零退出。ACK/OSD 超时、MQTT 重连、Joystick 失效或控制权转移也会归零停止。不要同时运行驾驶舱 DRC 或其他 DRC Demo。
+
+```bash
+./run.sh demo_18_continuous_landing.py
+# 可降低下降速度，并设置最长运行时间：
+./run.sh demo_18_continuous_landing.py --speed 1.0 --max-seconds 180
+```
 
 `seq=0→1` 只是首轮全零向量的序号。若 ACK 丢失或设备拒绝，设备可能已消费旧帧，因此重试必须让同一零向量的 `seq` 继续递增，不能回放 `0→1`；只有 `x/y/h/w` 实际变化时才从 0 重新计数。
 

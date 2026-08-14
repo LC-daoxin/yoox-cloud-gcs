@@ -153,6 +153,13 @@ const CONTROL_REQUEST_OPTIONS = { timeoutMs: 15_000 } as const
 const LIVE_START_REQUEST_OPTIONS = { timeoutMs: 70_000 } as const
 const DRC_CONTROL_INTERVAL_MS = 100
 const DRC_PROBE_ACK_WINDOW_MS = 1_500
+// 与键盘 Z“下降”使用同一满量程左摇杆输入。标准档下最终发布 h=-4 m/s，
+// 实际下降速度与触地保护仍由飞控限制。
+const CONTINUOUS_LANDING_STICK_Y = 1
+const CONTINUOUS_LANDING_START_TIMEOUT_MS = 1_000
+const CONTINUOUS_LANDING_ACK_TIMEOUT_MS = 2_000
+const CONTINUOUS_LANDING_MOVEMENT_TIMEOUT_MS = 3_000
+const CONTINUOUS_LANDING_ARM_TIMEOUT_MS = 8_000
 const PENDING_DRC_EXIT_STORAGE_KEY = 'yoox.cockpit.pending-drc-exit'
 const DRC_RESUME_STORAGE_KEY = 'yoox.cockpit.drc-resume'
 const VIDEO_PUBLISHERS_STORAGE_KEY = 'yoox.cockpit.started-video-publishers'
@@ -242,6 +249,10 @@ const drcStatusMessage = ref('尚未进入指令飞行模式')
 const lastHeartbeatAckAt = ref(0)
 const emergencyStopPending = ref(false)
 const drcLandingPending = ref<DrcLandingMethod | ''>('')
+const continuousLandingActive = ref(false)
+const continuousLandingConfirmed = ref(false)
+const continuousLandingMovementObserved = ref(false)
+const continuousLandingArmed = ref(false)
 const returnHomePending = ref(false)
 const returnHomeCancelPending = ref(false)
 const mapTargetMode = ref<MapTargetMode>()
@@ -398,6 +409,20 @@ let drcMqttGenerationCounter = 0
 let activeDrcMqttGeneration = 0
 let pendingDrcControlProbe: PendingDrcControlProbe | undefined
 let drcAircraftSn = ''
+let continuousLandingDockSn = ''
+let continuousLandingAircraftSn = ''
+let continuousLandingStartedAt = 0
+let continuousLandingFirstPublishedAt = 0
+let continuousLandingStartTimer = 0
+let continuousLandingAckTimer = 0
+let continuousLandingMovementTimer = 0
+let continuousLandingArmTimer = 0
+let continuousLandingArmedDockSn = ''
+let continuousLandingArmedAircraftSn = ''
+let continuousLandingArmedMqttGeneration = 0
+let continuousLandingMqttGeneration = 0
+let continuousLandingInitialAltitude = 0
+const continuousLandingRequestIds = new Set<string>()
 let lastJoystickInvalidEventAt = 0
 let lastFlightAuthorityGrabAt = 0
 let drcEnterPromise: Promise<boolean> | undefined
@@ -766,6 +791,15 @@ const drcControlsReady = computed(() =>
   operationPanelState.value !== 'ground' &&
   !emergencyStopPending.value &&
   !drcLandingPending.value)
+const continuousLandingActionDisabled = computed(() =>
+  !continuousLandingActive.value && (
+    !drcControlsReady.value ||
+    dockSelectionPending.value ||
+    returnHomePending.value ||
+    returnHomeCancelPending.value ||
+    emergencyStopPending.value ||
+    Boolean(drcLandingPending.value)
+  ))
 const flightAuthorityLabel = computed(() => {
   if (flightAuthorityPending.value) return '① 抢夺中…'
   if (hasFlightAuthority.value) return '① 飞行控制权已获取'
@@ -899,6 +933,14 @@ const drcBlockedReason = computed(() => {
     return '等待当前 DRC 会话心跳确认…'
   }
   if (!drcLinkReady.value) return '控制通道尚未就绪'
+  if (continuousLandingActive.value) {
+    if (!continuousLandingConfirmed.value) {
+      return '持续降落启动中：正在下发下降杆量并等待设备回包'
+    }
+    return continuousLandingMovementObserved.value
+      ? '持续降落中：OSD 已检测到下降，点击按钮或任意方向键可停止'
+      : '持续降落中：设备已接收控制报文，正在等待下降遥测'
+  }
   if (operationPanelState.value === 'ground') return '待机链路正常：心跳已连通，起飞前禁止非零摇杆输出'
   return ''
 })
@@ -1322,8 +1364,19 @@ watch(pointFlightMapActive, () => {
 // 短暂抖回地面时只归零，不主动退出 DRC，避免设备因云端停止心跳而立即超时。
 watch(operationPanelState, (nextState) => {
   if (nextState !== 'ground') return
+  cancelContinuousLandingArm()
   // 离开任务状态即清除航线进度，避免下次进入任务面板残留上一段任务的数据。
   waylineProgress.value = undefined
+
+  if (continuousLandingActive.value) {
+    const landed = telemetry.modeCode === 0
+    stopContinuousLanding(
+      landed ? 'aircraft-standby' : 'aircraft-ground-state',
+      landed
+        ? '飞机已进入待机，持续降落已自动停止并归零'
+        : `飞机状态变为“${modeLabel(telemetry.modeCode)}”，持续降落已停止并归零`
+    )
+  }
 
   if (
     pressed.size > 0 ||
@@ -1332,6 +1385,17 @@ watch(operationPanelState, (nextState) => {
     lastControlVector !== '0/0/0/0'
   ) releaseKeys()
 
+})
+
+// 持续下降只属于建立它的当前 DRC 会话。心跳、MQTT、飞行权或在线状态任一
+// 条件失效，都立即撤销本地锁存并尽力补发零杆量，禁止链路恢复后自行续降。
+watch(drcLinkReady, (ready) => {
+  if (!ready) {
+    cancelContinuousLandingArm()
+    if (continuousLandingActive.value) {
+      stopContinuousLanding('drc-link-lost', 'DRC 控制链路中断，持续降落已停止并归零')
+    }
+  }
 })
 
 // DRC 会话绑定实际控制主题（遥控器接入使用飞机 SN，机场接入使用网关 SN）；
@@ -1782,7 +1846,7 @@ function applyTelemetry(message: DeviceTelemetry) {
     telemetry.gimbalReported = true
     telemetry.gimbalPitch = gimbalPitch
   }
-  // gimbal_yaw 为绝对方位角（与 attitude_head 同基准），Look At 兼容模式的闭环反馈。
+  // gimbal_yaw 为绝对方位角（与 attitude_head 同基准）。
   if (gimbalYaw !== undefined) {
     telemetry.gimbalYaw = gimbalYaw
   }
@@ -1840,6 +1904,7 @@ function applyTelemetry(message: DeviceTelemetry) {
   telemetry.windSpeed = telemetryNumber(data.wind_speed, telemetry.windSpeed)
   telemetry.windDirection = telemetryNumber(data.wind_direction, telemetry.windDirection)
   telemetry.modeCode = telemetryNumber(data.mode_code, telemetry.modeCode)
+  observeContinuousLandingMovement()
   // 当前档位：仅只读展示，Cloud API 不支持下发切换；兼容 gear_level / gear 两种上报字段名
   telemetry.gearLevel = telemetryNumber(data.gear_level ?? data.gear, telemetry.gearLevel)
   // 失联动作：0 悬停 / 1 降落 / 2 返航，由飞行器 OSD 上报，仅只读展示
@@ -3247,11 +3312,31 @@ function publishControl(forceZero = false) {
   const s = effectiveScale.value
   const ys = effectiveYawScale.value
   const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+  // 持续降落是显式锁存模式，不依赖可能被 blur/keyup/摇杆回中改写的临时 sticks。
+  // 只要仍是启动它的同一 DRC 设备，会与长按 Z 一样持续得到 leftY=1；
+  // 手动方向接管、链路失效、设备变化和落地则通过 stopContinuousLanding 退出。
+  const landingSessionMatches = continuousLandingDockSn === selectedDock.value?.device_sn &&
+    continuousLandingAircraftSn === selectedAircraftSn.value &&
+    continuousLandingMqttGeneration === activeDrcMqttGeneration &&
+    drcPublishTopic === `thing/product/${continuousLandingDockSn}/drc/down`
+  if (!shouldPublishZero && continuousLandingActive.value && !landingSessionMatches) {
+    stopContinuousLanding(
+      'target-or-session-changed',
+      'DRC 会话或目标设备已变化，持续降落已停止并归零'
+    )
+    return
+  }
+  const landingVectorActive = !shouldPublishZero &&
+    continuousLandingActive.value &&
+    landingSessionMatches
+  const controlSticks = landingVectorActive
+    ? { leftX: 0, leftY: CONTINUOUS_LANDING_STICK_Y, rightX: 0, rightY: 0 }
+    : sticks
   const vector = {
-    x: shouldPublishZero ? 0 : +clamp(sticks.rightY * -17 * s, -17, 17).toFixed(2),
-    y: shouldPublishZero ? 0 : +clamp(sticks.rightX * 17 * s, -17, 17).toFixed(2),
-    h: shouldPublishZero ? 0 : +clamp(sticks.leftY * -5 * s, -4, 5).toFixed(2),
-    w: shouldPublishZero ? 0 : +clamp(sticks.leftX * 90 * ys, -90, 90).toFixed(2)
+    x: shouldPublishZero ? 0 : +clamp(controlSticks.rightY * -17 * s, -17, 17).toFixed(2),
+    y: shouldPublishZero ? 0 : +clamp(controlSticks.rightX * 17 * s, -17, 17).toFixed(2),
+    h: shouldPublishZero ? 0 : +clamp(controlSticks.leftY * -5 * s, -4, 5).toFixed(2),
+    w: shouldPublishZero ? 0 : +clamp(controlSticks.leftX * 90 * ys, -90, 90).toFixed(2)
   }
   const vectorKey = `${vector.x}/${vector.y}/${vector.h}/${vector.w}`
   if (vectorKey !== lastControlVector) {
@@ -3267,6 +3352,35 @@ function publishControl(forceZero = false) {
   })
   if (requestId) {
     lastControlPublishAt = now
+    if (landingVectorActive && vector.h < 0) {
+      continuousLandingRequestIds.add(requestId)
+      while (continuousLandingRequestIds.size > 64) {
+        const oldestRequestId = continuousLandingRequestIds.values().next().value
+        if (typeof oldestRequestId !== 'string') break
+        continuousLandingRequestIds.delete(oldestRequestId)
+      }
+      if (continuousLandingFirstPublishedAt < continuousLandingStartedAt) {
+        continuousLandingFirstPublishedAt = now
+        window.clearTimeout(continuousLandingStartTimer)
+        continuousLandingStartTimer = 0
+        addInteractionLog({
+          transport: 'SYSTEM',
+          direction: 'OUT',
+          summary: '持续降落首帧已发布',
+          payload: { requestId, vector, freq: 10, delay_time: 300 }
+        })
+        window.clearTimeout(continuousLandingAckTimer)
+        continuousLandingAckTimer = window.setTimeout(() => {
+          continuousLandingAckTimer = 0
+          if (!continuousLandingActive.value || continuousLandingConfirmed.value) return
+          stopContinuousLanding(
+            'ack-timeout',
+            '设备未确认持续下降杆量，已安全停止；请重连 DRC 后重试'
+          )
+          error.value = '持续降落启动失败：2 秒内未收到下降杆量成功回包，控制量已归零'
+        }, CONTINUOUS_LANDING_ACK_TIMEOUT_MS)
+      }
+    }
     if (shouldPublishZero) {
       zeroControlPending = false
       if (awaitingCurrentGenerationAck && client && activeDrcMqttGeneration > 0 && drcConnectedAt > 0) {
@@ -3425,6 +3539,16 @@ function scheduleSecondDrcControlProbe(firstProbe: PendingDrcControlProbe) {
   }, waitMs)
 }
 
+function drcControlResultLabel(result: number) {
+  const known: Record<number, string> = {
+    319030: '无飞行控制权',
+    319033: '控制包序号小于上一包',
+    319034: '控制包到达时已超过 delay_time',
+    319045: '飞机处于暂停态'
+  }
+  return known[result] ? `${result}：${known[result]}` : String(result)
+}
+
 function handleMessage(
   _topic: string,
   payload: Uint8Array,
@@ -3504,7 +3628,7 @@ function handleMessage(
         if (result !== 0) {
           drcControlRejected.value = true
           drcConnectionState.value = 'degraded'
-          drcStatusMessage.value = `设备拒绝零杆链路探针（${result}），控制保持锁定并自动重试`
+          drcStatusMessage.value = `设备拒绝零杆链路探针（${drcControlResultLabel(result)}），控制保持锁定并自动重试`
           drcControlFailure.value = drcStatusMessage.value
           error.value = drcStatusMessage.value
           // Keep this rejected probe pending until its 1.5 s retry deadline.
@@ -3521,6 +3645,61 @@ function handleMessage(
         clearDrcControlProbeHandshake()
       }
       if (result === 0) {
+        const replyIds = [
+          message.tid, message.bid,
+          (message.data as Record<string, unknown> | undefined)?.tid,
+          (message.data as Record<string, unknown> | undefined)?.bid,
+          data.tid, data.bid, output.tid, output.bid
+        ].map((value) => String(value ?? '')).filter(Boolean)
+        // 只接受本次持续降落实际下发帧的 tid/bid。无 ID 或旧会话回包不能
+        // 证明当前下降控制已被设备接收，避免将延迟到达的普通控制 ACK 误配。
+        const uniqueReplyIds = [...new Set(replyIds)]
+        const expectedLandingReplyTopic = `thing/product/${continuousLandingDockSn}/drc/up`
+        const landingReplyMatched = continuousLandingActive.value &&
+          mqttClient === client &&
+          mqttGeneration === activeDrcMqttGeneration &&
+          mqttGeneration === continuousLandingMqttGeneration &&
+          _topic === expectedLandingReplyTopic &&
+          uniqueReplyIds.length > 0 &&
+          uniqueReplyIds.every((requestId) => continuousLandingRequestIds.has(requestId))
+        if (landingReplyMatched && !continuousLandingConfirmed.value) {
+          window.clearTimeout(continuousLandingAckTimer)
+          continuousLandingAckTimer = 0
+          continuousLandingConfirmed.value = true
+          addInteractionLog({
+            transport: 'SYSTEM',
+            direction: 'IN',
+            summary: '持续降落控制报文已获设备成功回包',
+            payload: { replyIds: uniqueReplyIds, topic: _topic, mqttGeneration, modeCode: telemetry.modeCode }
+          })
+          window.clearTimeout(continuousLandingMovementTimer)
+          continuousLandingMovementTimer = window.setTimeout(() => {
+            continuousLandingMovementTimer = 0
+            if (!continuousLandingActive.value || continuousLandingMovementObserved.value) return
+            const modeHint = [16, 17].includes(telemetry.modeCode)
+              ? ''
+              : `当前飞机状态为“${modeLabel(telemetry.modeCode)}”(mode=${telemetry.modeCode})，未上报虚拟摇杆/指令飞行状态；`
+            const detail = `设备已返回 result=0，但 3 秒内 OSD 未检测到下降；${modeHint}请检查飞控暂停态、下视保护或 RC 固件兼容性`
+            const movementSnapshot = {
+              verticalSpeed: telemetry.verticalSpeed,
+              initialAltitude: continuousLandingInitialAltitude,
+              altitude: telemetry.altitude,
+              modeCode: telemetry.modeCode
+            }
+            addInteractionLog({
+              transport: 'SYSTEM',
+              direction: 'ERROR',
+              summary: '持续降落未检测到飞机运动',
+              payload: movementSnapshot
+            })
+            stopContinuousLanding(
+              'movement-timeout',
+              '设备已接收控制报文，但未检测到飞机下降，已安全停止并归零'
+            )
+            error.value = `${detail}；持续降落已安全停止并归零`
+          }, CONTINUOUS_LANDING_MOVEMENT_TIMEOUT_MS)
+          showCameraActionTip('设备已接收持续下降控制报文，正在等待 OSD 下降遥测')
+        }
         drcControlRejected.value = false
         drcControlFailure.value = ''
         if (drcConnectedAt > 0) {
@@ -3548,7 +3727,7 @@ function handleMessage(
       } else {
         drcControlRejected.value = true
         drcConnectionState.value = 'degraded'
-        drcStatusMessage.value = `设备拒绝飞行控制（${result}），已停止输出`
+        drcStatusMessage.value = `设备拒绝飞行控制（${drcControlResultLabel(result)}），已停止输出`
         drcControlFailure.value = drcStatusMessage.value
         // 文档没有给出 result 对应表，非 0 也可能只是序号错误。先安全归零并
         // 重新锁定为当前代次探针验证；同一零向量的 seq 继续递增，只有从非零向量
@@ -3623,10 +3802,11 @@ function handleMessage(
       drcLandingGatewaySn = ''
       drcLandingPending.value = ''
       if (method === 'drc_emergency_landing') {
-        // result=0 直接降落；result≠0 时设备转为避障并识别二维码方式降落，两者均是正常执行分支，不是失败
-        showCameraActionTip(result === 0
-          ? '紧急降落已下发：设备直接降落（不代表已落地）'
-          : `紧急降落已下发：设备转为避障并识别二维码方式降落（result=${result}，不代表已落地）`)
+        if (result === 0) {
+          showCameraActionTip('紧急降落指令调用成功：设备将避障并识别二维码降落（不代表已落地）')
+        } else {
+          error.value = `紧急降落指令调用失败（${result}）`
+        }
       } else {
         if (result === 0) showCameraActionTip('强制降落指令调用成功（不代表已落地）')
         else error.value = `强制降落指令调用失败（${result}）`
@@ -3648,8 +3828,153 @@ function handleMessage(
   } catch { /* 未知负载不影响控制链路 */ }
 }
 
+function observeContinuousLandingMovement() {
+  if (!continuousLandingActive.value || !continuousLandingConfirmed.value ||
+      continuousLandingMovementObserved.value) return
+  const altitudeDrop = continuousLandingInitialAltitude - telemetry.altitude
+  if (telemetry.verticalSpeed >= -0.15 && altitudeDrop < 0.15) return
+  window.clearTimeout(continuousLandingMovementTimer)
+  continuousLandingMovementTimer = 0
+  continuousLandingMovementObserved.value = true
+  addInteractionLog({
+    transport: 'SYSTEM',
+    direction: 'IN',
+    summary: '持续降落已检测到飞机下降',
+    payload: {
+      verticalSpeed: telemetry.verticalSpeed,
+      initialAltitude: continuousLandingInitialAltitude,
+      altitude: telemetry.altitude,
+      altitudeDrop
+    }
+  })
+  showCameraActionTip('OSD 已检测到飞机下降；进入待机后将自动停止并归零')
+}
+
+function cancelContinuousLandingArm() {
+  window.clearTimeout(continuousLandingArmTimer)
+  continuousLandingArmTimer = 0
+  continuousLandingArmed.value = false
+  continuousLandingArmedDockSn = ''
+  continuousLandingArmedAircraftSn = ''
+  continuousLandingArmedMqttGeneration = 0
+}
+
+function stopContinuousLanding(reason: string, message = ''): boolean {
+  cancelContinuousLandingArm()
+  if (!continuousLandingActive.value) return false
+  const gatewaySn = continuousLandingDockSn
+  const aircraftSn = continuousLandingAircraftSn
+  window.clearTimeout(continuousLandingStartTimer)
+  continuousLandingStartTimer = 0
+  window.clearTimeout(continuousLandingAckTimer)
+  continuousLandingAckTimer = 0
+  window.clearTimeout(continuousLandingMovementTimer)
+  continuousLandingMovementTimer = 0
+  continuousLandingActive.value = false
+  continuousLandingConfirmed.value = false
+  continuousLandingMovementObserved.value = false
+  continuousLandingDockSn = ''
+  continuousLandingAircraftSn = ''
+  continuousLandingStartedAt = 0
+  continuousLandingFirstPublishedAt = 0
+  continuousLandingMqttGeneration = 0
+  continuousLandingInitialAltitude = 0
+  continuousLandingRequestIds.clear()
+  pressed.clear()
+  sticks.leftX = sticks.leftY = sticks.rightX = sticks.rightY = 0
+  publishControl(true)
+  addInteractionLog({
+    transport: 'SYSTEM',
+    direction: 'INFO',
+    summary: `持续降落停止：${reason}`,
+    payload: { reason, gatewaySn, aircraftSn, modeCode: telemetry.modeCode }
+  })
+  if (message) showCameraActionTip(message)
+  return true
+}
+
+function toggleContinuousLanding() {
+  if (continuousLandingActive.value) {
+    stopContinuousLanding('operator-cancel', '持续降落已由操作者停止，控制量已归零')
+    return
+  }
+  const gatewaySn = selectedDock.value?.device_sn ?? ''
+  const aircraftSn = selectedAircraftSn.value
+  if (continuousLandingActionDisabled.value || !gatewaySn || !aircraftSn) {
+    showCameraActionTip(drcBlockedReason.value || '当前不能启动持续降落')
+    return
+  }
+  // 原生 window.confirm 在 Electron/WebKit 中可能触发 window.blur；全局失焦
+  // 安全联锁会随即 releaseKeys()，造成刚锁存的下降量立即归零。改用同一按钮
+  // 的页内二次确认，仍保留真实离开页面/窗口时的归零保护。
+  if (!continuousLandingArmed.value) {
+    continuousLandingArmed.value = true
+    continuousLandingArmedDockSn = gatewaySn
+    continuousLandingArmedAircraftSn = aircraftSn
+    continuousLandingArmedMqttGeneration = activeDrcMqttGeneration
+    window.clearTimeout(continuousLandingArmTimer)
+    continuousLandingArmTimer = window.setTimeout(cancelContinuousLandingArm, CONTINUOUS_LANDING_ARM_TIMEOUT_MS)
+    showCameraActionTip('请在 8 秒内再次点击“确认持续降落”；启动后将持续到飞机进入待机')
+    return
+  }
+  const armMatchesCurrentSession = continuousLandingArmedDockSn === gatewaySn &&
+    continuousLandingArmedAircraftSn === aircraftSn &&
+    continuousLandingArmedMqttGeneration === activeDrcMqttGeneration
+  cancelContinuousLandingArm()
+  if (!armMatchesCurrentSession || !drcControlsReady.value || selectedDock.value?.device_sn !== gatewaySn ||
+      selectedAircraftSn.value !== aircraftSn) {
+    error.value = 'DRC 控制链路、会话或目标设备已变化，持续降落未启动；请重新确认'
+    return
+  }
+
+  releasePayloadControls()
+  pressed.clear()
+  // 固定下降量由 publishControl 的会话锁存分支生成；共享 sticks 始终保持
+  // 零值，目标或会话守卫失配时绝不会回退成仍在下降的临时摇杆状态。
+  sticks.leftX = sticks.leftY = sticks.rightX = sticks.rightY = 0
+  continuousLandingDockSn = gatewaySn
+  continuousLandingAircraftSn = aircraftSn
+  continuousLandingMqttGeneration = activeDrcMqttGeneration
+  continuousLandingStartedAt = Date.now()
+  continuousLandingFirstPublishedAt = 0
+  continuousLandingConfirmed.value = false
+  continuousLandingMovementObserved.value = false
+  continuousLandingInitialAltitude = telemetry.altitude
+  window.clearTimeout(continuousLandingMovementTimer)
+  continuousLandingMovementTimer = 0
+  continuousLandingRequestIds.clear()
+  continuousLandingActive.value = true
+  window.clearTimeout(continuousLandingStartTimer)
+  continuousLandingStartTimer = window.setTimeout(() => {
+    continuousLandingStartTimer = 0
+    if (!continuousLandingActive.value ||
+        continuousLandingFirstPublishedAt >= continuousLandingStartedAt) return
+    stopContinuousLanding(
+      'first-frame-timeout',
+      '持续降落未能发出下降杆量，已安全停止；请重连 DRC 后重试'
+    )
+    error.value = '持续降落启动失败：1 秒内未发布 h<0 的 drone_control，控制量已归零'
+  }, CONTINUOUS_LANDING_START_TIMEOUT_MS)
+  addInteractionLog({
+    transport: 'SYSTEM',
+    direction: 'OUT',
+    summary: '持续降落已锁存：等待首帧 DRC 下降杆量',
+    payload: {
+      gatewaySn,
+      aircraftSn,
+      mqttGeneration: activeDrcMqttGeneration,
+      modeCode: telemetry.modeCode,
+      stick: { leftX: 0, leftY: CONTINUOUS_LANDING_STICK_Y, rightX: 0, rightY: 0 },
+      expectedStandardVector: { x: 0, y: 0, h: -4, w: 0 }
+    }
+  })
+  publishControl()
+  showCameraActionTip('持续降落已锁存，正在发送下降杆量；点击按钮、方向键或刹车可停止')
+}
+
 function moveStick(side: 'left' | 'right', event: PointerEvent) {
   if (!drcControlsReady.value) return
+  stopContinuousLanding('manual-stick-takeover', '已切换为手动摇杆控制，持续降落已停止')
   const target = event.currentTarget as HTMLElement
   if (event.type === 'pointerdown') target.setPointerCapture(event.pointerId)
   if (!target.hasPointerCapture(event.pointerId)) return
@@ -3676,6 +4001,7 @@ function startDirectionalControl(code: string) {
   // 方向操作只消费已经建立并通过心跳确认的 DRC 会话。按键本身不再抢权、
   // 不再进入 DRC，也不会在异步流程完成后补发用户早已松开的动作。
   if (!drcControlsReady.value || operationPanelState.value === 'ground' || emergencyStopPending.value) return
+  stopContinuousLanding('manual-direction-takeover', '已切换为手动方向控制，持续降落已停止')
   pressed.add(code)
   syncSticksFromKeys()
   publishControl()
@@ -3769,84 +4095,6 @@ async function runPayloadGimbalLoop() {
   }
 }
 
-// ---- Look At 兼容模式 ----
-// EVO RC 固件（1.9.1.203）未实现 camera_look_at（9 种报文变体实测均被静默丢弃，
-// 而同链路 camera_screen_drag/payload_authority_grab 秒回）。改用 OSD 的
-// gimbal_yaw（绝对方位角）/gimbal_pitch 做反馈，camera_screen_drag 速度闭环
-// 把云台转向目标 GPS 点，效果等价于原生 Look At。
-let lookAtGeneration = 0
-
-function cancelLookAtCompat() {
-  lookAtGeneration += 1
-}
-
-function wrapDeg180(angle: number) {
-  return ((angle + 180) % 360 + 360) % 360 - 180
-}
-
-function bearingToTarget(lat1: number, lng1: number, lat2: number, lng2: number) {
-  const toRad = Math.PI / 180
-  const dLng = (lng2 - lng1) * toRad
-  const y = Math.sin(dLng) * Math.cos(lat2 * toRad)
-  const x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) -
-    Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos(dLng)
-  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
-}
-
-function horizontalDistanceMeters(lat1: number, lng1: number, lat2: number, lng2: number) {
-  const toRad = Math.PI / 180
-  const dLat = (lat2 - lat1) * toRad
-  const dLng = (lng2 - lng1) * toRad
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLng / 2) ** 2
-  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-}
-
-async function runLookAtCompatLoop(target: { latitude: number; longitude: number; height: number }) {
-  const generation = ++lookAtGeneration
-  const gatewaySn = dockSn.value
-  const payloadIndex = selectedSource.value?.cameraIndex
-  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
-  const deadline = Date.now() + 20_000
-  while (Date.now() < deadline) {
-    if (generation !== lookAtGeneration) return
-    if (dockSelectionPending.value || dockSn.value !== gatewaySn ||
-        selectedSource.value?.cameraIndex !== payloadIndex) return
-    // 用户按下云台方向键即接管，兼容循环让位。
-    if (payloadGimbalMoving()) return
-    const bearing = bearingToTarget(
-      telemetry.latitude, telemetry.longitude, target.latitude, target.longitude)
-    const distance = Math.max(
-      horizontalDistanceMeters(
-        telemetry.latitude, telemetry.longitude, target.latitude, target.longitude),
-      0.5)
-    // 飞机椭球高（elevation）无 RTK 时上报 0，此时退化为相对起飞点高度差。
-    const aircraftAltitude = telemetry.altitude !== 0 ? telemetry.altitude : telemetry.height
-    const pitchTarget = clamp(
-      Math.atan2(target.height - aircraftAltitude, distance) * 180 / Math.PI, -90, 30)
-    const yawError = wrapDeg180(bearing - telemetry.gimbalYaw)
-    const pitchError = pitchTarget - telemetry.gimbalPitch
-    if (Math.abs(yawError) < 1.5 && Math.abs(pitchError) < 1.5) {
-      showCameraActionTip(`Look At 完成：云台已对准目标（方位 ${bearing.toFixed(0)}°/俯仰 ${pitchTarget.toFixed(0)}°）`)
-      return
-    }
-    // 比例控制：远快近慢；死区内停轴防止 OSD 滞后导致震荡。
-    const speedFor = (error: number) =>
-      Math.abs(error) < 0.8 ? 0 : +clamp(error * 0.4, -4, 4).toFixed(2)
-    const sent = await queuePayloadCommand('camera_screen_drag', {
-      locked: false,
-      pitch_speed: speedFor(pitchError),
-      yaw_speed: speedFor(yawError)
-    })
-    if (!sent || generation !== lookAtGeneration) return
-    // OSD 反馈约 1 Hz，节流等待新遥测后再修正。
-    await delay(300)
-  }
-  if (generation === lookAtGeneration) {
-    error.value = 'Look At 兼容模式超时（20s）未收敛，请重试或手动微调云台'
-  }
-}
-
 function syncPayloadGimbal() {
   if (!payloadGimbalLoop) payloadGimbalLoop = runPayloadGimbalLoop()
 }
@@ -3908,7 +4156,6 @@ async function adjustPayloadZoomFromShortcut(direction: -1 | 1) {
 
 function startPayloadControl(code: PayloadShortcutCode) {
   if (dockSelectionPending.value || !hasPayloadAuthority.value || payloadPressed.has(code)) return
-  cancelLookAtCompat()
   payloadPressed.add(code)
   syncPayloadGimbal()
   const control = payloadShortcutControls.find((item) => item.code === code)
@@ -3921,7 +4168,6 @@ function stopPayloadControl(code: PayloadShortcutCode) {
 }
 
 function releasePayloadControls() {
-  cancelLookAtCompat()
   const wasMovingGimbal = payloadPressed.size > 0
   payloadPressed.clear()
   if (wasMovingGimbal) syncPayloadGimbal()
@@ -4070,6 +4316,8 @@ function handleKey(event: KeyboardEvent) {
 }
 function releaseKeys() {
   releasePayloadControls()
+  cancelContinuousLandingArm()
+  stopContinuousLanding('control-release')
   pressed.clear()
   sticks.leftX = sticks.leftY = sticks.rightX = sticks.rightY = 0
   publishControl(true)
@@ -4850,7 +5098,7 @@ function delay(ms: number) {
 async function returnHome() {
   const targetDockSn = selectedDock.value?.device_sn
   if (dockSelectionPending.value || returnHomePending.value || emergencyStopPending.value ||
-      drcLandingPending.value || !targetDockSn ||
+      drcLandingPending.value || continuousLandingActive.value || !targetDockSn ||
       !window.confirm('确认向当前设备下发返航指令？')) return
   returnHomePending.value = true
   error.value = ''
@@ -4869,7 +5117,7 @@ async function returnHome() {
 async function cancelReturnHome() {
   const targetDockSn = selectedDock.value?.device_sn
   if (dockSelectionPending.value || returnHomeCancelPending.value || emergencyStopPending.value ||
-      drcLandingPending.value || !targetDockSn ||
+      drcLandingPending.value || continuousLandingActive.value || !targetDockSn ||
       !window.confirm('确认取消返航？取消后飞行器将在原地悬停。')) return
   returnHomeCancelPending.value = true
   error.value = ''
@@ -4963,14 +5211,15 @@ async function emergencyStop() {
 async function drcLanding(method: DrcLandingMethod) {
   const gatewaySn = selectedDock.value?.device_sn
   if (dockSelectionPending.value || state.value === 'connecting' ||
-      returnHomePending.value || emergencyStopPending.value || drcLandingPending.value || !gatewaySn) return
+      returnHomePending.value || emergencyStopPending.value || drcLandingPending.value ||
+      continuousLandingActive.value || !gatewaySn) return
   if (operationPanelState.value === 'ground') {
     error.value = '飞机当前未处于飞行状态，未发送降落指令'
     return
   }
   const emergency = method === 'drc_emergency_landing'
   const confirmed = window.confirm(emergency
-    ? '确认下发紧急降落？设备返回成功（result=0）代表直接降落，不做避障与二维码识别；返回失败（result≠0）时飞行器会转为避障并识别二维码方式降落。设备回复仅表示指令调用结果，不代表已经落地。'
+    ? '确认下发紧急降落？飞机将避障并识别二维码降落。设备返回 result=0 只表示指令调用成功，不代表已经落地。'
     : '高风险：确认下发强制降落？飞机将不考虑障碍物直接降落。请确认下方区域绝对安全；设备回复成功不代表已经落地。')
   if (!confirmed) return
 
@@ -5098,17 +5347,17 @@ async function submitMapTarget() {
       if (dockSelectionPending.value || selectedDock.value?.device_sn !== targetDockSn) {
         throw new Error('设备已切换，已取消 Look At')
       }
-      // 固件未实现 camera_look_at（实测 9 种报文变体均被静默丢弃），
-      // 改走 camera_screen_drag 闭环兼容模式（runLookAtCompatLoop）。
-      if (!telemetry.gimbalReported) {
-        throw new Error('尚未收到云台角度遥测，无法执行 Look At，请稍候重试')
-      }
-      void runLookAtCompatLoop({
+      const succeeded = await queuePayloadCommand('camera_look_at', {
+        // 只转云台，不联动机身；payload_index 由 queuePayloadCommand 统一注入。
+        locked: false,
         latitude: Number(mapTarget.latitude.toFixed(6)),
         longitude: Number(mapTarget.longitude.toFixed(6)),
         height: Number(mapTarget.height.toFixed(1))
       })
-      showCameraActionTip('Look At 兼容模式：正在转动云台对准目标…')
+      if (!succeeded) {
+        throw new Error(error.value || 'Look At 指令下发失败')
+      }
+      showCameraActionTip('Look At 原生指令执行成功')
     }
   } catch (reason) {
     const restored = mode === 'flyto' && pointFlightIdentityPending && targetDockSn === dockSn.value
@@ -6345,12 +6594,12 @@ function toggleFullscreen() {
                 @click="cancelWaylineJob">
                 {{ waylineCancelPending ? '取消中…' : '取消任务' }}
               </button>
-              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending" @click="returnHome">
+              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive" @click="returnHome">
                 {{ returnHomePending ? '发送中…' : '返航' }}
               </button>
               <button
                 class="deck-btn btn-cancel"
-                :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive"
                 @click="cancelReturnHome">
                 {{ returnHomeCancelPending ? '发送中…' : '取消返航' }}
               </button>
@@ -6358,15 +6607,29 @@ function toggleFullscreen() {
                 {{ emergencyStopPending ? '等待确认' : '刹车悬停' }}<br><small>[Space]</small>
               </button>
               <button
+                class="deck-btn btn-continuous-land"
+                :class="{ active: continuousLandingActive, armed: continuousLandingArmed }"
+                :disabled="continuousLandingActionDisabled"
+                :title="continuousLandingActive
+                  ? '立即停止下降并发送零杆量'
+                  : continuousLandingArmed
+                    ? '再次点击确认启动；8 秒后自动取消'
+                    : '通过当前 DRC 会话以 10 Hz 持续发送垂直下降杆量，进入待机后自动停止'"
+                @click="toggleContinuousLanding">
+                {{ continuousLandingActive
+                  ? '停止持续降落'
+                  : continuousLandingArmed ? '确认持续降落' : '持续降落' }}
+              </button>
+              <button
                 class="deck-btn btn-emergency-land"
-                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
-                title="成功=直接降落；失败时设备转为避障并识别二维码降落"
+                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive"
+                title="避障并识别二维码降落"
                 @click="drcLanding('drc_emergency_landing')">
                 {{ drcLandingPending === 'drc_emergency_landing' ? '等待确认…' : '紧急降落' }}
               </button>
               <button
                 class="deck-btn btn-force-land"
-                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive"
                 title="不考虑障碍物直接强制降落"
                 @click="drcLanding('drc_force_landing')">
                 {{ drcLandingPending === 'drc_force_landing' ? '等待确认…' : '强制降落' }}
@@ -6407,12 +6670,12 @@ function toggleFullscreen() {
               </button>
             </div>
             <div class="deck-btns landing-actions">
-              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending" @click="returnHome">
+              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive" @click="returnHome">
                 {{ returnHomePending ? '发送中…' : '返航' }}
               </button>
               <button
                 class="deck-btn btn-cancel"
-                :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                :disabled="dockSelectionPending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive"
                 @click="cancelReturnHome">
                 {{ returnHomeCancelPending ? '发送中…' : '取消返航' }}
               </button>
@@ -6427,15 +6690,29 @@ function toggleFullscreen() {
                 {{ emergencyStopPending ? '等待确认' : '刹车悬停' }}<br><small>[Space]</small>
               </button>
               <button
+                class="deck-btn btn-continuous-land"
+                :class="{ active: continuousLandingActive, armed: continuousLandingArmed }"
+                :disabled="continuousLandingActionDisabled"
+                :title="continuousLandingActive
+                  ? '立即停止下降并发送零杆量'
+                  : continuousLandingArmed
+                    ? '再次点击确认启动；8 秒后自动取消'
+                    : '通过当前 DRC 会话以 10 Hz 持续发送垂直下降杆量，进入待机后自动停止'"
+                @click="toggleContinuousLanding">
+                {{ continuousLandingActive
+                  ? '停止持续降落'
+                  : continuousLandingArmed ? '确认持续降落' : '持续降落' }}
+              </button>
+              <button
                 class="deck-btn btn-emergency-land"
-                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
-                title="成功=直接降落；失败时设备转为避障并识别二维码降落"
+                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive"
+                title="避障并识别二维码降落"
                 @click="drcLanding('drc_emergency_landing')">
                 {{ drcLandingPending === 'drc_emergency_landing' ? '等待确认…' : '紧急降落' }}
               </button>
               <button
                 class="deck-btn btn-force-land"
-                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive"
                 title="不考虑障碍物直接强制降落"
                 @click="drcLanding('drc_force_landing')">
                 {{ drcLandingPending === 'drc_force_landing' ? '等待确认…' : '强制降落' }}
@@ -6463,12 +6740,12 @@ function toggleFullscreen() {
               </button>
             </div>
             <div class="deck-btns landing-actions">
-              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending" @click="returnHome">
+              <button class="deck-btn btn-rth" :disabled="dockSelectionPending || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive" @click="returnHome">
                 {{ returnHomePending ? '发送中…' : '返航' }}
               </button>
               <button
                 class="deck-btn btn-cancel"
-                :disabled="dockSelectionPending || state === 'connecting' || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                :disabled="dockSelectionPending || state === 'connecting' || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive"
                 @click="cancelReturnHome">
                 {{ returnHomeCancelPending ? '发送中…' : '取消返航' }}
               </button>
@@ -6476,15 +6753,29 @@ function toggleFullscreen() {
                 {{ emergencyStopPending ? '等待确认' : '刹车悬停' }}<br><small>[Space]</small>
               </button>
               <button
+                class="deck-btn btn-continuous-land"
+                :class="{ active: continuousLandingActive, armed: continuousLandingArmed }"
+                :disabled="continuousLandingActionDisabled"
+                :title="continuousLandingActive
+                  ? '立即停止下降并发送零杆量'
+                  : continuousLandingArmed
+                    ? '再次点击确认启动；8 秒后自动取消'
+                    : '通过当前 DRC 会话以 10 Hz 持续发送垂直下降杆量，进入待机后自动停止'"
+                @click="toggleContinuousLanding">
+                {{ continuousLandingActive
+                  ? '停止持续降落'
+                  : continuousLandingArmed ? '确认持续降落' : '持续降落' }}
+              </button>
+              <button
                 class="deck-btn btn-emergency-land"
-                :disabled="dockSelectionPending || state === 'connecting' || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
-                title="成功=直接降落；失败时设备转为避障并识别二维码降落"
+                :disabled="dockSelectionPending || state === 'connecting' || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive"
+                title="避障并识别二维码降落"
                 @click="drcLanding('drc_emergency_landing')">
                 {{ drcLandingPending === 'drc_emergency_landing' ? '等待确认…' : '紧急降落' }}
               </button>
               <button
                 class="deck-btn btn-force-land"
-                :disabled="dockSelectionPending || state === 'connecting' || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending"
+                :disabled="dockSelectionPending || state === 'connecting' || returnHomePending || returnHomeCancelPending || emergencyStopPending || !!drcLandingPending || continuousLandingActive"
                 title="不考虑障碍物直接强制降落"
                 @click="drcLanding('drc_force_landing')">
                 {{ drcLandingPending === 'drc_force_landing' ? '等待确认…' : '强制降落' }}
@@ -8030,6 +8321,28 @@ function toggleFullscreen() {
 }
 .btn-stop small { font-size: 9px; font-weight: 400; opacity: .7; }
 .btn-stop:hover:not(:disabled) { background: rgba(255,93,108,.2); }
+.btn-continuous-land {
+  border-color: rgba(53,214,164,.56);
+  color: #66e0b7;
+  background: rgba(53,214,164,.08);
+}
+.btn-continuous-land:hover:not(:disabled) { background: rgba(53,214,164,.18); }
+.btn-continuous-land.armed {
+  border-color: #ffb04f;
+  color: #fff2d9;
+  background: rgba(255,176,79,.16);
+}
+.btn-continuous-land.active {
+  border-color: #ffb04f;
+  color: #fff2d9;
+  background: rgba(255,176,79,.22);
+  box-shadow: inset 0 0 0 1px rgba(255,176,79,.18), 0 0 10px rgba(255,176,79,.18);
+  animation: continuous-land-pulse 1.1s ease-in-out infinite alternate;
+}
+@keyframes continuous-land-pulse {
+  from { box-shadow: inset 0 0 0 1px rgba(255,176,79,.12), 0 0 4px rgba(255,176,79,.12); }
+  to { box-shadow: inset 0 0 0 1px rgba(255,176,79,.3), 0 0 12px rgba(255,176,79,.34); }
+}
 .btn-emergency-land {
   border-color: rgba(255,176,79,.55);
   color: #ffb04f;

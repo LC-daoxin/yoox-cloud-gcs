@@ -5,7 +5,7 @@ demo_09_dock_control.py -- 设备远程控制（返航、重启等）
 
 其中 5/6 为一键返航与取消返航，无论是否有机巢都可用；
 开舱盖/充电/推杆/补光灯等仅在机巢场景下有效。
-更完整的应急处置（急停/紧急降落/强制降落）见 demo_15_emergency.py。
+DRC 急停悬停示例见 demo_15_emergency.py。
 
 运行：
     python3 demo_09_dock_control.py
