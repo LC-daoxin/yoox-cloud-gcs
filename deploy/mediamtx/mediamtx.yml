@@ -66,11 +66,18 @@ webrtc: true
 webrtcAddress: :8889
 webrtcEncryption: false
 webrtcLocalUDPAddress: :8000
+# Docker Desktop and restrictive enterprise networks can drop UDP ICE traffic.
+# Advertise the same port over TCP so browsers can fall back without touching
+# the device's RTSP publisher.
+webrtcLocalTCPAddress: :8000
 webrtcIPsFromInterfaces: true
 
 pathDefaults:
   source: publisher
-  overridePublisher: false
+  # A device can leave a zero-RTP RTSP control session behind after a network
+  # change or MediaMTX restart. Let the next authenticated start atomically
+  # replace that stale publisher instead of rejecting it forever.
+  overridePublisher: true
 
 paths:
   all_others:

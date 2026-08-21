@@ -125,10 +125,13 @@ public class WaylineJobServiceImpl implements IWaylineJobService {
     }
 
     public List<WaylineJobDTO> getJobsByConditions(String workspaceId, Collection<String> jobIds, WaylineJobStatusEnum status) {
+        // MyBatis-Plus 条件重载会先对第三个参数求值再判断条件，
+        // status 为 null（不按状态过滤）时必须避免调用 status.getVal()，否则 NPE。
+        Integer statusVal = status == null ? null : status.getVal();
         return mapper.selectList(
                         new LambdaQueryWrapper<WaylineJobEntity>()
                                 .eq(WaylineJobEntity::getWorkspaceId, workspaceId)
-                                .eq(Objects.nonNull(status), WaylineJobEntity::getStatus, status.getVal())
+                                .eq(Objects.nonNull(status), WaylineJobEntity::getStatus, statusVal)
                                 .and(!CollectionUtils.isEmpty(jobIds),
                                         wrapper -> jobIds.forEach(id -> wrapper.eq(WaylineJobEntity::getJobId, id).or())))
                 .stream()

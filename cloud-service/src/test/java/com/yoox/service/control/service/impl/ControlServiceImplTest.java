@@ -2,6 +2,7 @@ package com.yoox.service.control.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yoox.api.control.AbstractControlService;
+import com.yoox.api.wayline.AbstractWaylineService;
 import com.yoox.great.context.base.Common;
 import com.yoox.great.context.enums.version.GatewayManager;
 import com.yoox.great.context.enums.version.GatewayTypeEnum;
@@ -15,6 +16,7 @@ import com.yoox.great.mqtt.handle.services.ServicesReplyData;
 import com.yoox.great.mqtt.handle.services.TopicServicesResponse;
 import com.yoox.great.mqtt.model.control.Point;
 import com.yoox.great.mqtt.model.control.TakeoffToPointRequest;
+import com.yoox.great.mqtt.model.wayline.FlighttaskUndoRequest;
 import com.yoox.service.control.model.enums.DroneAuthorityEnum;
 import com.yoox.service.control.model.param.DronePayloadParam;
 import com.yoox.service.control.model.param.FlyToPointParam;
@@ -34,6 +36,7 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -62,6 +65,9 @@ class ControlServiceImplTest {
 
     @Mock
     private AbstractControlService abstractControlService;
+
+    @Mock
+    private AbstractWaylineService abstractWaylineService;
 
     @Mock
     private PayloadAuthorityCacheService payloadAuthorityCacheService;
@@ -268,6 +274,124 @@ class ControlServiceImplTest {
                 GATEWAY_SN, "flyto", param.getFlyToId(), "The device reply was empty.");
         verify(pointFlightTaskStore, never()).recordAccepted(
                 eq(GATEWAY_SN), eq("flyto"), any());
+    }
+
+    @Test
+    void activeTakeoffIsCanceledWithFlighttaskUndoAndItsFlightId() {
+        String flightId = "takeoff-flight-id";
+        DeviceDTO gateway = DeviceDTO.builder()
+                .deviceSn(GATEWAY_SN)
+                .childDeviceSn(AIRCRAFT_SN)
+                .domain(com.yoox.great.context.enums.device.DeviceDomainEnum.REMOTER_CONTROL)
+                .build();
+        when(deviceRedisService.getDeviceOnline(GATEWAY_SN)).thenReturn(Optional.of(gateway));
+        when(deviceRedisService.getDeviceOnline(AIRCRAFT_SN))
+                .thenReturn(Optional.of(DeviceDTO.builder().deviceSn(AIRCRAFT_SN).build()));
+        when(deviceService.checkAuthorityFlight(GATEWAY_SN)).thenReturn(true);
+        when(pointFlightTaskStore.get(GATEWAY_SN)).thenReturn(Optional.of(Map.of(
+                "kind", "takeoff", "flight_id", flightId, "active", true)));
+        when(abstractWaylineService.flighttaskUndoRc(any(GatewayManager.class), any()))
+                .thenReturn(new TopicServicesResponse<ServicesReplyData>()
+                        .setData(new ServicesReplyData<>().setResult(new ServicesErrorCode(0))));
+
+        HttpResultResponse result = controlService.flyToPointStop(GATEWAY_SN);
+
+        assertEquals(HttpResultResponse.CODE_SUCCESS, result.getCode());
+        ArgumentCaptor<FlighttaskUndoRequest> request =
+                ArgumentCaptor.forClass(FlighttaskUndoRequest.class);
+        verify(abstractWaylineService).flighttaskUndoRc(any(GatewayManager.class), request.capture());
+        assertEquals(List.of(flightId), request.getValue().getFlightIds());
+        verify(abstractControlService, never()).flyToPointStopRc(any());
+        verify(pointFlightTaskStore).recordCancelConfirmed(
+                GATEWAY_SN, "Cancel command accepted.");
+        // 设备已确认 undo：RC 内部任务已清，同步清掉 last-takeoff 记录。
+        verify(pointFlightTaskStore).clearLastAcceptedTakeoffId(GATEWAY_SN, flightId);
+    }
+
+    @Test
+    void staleSessionCleanupRefusesWhileTaskIsActive() {
+        when(pointFlightTaskStore.hasPotentiallyActiveTask(GATEWAY_SN)).thenReturn(true);
+
+        HttpResultResponse result = controlService.releaseStaleFlightSessions(GATEWAY_SN);
+
+        assertEquals(HttpResultResponse.CODE_FAILED, result.getCode());
+        verify(abstractControlService, never()).flyToPointStopRc(any());
+        verify(abstractControlService, never()).flyToPointStop(any());
+        verify(abstractWaylineService, never()).flighttaskUndoRc(any(), any());
+        verify(abstractWaylineService, never()).flighttaskUndo(any(), any());
+    }
+
+    @Test
+    void staleSessionCleanupStopsFlyToAndUndoesRememberedTakeoff() {
+        String flightId = "stale-takeoff-id";
+        stubIdleRcGatewayWithFlightAuthority();
+        when(pointFlightTaskStore.getLastAcceptedTakeoffId(GATEWAY_SN))
+                .thenReturn(Optional.of(flightId));
+        when(abstractControlService.flyToPointStopRc(any(GatewayManager.class)))
+                .thenReturn(new TopicServicesResponse<ServicesReplyData>()
+                        .setData(new ServicesReplyData<>().setResult(new ServicesErrorCode(0))));
+        when(abstractWaylineService.flighttaskUndoRc(any(GatewayManager.class), any()))
+                .thenReturn(new TopicServicesResponse<ServicesReplyData>()
+                        .setData(new ServicesReplyData<>().setResult(new ServicesErrorCode(0))));
+
+        HttpResultResponse result = controlService.releaseStaleFlightSessions(GATEWAY_SN);
+
+        assertEquals(HttpResultResponse.CODE_SUCCESS, result.getCode());
+        verify(abstractControlService).flyToPointStopRc(any(GatewayManager.class));
+        ArgumentCaptor<FlighttaskUndoRequest> request =
+                ArgumentCaptor.forClass(FlighttaskUndoRequest.class);
+        verify(abstractWaylineService).flighttaskUndoRc(any(GatewayManager.class), request.capture());
+        assertEquals(List.of(flightId), request.getValue().getFlightIds());
+        verify(pointFlightTaskStore).clearLastAcceptedTakeoffId(GATEWAY_SN, flightId);
+    }
+
+    @Test
+    void staleSessionCleanupSkipsUndoWithoutRememberedTakeoff() {
+        stubIdleRcGatewayWithFlightAuthority();
+        when(pointFlightTaskStore.getLastAcceptedTakeoffId(GATEWAY_SN))
+                .thenReturn(Optional.empty());
+        when(abstractControlService.flyToPointStopRc(any(GatewayManager.class)))
+                .thenReturn(new TopicServicesResponse<ServicesReplyData>()
+                        .setData(new ServicesReplyData<>().setResult(new ServicesErrorCode(0))));
+
+        HttpResultResponse result = controlService.releaseStaleFlightSessions(GATEWAY_SN);
+
+        assertEquals(HttpResultResponse.CODE_SUCCESS, result.getCode());
+        verify(abstractWaylineService, never()).flighttaskUndoRc(any(), any());
+        verify(pointFlightTaskStore, never()).clearLastAcceptedTakeoffId(any(), any());
+    }
+
+    @Test
+    void flyToStopFailureStillUndoesRememberedTakeoffAndRejectedUndoKeepsRecord() {
+        String flightId = "stale-takeoff-id";
+        stubIdleRcGatewayWithFlightAuthority();
+        when(pointFlightTaskStore.getLastAcceptedTakeoffId(GATEWAY_SN))
+                .thenReturn(Optional.of(flightId));
+        when(abstractControlService.flyToPointStopRc(any(GatewayManager.class)))
+                .thenThrow(new RuntimeException("stop reply timed out"));
+        when(abstractWaylineService.flighttaskUndoRc(any(GatewayManager.class), any()))
+                .thenReturn(new TopicServicesResponse<ServicesReplyData>()
+                        .setData(new ServicesReplyData<>().setResult(new ServicesErrorCode(104))));
+
+        HttpResultResponse result = controlService.releaseStaleFlightSessions(GATEWAY_SN);
+
+        assertEquals(HttpResultResponse.CODE_SUCCESS, result.getCode());
+        verify(abstractWaylineService).flighttaskUndoRc(any(GatewayManager.class), any());
+        // 设备未接受 undo：保留记录供下次重试。
+        verify(pointFlightTaskStore, never()).clearLastAcceptedTakeoffId(any(), any());
+    }
+
+    private void stubIdleRcGatewayWithFlightAuthority() {
+        DeviceDTO gateway = DeviceDTO.builder()
+                .deviceSn(GATEWAY_SN)
+                .childDeviceSn(AIRCRAFT_SN)
+                .domain(com.yoox.great.context.enums.device.DeviceDomainEnum.REMOTER_CONTROL)
+                .build();
+        when(pointFlightTaskStore.hasPotentiallyActiveTask(GATEWAY_SN)).thenReturn(false);
+        when(deviceRedisService.getDeviceOnline(GATEWAY_SN)).thenReturn(Optional.of(gateway));
+        when(deviceRedisService.getDeviceOnline(AIRCRAFT_SN))
+                .thenReturn(Optional.of(DeviceDTO.builder().deviceSn(AIRCRAFT_SN).build()));
+        when(deviceService.checkAuthorityFlight(GATEWAY_SN)).thenReturn(true);
     }
 
     private FlyToPointParam flyToParam() {

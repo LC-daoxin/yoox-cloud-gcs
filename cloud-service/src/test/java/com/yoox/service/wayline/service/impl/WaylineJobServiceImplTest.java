@@ -16,6 +16,7 @@ import com.yoox.service.wayline.model.entity.WaylineJobEntity;
 import com.yoox.service.wayline.model.enums.WaylineJobStatusEnum;
 import com.yoox.service.wayline.service.IWaylineRedisService;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -31,6 +32,7 @@ import java.util.List;
 import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -169,6 +171,29 @@ class WaylineJobServiceImplTest {
         assertTrue(sql.contains("WORKSPACE_ID"));
         assertTrue(sql.contains(" IN "));
         assertTrue(sql.contains("NOT IN"));
+    }
+
+    @Test
+    void getJobsByConditionsNullStatusSkipsStatusFilterWithoutNpe() {
+        // 取消任务链路以 status=null 查询任务；回归防护：不得因
+        // status.getVal() 提前求值而抛 NPE。
+        when(mapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+
+        List<WaylineJobDTO> jobs = waylineJobService.getJobsByConditions(
+                "workspace", List.of(JOB_ID), null);
+
+        assertTrue(jobs.isEmpty());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<WaylineJobEntity>> wrapperCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(mapper).selectList(wrapperCaptor.capture());
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), "test"),
+                WaylineJobEntity.class);
+        String sql = wrapperCaptor.getValue().getSqlSegment().toUpperCase(Locale.ROOT);
+        assertTrue(sql.contains("WORKSPACE_ID"));
+        assertFalse(sql.contains("STATUS"),
+                "status 为 null 时不应生成状态过滤条件，实际 SQL: " + sql);
     }
 
     private DeviceDTO gateway(DeviceDomainEnum domain) {

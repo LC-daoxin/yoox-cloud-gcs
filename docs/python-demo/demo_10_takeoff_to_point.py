@@ -11,9 +11,9 @@ import argparse
 from config import (
     DOCK_SN,
     POINT_FLIGHT_WAIT_SECONDS,
+    TAKEOFF_TARGET_LATITUDE,
+    TAKEOFF_TARGET_LONGITUDE,
     TARGET_HEIGHT,
-    TARGET_LATITUDE,
-    TARGET_LONGITUDE,
     TARGET_MAX_SPEED,
 )
 from demo_common import (
@@ -37,8 +37,8 @@ from demo_common import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="YOOX 一键起飞安全 Demo")
     parser.add_argument("action", nargs="?", choices=("go", "status"), default="go")
-    parser.add_argument("--lat", type=float, default=TARGET_LATITUDE)
-    parser.add_argument("--lon", type=float, default=TARGET_LONGITUDE)
+    parser.add_argument("--lat", type=float, default=TAKEOFF_TARGET_LATITUDE)
+    parser.add_argument("--lon", type=float, default=TAKEOFF_TARGET_LONGITUDE)
     parser.add_argument("--height", type=float, default=TARGET_HEIGHT)
     parser.add_argument("--speed", type=float, default=TARGET_MAX_SPEED)
     parser.add_argument("--wait", type=int, default=POINT_FLIGHT_WAIT_SECONDS)
@@ -47,7 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    require_config(YOOX_DOCK_SN=DOCK_SN)
+    require_config(
+        YOOX_DOCK_SN=DOCK_SN,
+        YOOX_TAKEOFF_TARGET_LATITUDE=args.lat,
+        YOOX_TAKEOFF_TARGET_LONGITUDE=args.lon,
+        YOOX_TARGET_HEIGHT=args.height,
+    )
     token = login()
     if args.action == "status":
         print_point_flight_state(get_point_flight_state(token))

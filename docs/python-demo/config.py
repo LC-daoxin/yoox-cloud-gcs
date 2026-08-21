@@ -73,11 +73,15 @@ DRONE_SN = os.getenv("YOOX_DRONE_SN", "YOUR_DRONE_SN").strip()
 PAYLOAD_INDEX = os.getenv("YOOX_PAYLOAD_INDEX", "YOUR_PAYLOAD_INDEX").strip()
 WORKSPACE_ID = os.getenv("YOOX_WORKSPACE_ID", "YOUR_WORKSPACE_ID").strip()
 
-# 点飞/起飞目标。默认为空，必须在 .env 或命令行显式给出。
+# FlyTo/Look At 目标。默认为空，必须在 .env 或命令行显式给出。
 TARGET_LATITUDE = _env_float("YOOX_TARGET_LATITUDE")
 TARGET_LONGITUDE = _env_float("YOOX_TARGET_LONGITUDE")
 TARGET_HEIGHT = _env_float("YOOX_TARGET_HEIGHT")
 TARGET_MAX_SPEED = _env_float("YOOX_TARGET_MAX_SPEED", 5.0)
+
+# 一键起飞使用独立经纬度，避免修改 FlyTo/Look At 目标时误改起飞点。
+TAKEOFF_TARGET_LATITUDE = _env_float("YOOX_TAKEOFF_TARGET_LATITUDE")
+TAKEOFF_TARGET_LONGITUDE = _env_float("YOOX_TAKEOFF_TARGET_LONGITUDE")
 
 # 控制接口超时只限制客户端等待时间，不代表设备没有执行指令。
 HTTP_CONNECT_TIMEOUT = _env_float("YOOX_HTTP_CONNECT_TIMEOUT", 5.0) or 5.0

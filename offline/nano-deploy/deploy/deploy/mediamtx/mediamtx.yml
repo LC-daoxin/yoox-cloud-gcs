@@ -66,11 +66,14 @@ webrtc: true
 webrtcAddress: :8889
 webrtcEncryption: false
 webrtcLocalUDPAddress: :8000
+# Keep a TCP ICE candidate on the same port for networks that block UDP.
+webrtcLocalTCPAddress: :8000
 webrtcIPsFromInterfaces: true
 
 pathDefaults:
   source: publisher
-  overridePublisher: false
+  # Allow a new authenticated publisher to replace a stale zero-RTP session.
+  overridePublisher: true
 
 paths:
   all_others:

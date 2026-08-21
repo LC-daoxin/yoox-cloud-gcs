@@ -14,6 +14,12 @@ public interface IControlService {
 
     HttpResultResponse flyToPointStop(String sn);
 
+    /**
+     * 释放设备侧残留的点飞会话（已完成但 RC 固件未自行终结的 fly_to_point /
+     * takeoff_to_point），供航线执行被 104 拒绝时自动清理；点飞任务仍活跃时拒绝清理。
+     */
+    HttpResultResponse releaseStaleFlightSessions(String sn);
+
     HttpResultResponse getPointFlightState(String sn);
 
     //    CommonTopicReceiver handleFlyToPointProgress(CommonTopicReceiver receiver, MessageHeaders headers);

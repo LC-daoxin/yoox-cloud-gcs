@@ -190,8 +190,8 @@ make smoke
 | 8081 | TCP | 在线 API 文档，可选 |
 | 1883 | TCP | 设备 MQTT |
 | 8554 | TCP | 设备 RTSP 推流 |
-| 8000 | UDP | WebRTC 回退端口 |
-| 8188、8189 | UDP | WebRTC RTP/RTCP |
+| 8000 | UDP/TCP | WebRTC ICE 媒体（TCP 为 UDP 不可达时的回退） |
+| 8188、8189 | UDP | RTSP 入流使用 UDP 时的 RTP/RTCP |
 
 使用 UFW 时可按可信局域网网段限制来源，以下示例网段需要替换：
 
@@ -201,6 +201,7 @@ sudo ufw allow from 192.168.1.0/24 to any port 9000 proto tcp
 sudo ufw allow from 192.168.1.0/24 to any port 1883 proto tcp
 sudo ufw allow from 192.168.1.0/24 to any port 8554 proto tcp
 sudo ufw allow from 192.168.1.0/24 to any port 8000 proto udp
+sudo ufw allow from 192.168.1.0/24 to any port 8000 proto tcp
 sudo ufw allow from 192.168.1.0/24 to any port 8188 proto udp
 sudo ufw allow from 192.168.1.0/24 to any port 8189 proto udp
 ```

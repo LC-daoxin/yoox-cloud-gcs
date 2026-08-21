@@ -25,9 +25,13 @@ public enum FlighttaskStatusEnum {
     TIMEOUT("timeout", true),
 
     PARTIALLY_DONE("partially_done", true),
-    RETURN("return", true),
 
-    PENDING("pending", true);
+    // The aircraft is still returning/landing and continues to own the flight
+    // command. Releasing the runtime job here lets a second wayline reach the
+    // device too early, where it is rejected with result code 104.
+    RETURN("return", false),
+
+    PENDING("pending", false);
 
     private final String status;
 
@@ -53,5 +57,4 @@ public enum FlighttaskStatusEnum {
                 .orElseThrow(() -> new CloudSDKException(FlighttaskStatusEnum.class, status));
     }
 }
-
 

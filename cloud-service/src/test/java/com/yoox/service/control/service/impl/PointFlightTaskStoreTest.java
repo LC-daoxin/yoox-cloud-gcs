@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -58,6 +59,37 @@ class PointFlightTaskStoreTest {
     void mockRedisValueStorage() {
         lenient().when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         lenient().when(valueOperations.get(REDIS_KEY)).thenAnswer(invocation -> storedJson.get());
+    }
+
+    @Test
+    void acceptedTakeoffRemembersFlightIdForStaleCleanup() {
+        taskStore.recordAccepted(GATEWAY_SN, "takeoff", "takeoff-1");
+        taskStore.recordAccepted(GATEWAY_SN, "flyto", "flyto-1");
+
+        // 只有 takeoff 需要为后续 flighttask_undo 记住 flight_id。
+        verify(valueOperations).set(
+                "control:point-flight:last-takeoff:" + GATEWAY_SN, "takeoff-1",
+                TimeUnit.HOURS.toSeconds(24), TimeUnit.SECONDS);
+        verify(valueOperations, times(1)).set(anyString(), anyString(), anyLong(), any(TimeUnit.class));
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void lastTakeoffIdIsClearedOnlyWithMatchingFlightId() {
+        when(valueOperations.get("control:point-flight:last-takeoff:" + GATEWAY_SN))
+                .thenReturn("takeoff-1");
+
+        assertEquals("takeoff-1", taskStore.getLastAcceptedTakeoffId(GATEWAY_SN).orElseThrow());
+
+        taskStore.clearLastAcceptedTakeoffId(GATEWAY_SN, "takeoff-1");
+        ArgumentCaptor<DefaultRedisScript> script =
+                ArgumentCaptor.forClass(DefaultRedisScript.class);
+        verify(stringRedisTemplate).execute(
+                script.capture(),
+                eq(List.of("control:point-flight:last-takeoff:" + GATEWAY_SN)),
+                eq("takeoff-1"));
+        // CAS 删除：值不匹配时不删，避免误删并发新起飞的记录。
+        assertTrue(script.getValue().getScriptAsString().contains("== ARGV[1]"));
     }
 
     @Test
@@ -177,7 +209,7 @@ class PointFlightTaskStoreTest {
                 + "\"flight_id\":\"takeoff-1\",\"status\":\"task_finish\",\"active\":false}";
         when(stringRedisTemplate.execute(
                 any(DefaultRedisScript.class), any(List.class),
-                anyString(), anyString(), anyString(), anyString()))
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(finished);
 
         Map<String, Object> state = taskStore.finishProgressingTaskOnIdle(GATEWAY_SN).orElseThrow();
@@ -186,9 +218,13 @@ class PointFlightTaskStoreTest {
                 ArgumentCaptor.forClass(DefaultRedisScript.class);
         verify(stringRedisTemplate).execute(
                 script.capture(), eq(List.of(REDIS_KEY, ACTIVE_KEY)),
-                anyString(), eq(TTL_SECONDS), eq("0"), eq("Aircraft returned to idle mode."));
+                anyString(), eq(TTL_SECONDS), eq("0"), eq("Aircraft returned to idle mode."),
+                anyString(), eq("Released stale takeoff command because the aircraft remained idle."));
         String lua = script.getValue().getScriptAsString();
-        assertTrue(lua.contains("current['status'] or '') ~= 'wayline_progress'"));
+        assertTrue(lua.contains("status ~= 'wayline_progress' and not staleTakeoff"));
+        assertTrue(lua.contains("status == 'command_accepted'"));
+        assertTrue(lua.contains("updated <= staleBefore"));
+        assertTrue(lua.contains("current['status'] = 'command_failed'"));
         assertTrue(lua.contains("current['status'] = 'task_finish'"));
         assertTrue(lua.contains("current['status'] = 'wayline_cancel'"));
         assertTrue(lua.contains("redis.call('del', KEYS[2])"));
@@ -203,7 +239,7 @@ class PointFlightTaskStoreTest {
                 + "\"flight_id\":\"takeoff-1\",\"status\":\"task_finish\",\"active\":false}";
         when(stringRedisTemplate.execute(
                 any(DefaultRedisScript.class), any(List.class),
-                anyString(), anyString(), anyString(), anyString()))
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(finished);
 
         Map<String, Object> state =
@@ -214,7 +250,7 @@ class PointFlightTaskStoreTest {
         verify(stringRedisTemplate).execute(
                 script.capture(), eq(List.of(REDIS_KEY, ACTIVE_KEY)),
                 anyString(), eq(TTL_SECONDS), eq("1"),
-                eq("Takeoff completed. The aircraft is hovering."));
+                eq("Takeoff completed. The aircraft is hovering."), eq("0"), eq(""));
         String lua = script.getValue().getScriptAsString();
         assertTrue(lua.contains("ARGV[3] == '1' and current['kind'] ~= 'takeoff'"));
         assertEquals("task_finish", state.get("status"));

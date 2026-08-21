@@ -56,6 +56,8 @@ public class SDKDeviceService extends AbstractDeviceService {
 
     private static final long MISSING_CAPACITY_DEVICE_SN_LOG_INTERVAL_MS = 60_000L;
 
+    private static final float POINT_FLIGHT_GROUND_HEIGHT_MAX_METERS = 1.5F;
+
     private final Map<String, AtomicLong> missingCapacityDeviceSnLogAt = new ConcurrentHashMap<>();
 
     @Autowired
@@ -263,7 +265,8 @@ public class SDKDeviceService extends AbstractDeviceService {
         deviceRedisService.setDeviceOsd(from, request.getData());
 
         finishPointFlightWhenIdle(
-                request.getGateway(), request.getData().getModeCode(), device.getWorkspaceId());
+                request.getGateway(), request.getData().getModeCode(),
+                request.getData().getHeight(), device.getWorkspaceId());
 
         deviceService.pushOsdDataToWeb(device.getWorkspaceId(), BizCodeEnum.DEVICE_OSD, from, request.getData());
     }
@@ -358,7 +361,8 @@ public class SDKDeviceService extends AbstractDeviceService {
 
         OsdRcDrone data = request.getData();
         deviceRedisService.setDeviceOsd(from, data);
-        finishPointFlightWhenIdle(request.getGateway(), data.getModeCode(), device.getWorkspaceId());
+        finishPointFlightWhenIdle(
+                request.getGateway(), data.getModeCode(), data.getHeight(), device.getWorkspaceId());
         deviceService.pushOsdDataToPilot(device.getWorkspaceId(), from,
                 new DeviceOsdHost()
                         .setLatitude(data.getLatitude())
@@ -373,14 +377,14 @@ public class SDKDeviceService extends AbstractDeviceService {
     }
 
     private void finishPointFlightWhenIdle(
-            String gatewaySn, DroneModeCodeEnum modeCode, String workspaceId) {
+            String gatewaySn, DroneModeCodeEnum modeCode, Float height, String workspaceId) {
         if (!StringUtils.hasText(gatewaySn) || !StringUtils.hasText(workspaceId)) {
             return;
         }
         // RC 不上报起飞任务的终结事件：到点后转 MANUAL 悬停即视为起飞完成，
         // 否则任务一直占用点飞额度，悬停期间指点飞行会被拦截。
         Optional<Map<String, Object>> finished;
-        if (modeCode == DroneModeCodeEnum.IDLE) {
+        if (isGroundIdle(modeCode, height)) {
             finished = pointFlightTaskStore.finishProgressingTaskOnIdle(gatewaySn);
         } else if (modeCode == DroneModeCodeEnum.MANUAL) {
             finished = pointFlightTaskStore.finishProgressingTakeoffOnManual(gatewaySn);
@@ -397,6 +401,18 @@ public class SDKDeviceService extends AbstractDeviceService {
             log.info("Finished {} point-flight task for gateway {} because aircraft mode is {}.",
                     kind, gatewaySn, modeCode);
         });
+    }
+
+    /**
+     * Some RC firmware keeps reporting mode 0 briefly after takeoff. Mode alone
+     * must therefore never release a point-flight claim while the aircraft is
+     * already airborne.
+     */
+    static boolean isGroundIdle(DroneModeCodeEnum modeCode, Float height) {
+        return modeCode == DroneModeCodeEnum.IDLE
+                && height != null
+                && Float.isFinite(height)
+                && height <= POINT_FLIGHT_GROUND_HEIGHT_MAX_METERS;
     }
 
     private void markOnlineFromOsd(DeviceDTO device, String gatewaySn, boolean wasOnline) {

@@ -2,7 +2,7 @@
 import mqtt, { type MqttClient } from 'mqtt'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ApiError, del, get, listFrom, post, put } from '../services/api'
-import { WhepPlayer, type WhepState } from '../services/whep'
+import { WhepPlayer, isWhepConnectivityError, type WhepState } from '../services/whep'
 import { deviceWs } from '../services/ws'
 import { loadAMap, getAmapKey } from '../services/amap'
 import { gcj02ToWgs84, wgs84ToGcj02 } from '../services/geo'
@@ -293,12 +293,12 @@ const waylineTaskNotice = ref('')
 const waylineTaskDockSn = ref('')
 const cockpitWaylines = ref<CockpitWayline[]>([])
 const selectedWaylineId = ref('')
-const waylineTaskConfirmed = ref(false)
+const waylineTaskConfirmed = ref(true)
 const waylineTaskForm = reactive({
-  rthAltitude: 100,
-  minBatteryCapacity: 60,
+  rthAltitude: 20,
+  minBatteryCapacity: 15,
   barrierSwitchState: 1,
-  takeoffAltitude: 100,
+  takeoffAltitude: 20,
   firstWaypointSpeed: 10,
   returnSpeed: 10
 })
@@ -907,6 +907,11 @@ const waylineTaskBlockedReason = computed(() => {
     return 'DRC 状态正在切换，请稍候'
   }
   if (operationPanelState.value === 'task') return '当前飞机已有任务正在执行'
+  // 固件限制：航线任务指令需要在无人机关机或停桨时才能执行（官方文档明确）。
+  // 模式未知（-1，OSD 未到）时放行，由服务端兜底拦截。
+  if (telemetry.modeCode > 0) {
+    return `航线任务需飞机停桨在地面执行（当前状态：${modeLabel(telemetry.modeCode)}，mode=${telemetry.modeCode}），请先降落或返航`
+  }
   if (telemetry.pointFlightActive) return '当前存在指点飞行任务，请先结束任务'
   if (!selectedCockpitWayline.value) return '请选择要执行的航线'
   if (!waylineTaskFormValid.value) return '请检查任务参数是否在允许范围内'
@@ -2303,7 +2308,7 @@ function pointFlightStatusLabel(status?: string) {
 function waylineStatusLabel(status?: string) {
   return ({
     pending: '开始执行', sent: '已下发', in_progress: '执行中',
-    paused: '已暂停', ok: '执行成功', partially_done: '部分完成',
+    paused: '已暂停', return: '返航收尾中', ok: '执行成功', partially_done: '部分完成',
     canceled: '取消或终止', failed: '失败', rejected: '拒绝', timeout: '超时'
   } as Record<string, string>)[status ?? ''] ?? '等待事件'
 }
@@ -2347,14 +2352,14 @@ function applyWaylineProgress(data: Record<string, unknown>) {
 
 function resetWaylineTaskForm() {
   Object.assign(waylineTaskForm, {
-    rthAltitude: 100,
-    minBatteryCapacity: 60,
+    rthAltitude: 20,
+    minBatteryCapacity: 15,
     barrierSwitchState: 1,
-    takeoffAltitude: 100,
+    takeoffAltitude: 20,
     firstWaypointSpeed: 10,
     returnSpeed: 10
   })
-  waylineTaskConfirmed.value = false
+  waylineTaskConfirmed.value = true
 }
 
 function closeWaylineTask() {
@@ -2407,17 +2412,13 @@ async function startWaylineTask() {
   const targetDockSn = waylineTaskDockSn.value
   if (!file || waylineTaskBlockedReason.value || waylineTaskSubmitting.value) return
 
-  const drcExitNotice = active.value ? '\n当前 DRC 会话将先安全退出。' : ''
+  // 航线任务不依赖退出 DRC：EVO RC 允许 DRC 会话在线时下发并执行航线任务。
   if (!window.confirm(
-    `确认由设备 ${targetDockSn} 立即执行航线“${file.name}”？${drcExitNotice}\n请确保空域、天气、现场人员和应急接管条件均已确认。`)) return
+    `确认由设备 ${targetDockSn} 立即执行航线“${file.name}”？\n请确保空域、天气、现场人员和应急接管条件均已确认。`)) return
 
   waylineTaskSubmitting.value = true
   waylineTaskError.value = ''
   try {
-    if (active.value || state.value === 'connecting') {
-      await leaveDrc('wayline-task-start')
-      if (pendingDrcExit.value) throw new Error('设备尚未确认退出 DRC，航线任务未下发，请先重试退出 DRC')
-    }
     if (selectedDock.value?.device_sn !== targetDockSn || !selectedAircraftOnline.value) {
       throw new Error('执行设备已离线或发生变化，航线任务未下发')
     }
@@ -4355,7 +4356,7 @@ function monitorVideoBitrate() {
         void retryVideoPlayback(false)
       }
     } else if (
-      videoState.value === 'idle' &&
+      ['idle', 'failed', 'disconnected'].includes(videoState.value) &&
       reportedLive.value &&
       selectedSource.value &&
       now - lastAutoVideoRetryAt >= 15_000
@@ -4447,6 +4448,10 @@ function videoOperationIsCurrent(operation: number, sourceKey: string) {
   return operation === videoOperationGeneration &&
     selectedSource.value?.key === sourceKey &&
     !componentExiting
+}
+
+function videoWaitingForFirstFrame() {
+  return videoState.value === 'waiting'
 }
 
 function streamStartOutcomeUncertain(reason: unknown) {
@@ -4547,6 +4552,7 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
   const publisherKey = `${videoId.drone_sn}/${videoId.payload_index}`
   let startRequestAcknowledged = false
   let explicitStartFailure = false
+  let playbackConnectivityFailure = false
   const requestedQuality = preferredVideoQualities.get(publisherKey) ?? 2
   preferredVideoQualities.set(publisherKey, requestedQuality)
   videoQuality.value = requestedQuality
@@ -4571,13 +4577,17 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
     // The MediaMTX path is deterministic. Probe it first so an already-running
     // device publisher can be consumed without sending stop/start commands.
     const existingWhepUrl = `/webrtc/${source.deviceSn}-${source.cameraIndex}/whep`
+    let existingPlaybackError: unknown
     const reusedExistingStream = await player.play(videoElement.value, existingWhepUrl, {
-      timeoutMs: 2_500,
+      timeoutMs: 10_000,
       onState: updateVideoState,
       onStats: updateVideoStats
     })
       .then(() => true)
-      .catch(() => false)
+      .catch((reason) => {
+        existingPlaybackError = reason
+        return false
+      })
     if (!videoOperationIsCurrent(operation, sourceKey)) return
 
     if (reusedExistingStream) {
@@ -4619,6 +4629,14 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
       }
       videoPlaying.value = true
       return
+    }
+
+    // A successful WHEP answer followed by an ICE failure proves the publisher
+    // path exists. Do not send another start/stop command to the aircraft for a
+    // browser-to-MediaMTX network problem.
+    if (isWhepConnectivityError(existingPlaybackError)) {
+      playbackConnectivityFailure = true
+      throw existingPlaybackError
     }
 
     // No playable publisher exists, so ask the selected device to start one.
@@ -4669,6 +4687,7 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
       .then(() => true)
       .catch((reason) => {
         playbackError = reason
+        playbackConnectivityFailure = isWhepConnectivityError(reason)
         return false
       })
 
@@ -4681,7 +4700,7 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
     ])
     if (!videoOperationIsCurrent(operation, sourceKey)) return
     let recovered = false
-    if (initialPlayback !== true) {
+    if (initialPlayback !== true && videoWaitingForFirstFrame()) {
       recovered = await recoverVideoEncoder(source, lens.value, operation, sourceKey)
       if (!videoOperationIsCurrent(operation, sourceKey)) return
     }
@@ -4697,6 +4716,7 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
         .then(() => true)
         .catch((reason) => {
           playbackError = reason
+          playbackConnectivityFailure = isWhepConnectivityError(reason)
           return false
         })
       if (!videoOperationIsCurrent(operation, sourceKey)) return
@@ -4714,7 +4734,9 @@ async function performStartVideo(operation: number, sourceKey: string, retryAtte
     // The first timeout may only mean a late encoder, so retry WHEP once without
     // disturbing the publisher. A second complete timeout means live_status can
     // be a stale "1"; stop that zombie session before the final start attempt.
-    const restartPublisher = retryAttempt === 1 && startedVideoIds.has(publisherKey)
+    playbackConnectivityFailure ||= isWhepConnectivityError(reason)
+    const restartPublisher = !playbackConnectivityFailure &&
+      retryAttempt === 1 && startedVideoIds.has(publisherKey)
     await resetVideoSession(
       restartPublisher,
       () => videoOperationIsCurrent(operation, sourceKey),
@@ -4840,10 +4862,12 @@ async function resetVideoSession(
   videoSize.value = ''
   zeroBitrateSince = 0
   videoConnectingSince = 0
-  reportedLive.value = false
+  if (stopDevice) {
+    reportedLive.value = false
+    liveLensType.value = ''
+    reportedVideoQuality.value = undefined
+  }
   reusedPublisher.value = false
-  liveLensType.value = ''
-  reportedVideoQuality.value = undefined
 }
 
 async function detachVideoForDeviceSwitch() {
@@ -4855,6 +4879,10 @@ async function detachVideoForDeviceSwitch() {
   // Publisher ownership remains keyed by device/payload, so a later explicit
   // stop targets that device without leaking ownership into the next device.
   await resetVideoSession(false, () => operation === videoOperationGeneration)
+  if (operation !== videoOperationGeneration) return
+  reportedLive.value = false
+  liveLensType.value = ''
+  reportedVideoQuality.value = undefined
 }
 
 async function stopVideo() {
@@ -5460,8 +5488,10 @@ async function stopPointFlight() {
   const targetDockSn = selectedDock.value?.device_sn
   if (dockSelectionPending.value || !targetDockSn || flyToStopPending.value ||
       !selectedAircraftOnline.value ||
-      pointFlightProgress.value?.kind !== 'flyto' || !telemetry.pointFlightActive ||
-      !window.confirm('确认结束当前 FlyTo 飞向目标点任务？')) return
+      !telemetry.pointFlightActive ||
+      !window.confirm(pointFlightProgress.value?.kind === 'takeoff'
+        ? '确认取消当前一键起飞任务？'
+        : '确认结束当前指点飞行任务？')) return
   flyToStopPending.value = true
   try {
     if (!hasFlightAuthority.value && !await grabFlightAuthority(targetDockSn)) {
@@ -5469,15 +5499,15 @@ async function stopPointFlight() {
       return
     }
     if (!controlTargetValid(targetDockSn)) throw new Error('设备或飞行控制权状态已变化，已取消结束 FlyTo')
-    await del(`/control/api/v1/devices/${targetDockSn}/jobs/fly-to-point`, undefined, CONTROL_REQUEST_OPTIONS)
-    if (!await loadPointFlightState(targetDockSn)) {
+    await del(`/control/api/v1/devices/${targetDockSn}/jobs/point-flight`, undefined, CONTROL_REQUEST_OPTIONS)
+    if (!await loadPointFlightState(targetDockSn) && pointFlightProgress.value) {
       pointFlightProgress.value = { ...pointFlightProgress.value, status: 'cancel_requested' }
     }
     showCameraActionTip('取消指令已受理，等待设备结果事件')
   } catch (reason) {
     flyToStopPending.value = false
     if (!await loadPointFlightState(targetDockSn)) {
-      error.value = reason instanceof Error ? reason.message : '结束 FlyTo 任务失败'
+      error.value = reason instanceof Error ? reason.message : '取消当前飞行任务失败'
     }
   }
 }
@@ -5843,7 +5873,16 @@ function toggleFullscreen() {
             <span>我已确认航线、返航高度、空域、天气、现场人员和应急接管条件。</span>
           </label>
           <p v-if="active" class="wayline-task-drc-note">开始执行前将先归零控制量并安全退出当前 DRC 会话。</p>
-          <p v-if="waylineTaskBlockedReason" class="wayline-task-blocked">{{ waylineTaskBlockedReason }}</p>
+          <div v-if="waylineTaskBlockedReason" class="wayline-task-blocked-row">
+            <p class="wayline-task-blocked">{{ waylineTaskBlockedReason }}</p>
+            <button
+              v-if="telemetry.pointFlightActive"
+              type="button"
+              :disabled="!selectedAircraftOnline || flyToStopPending"
+              @click="stopPointFlight">
+              {{ flyToStopPending ? '取消中…' : pointFlightProgress?.kind === 'takeoff' ? '取消起飞任务' : '结束指点飞行' }}
+            </button>
+          </div>
           <p v-if="waylineTaskError" class="wayline-task-error" role="alert">{{ waylineTaskError }}</p>
 
           <footer>
@@ -6547,7 +6586,14 @@ function toggleFullscreen() {
                 <small>范围 2–1500 m</small>
               </label>
             </div>
-            <button class="takeoff-side-action" :disabled="dockSelectionPending || takeoffPending || telemetry.pointFlightActive || !selectedDock || !selectedAircraftOnline" @click="oneKeyTakeoff">
+            <button
+              v-if="telemetry.pointFlightActive"
+              class="takeoff-side-action"
+              :disabled="dockSelectionPending || flyToStopPending || !selectedDock || !selectedAircraftOnline"
+              @click="stopPointFlight">
+              <span>■</span>{{ flyToStopPending ? '取消中…' : pointFlightProgress?.kind === 'takeoff' ? '取消起飞任务' : '结束指点飞行' }}
+            </button>
+            <button v-else class="takeoff-side-action" :disabled="dockSelectionPending || takeoffPending || !selectedDock || !selectedAircraftOnline" @click="oneKeyTakeoff">
               <span>▲</span>{{ takeoffPending ? '起飞中…' : '一键起飞' }}
             </button>
             <p
@@ -7190,6 +7236,13 @@ function toggleFullscreen() {
 .wayline-task-error { margin: 10px 0 0; padding: 8px 10px; border-radius: 7px; font-size: 10px; line-height: 1.45; }
 .wayline-task-drc-note { color: #8dcaff; background: rgba(63,169,255,.08); }
 .wayline-task-blocked { color: #ffc779; background: rgba(255,176,79,.09); }
+.wayline-task-blocked-row { display: flex; align-items: stretch; gap: 8px; margin-top: 10px; }
+.wayline-task-blocked-row .wayline-task-blocked { flex: 1; margin: 0; }
+.wayline-task-blocked-row button {
+  padding: 0 12px; border: 1px solid rgba(255,93,108,.38); border-radius: 7px;
+  color: #ff9aa5; background: rgba(255,93,108,.08); font-size: 10px; font-weight: 600; cursor: pointer;
+}
+.wayline-task-blocked-row button:disabled { opacity: .42; cursor: not-allowed; }
 .wayline-task-error { color: #ff9aa5; background: rgba(255,93,108,.09); }
 .wayline-task-form footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .wayline-task-form footer button {

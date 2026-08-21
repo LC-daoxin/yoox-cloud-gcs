@@ -41,7 +41,7 @@ public class DockController {
         return controlService.flyToPoint(sn, param);
     }
 
-    @DeleteMapping("/{sn}/jobs/fly-to-point")
+    @DeleteMapping({"/{sn}/jobs/fly-to-point", "/{sn}/jobs/point-flight"})
     public HttpResultResponse flyToPointStop(@PathVariable String sn, HttpServletRequest request) {
         controlAccessService.requireDevice(request, sn);
         return controlService.flyToPointStop(sn);

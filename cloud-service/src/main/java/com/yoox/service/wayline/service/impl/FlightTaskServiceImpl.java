@@ -1,12 +1,13 @@
 package com.yoox.service.wayline.service.impl;
 
 import com.yoox.api.media.AbstractMediaService;
-import com.yoox.api.wayline.AbstractWaylineService;
 import com.yoox.great.context.error.CommonErrorEnum;
 import com.yoox.great.context.model.CustomClaim;
 import com.yoox.great.context.response.HttpResultResponse;
 import com.yoox.great.mqtt.core.consume.MqttReply;
+import com.yoox.great.mqtt.constant.ChannelName;
 import com.yoox.great.context.enums.device.DeviceDomainEnum;
+import com.yoox.great.mqtt.enums.device.DroneModeCodeEnum;
 import com.yoox.great.mqtt.enums.device.ExitWaylineWhenRcLostEnum;
 import com.yoox.great.mqtt.enums.wayline.BarrierSwitchStateEnum;
 import com.yoox.great.mqtt.enums.wayline.MediaUploadMethodEnum;
@@ -23,8 +24,10 @@ import com.yoox.great.mqtt.handle.services.TopicServicesResponse;
 import com.yoox.great.redis.RedisConst;
 import com.yoox.great.redis.RedisOpsUtils;
 import com.yoox.great.websocket.service.IWebSocketMessageService;
+import com.yoox.service.control.service.IControlService;
 import com.yoox.service.manage.model.dto.DeviceDTO;
 import com.yoox.service.manage.service.IDeviceRedisService;
+import com.yoox.service.manage.service.IDeviceService;
 import com.yoox.service.media.model.MediaFileCountDTO;
 import com.yoox.service.media.service.IMediaRedisService;
 import com.yoox.service.wayline.model.dto.ConditionalWaylineJobKey;
@@ -43,6 +46,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.http.HttpStatus;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.integration.annotation.ServiceActivator;
 import org.springframework.messaging.MessageHeaders;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -58,7 +63,21 @@ import java.util.stream.Collectors;
 
 @Service
 @Slf4j
-public class FlightTaskServiceImpl extends AbstractWaylineService implements IFlightTaskService {
+public class FlightTaskServiceImpl implements IFlightTaskService {
+
+    /**
+     * The RC can acknowledge {@code flighttask_prepare} before its internal task
+     * state has become idle. In that short window {@code flighttask_execute}
+     * returns the common transient code 104. Only this explicit rejection is
+     * safe to retry: no flight command was accepted by the device.
+     */
+    private static final int COMMAND_IN_PROGRESS_CODE = 104;
+
+    private static final int EXECUTE_BUSY_MAX_ATTEMPTS = 6;
+
+    private static final long EXECUTE_BUSY_RETRY_DELAY_MILLIS = 1_000L;
+
+    private static final long EXECUTE_BUSY_MAX_RETRY_DELAY_MILLIS = 10_000L;
 
     @Autowired
     private ObjectMapper mapper;
@@ -73,6 +92,9 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
     private IDeviceRedisService deviceRedisService;
 
     @Autowired
+    private IDeviceService deviceService;
+
+    @Autowired
     private IWaylineRedisService waylineRedisService;
 
     @Autowired
@@ -83,6 +105,11 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
 
     @Autowired
     private SDKWaylineService abstractWaylineService;
+
+    // @Lazy 打破 FlightTaskServiceImpl → ControlServiceImpl → SDKControlService → 本类的循环依赖
+    @Autowired
+    @Lazy
+    private IControlService controlService;
 
     @Autowired
     @Qualifier("mediaServiceImpl")
@@ -296,6 +323,33 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
             throw new RuntimeException("Dock is offline.");
         }
 
+        // An immediate prepare must not be sent while the preceding mission is
+        // returning, landing, or paused. Some RC firmware accepts prepare but
+        // then rejects execute with code 104, leaving a misleading failed job.
+        if (TaskTypeEnum.IMMEDIATE == waylineJob.getTaskType()) {
+            Optional<EventsReceiver<FlighttaskProgress>> running =
+                    waylineRedisService.getRunningWaylineJob(waylineJob.getDockSn());
+            if (running.isPresent()
+                    && !waylineJob.getJobId().equals(running.get().getBid())) {
+                throw new IllegalStateException(
+                        "The previous wayline job is still returning or completing. "
+                                + "Wait for its final status before starting another job.");
+            }
+            String pausedJobId = waylineRedisService.getPausedWaylineJobId(waylineJob.getDockSn());
+            if (StringUtils.hasText(pausedJobId)
+                    && !waylineJob.getJobId().equals(pausedJobId)) {
+                throw new IllegalStateException(
+                        "A paused wayline job still owns this gateway. Resume or cancel it first.");
+            }
+            try {
+                requireAircraftGroundedForWayline(waylineJob.getDockSn());
+            } catch (IllegalStateException e) {
+                // 立即任务被拦截即失败终态；前端重试总是新建任务，保留 PENDING 只会堆积。
+                failJob(waylineJob.getJobId(), HttpStatus.SC_CONFLICT);
+                throw e;
+            }
+        }
+
         boolean isSuccess = this.prepareFlightTask(waylineJob);
         if (!isSuccess) {
             return HttpResultResponse.error("Failed to prepare job.");
@@ -333,6 +387,7 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
             throw new SQLException("Wayline file doesn't exist.");
         }
         URL url = waylineFileService.getObjectUrl(waylineJob.getWorkspaceId(), waylineFile.get().getId());
+        boolean rcGateway = isRcGateway(waylineJob.getDockSn());
         FlighttaskPrepareRequest flightTask = new FlighttaskPrepareRequest()
                 .setFlightId(waylineJob.getJobId())
                 .setExecuteTime(waylineJob.getBeginTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli())
@@ -341,21 +396,33 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
                 .setRthAltitude(waylineJob.getRthAltitude())
                 .setOutOfControlAction(waylineJob.getOutOfControlAction())
                 .setExitWaylineWhenRcLost(ExitWaylineWhenRcLostEnum.EXECUTE_RC_LOST_ACTION)
-                // Autel 航线管理扩展字段；未指定时精度默认 GPS、避障默认打开、媒体默认落地上传、备降点标记未配置
-                .setWaylinePrecisionType(Objects.requireNonNullElse(
-                        waylineJob.getWaylinePrecisionType(), WaylinePrecisionTypeEnum.GPS))
-                .setBarrierSwitchState(Objects.requireNonNullElse(
-                        waylineJob.getBarrierSwitchState(), BarrierSwitchStateEnum.ENABLE))
-                .setTakeoffAltitude(waylineJob.getTakeoffAltitude())
-                .setFirstWaypointSpeed(waylineJob.getFirstWaypointSpeed())
-                .setReturnSpeed(waylineJob.getReturnSpeed())
-                .setMediaUploadMethod(Objects.requireNonNullElse(
-                        waylineJob.getMediaUploadMethod(), MediaUploadMethodEnum.AFTER_LANDING))
-                .setAlternateLandPoint(Objects.requireNonNullElse(
-                        waylineJob.getAlternateLandPoint(), new AlternateLandPoint().setIsConfigured(0)))
                 .setFile(new FlighttaskFile()
                         .setUrl(url.toString())
                         .setFingerprint(waylineFile.get().getSign()));
+
+        if (rcGateway) {
+            // 2026-08-21 MQTT 直连 A/B 实测(EVO RC 1.9.1.203):takeoff_altitude 为
+            // 必需字段(缺失时任务 316009 失败);其余 Autel 扩展字段(rth_mode/精度/
+            // 避障/速度/媒体/备降点)与全量载荷一起发送会导致 314010"执行任务指令
+            // 发送失败",RC 甚至不去下载 KMZ。因此 RC 只发实测成功的字段集。
+            flightTask.setRthMode(null);
+            flightTask.setTakeoffAltitude(Objects.requireNonNullElse(
+                    waylineJob.getTakeoffAltitude(), waylineJob.getRthAltitude()));
+        } else {
+            // 机场(dock)网关保留全量扩展字段;未指定时精度默认 GPS、避障默认打开、
+            // 媒体默认落地上传、备降点标记未配置。
+            flightTask.setWaylinePrecisionType(Objects.requireNonNullElse(
+                            waylineJob.getWaylinePrecisionType(), WaylinePrecisionTypeEnum.GPS))
+                    .setBarrierSwitchState(Objects.requireNonNullElse(
+                            waylineJob.getBarrierSwitchState(), BarrierSwitchStateEnum.ENABLE))
+                    .setTakeoffAltitude(waylineJob.getTakeoffAltitude())
+                    .setFirstWaypointSpeed(waylineJob.getFirstWaypointSpeed())
+                    .setReturnSpeed(waylineJob.getReturnSpeed())
+                    .setMediaUploadMethod(Objects.requireNonNullElse(
+                            waylineJob.getMediaUploadMethod(), MediaUploadMethodEnum.AFTER_LANDING))
+                    .setAlternateLandPoint(Objects.requireNonNullElse(
+                            waylineJob.getAlternateLandPoint(), new AlternateLandPoint().setIsConfigured(0)));
+        }
 
         if (TaskTypeEnum.CONDITIONAL == waylineJob.getTaskType()) {
             if (Objects.isNull(waylineJob.getConditions())) {
@@ -365,7 +432,7 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
             flightTask.setExecutableConditions(waylineJob.getConditions().getExecutableConditions());
         }
 
-        TopicServicesResponse<ServicesReplyData> serviceReply = isRcGateway(waylineJob.getDockSn())
+        TopicServicesResponse<ServicesReplyData> serviceReply = rcGateway
                 ? abstractWaylineService.flighttaskPrepareRc(
                         SDKManager.getDeviceSDK(waylineJob.getDockSn()), flightTask)
                 : abstractWaylineService.flighttaskPrepare(
@@ -405,6 +472,12 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
         boolean isOnline = deviceRedisService.checkDeviceOnline(job.getDockSn());
         if (!isOnline) {
             throw new RuntimeException("Dock is offline.");
+        }
+        try {
+            requireAircraftGroundedForWayline(job.getDockSn());
+        } catch (IllegalStateException e) {
+            failJob(jobId, HttpStatus.SC_CONFLICT);
+            throw e;
         }
 
         String operationToken = acquireWaylineOperation(job.getDockSn());
@@ -448,13 +521,22 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
                 throw e;
             }
 
-            TopicServicesResponse<ServicesReplyData> serviceReply = isRcGateway(job.getDockSn())
-                    ? abstractWaylineService.flighttaskExecuteRc(
-                            SDKManager.getDeviceSDK(job.getDockSn()), new FlighttaskExecuteRequest().setFlightId(jobId))
-                    : abstractWaylineService.flighttaskExecute(
-                            SDKManager.getDeviceSDK(job.getDockSn()), new FlighttaskExecuteRequest().setFlightId(jobId));
+            TopicServicesResponse<ServicesReplyData> serviceReply = executeWithBusyRetry(job);
             if (!hasSuccessfulResult(serviceReply)) {
                 log.info("Execute job ====> Error: {}", replyResult(serviceReply));
+                if (Optional.ofNullable(replyResult(serviceReply))
+                        .map(result -> result.getCode() == COMMAND_IN_PROGRESS_CODE)
+                        .orElse(false)) {
+                    // 104 拒绝无外部副作用，但任务也进终态：前端重试总是新建任务，
+                    // 保留 PENDING 只会在任务列表堆积废弃记录。
+                    failJob(jobId, COMMAND_IN_PROGRESS_CODE);
+                    throw new IllegalStateException(
+                            "The aircraft rejected the wayline start (code 104: another command in "
+                                    + "progress). This firmware only starts wayline missions on the "
+                                    + "ground with motors stopped—land or return home first. If the "
+                                    + "aircraft is already on the ground, wait a moment for it to "
+                                    + "finish parsing the wayline and retry.");
+                }
                 waylineJobService.updateJobIfNotEnded(WaylineJobDTO.builder()
                         .jobId(jobId)
                         .executeTime(LocalDateTime.now())
@@ -529,9 +611,17 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
         Set<String> rejectedJobIds = new LinkedHashSet<>(requestedJobIds);
         rejectedJobIds.removeAll(acceptedJobIds);
         if (!rejectedJobIds.isEmpty()) {
+            Map<String, WaylineJobStatusEnum> currentStates = waylineJobs.stream()
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toMap(WaylineJobDTO::getJobId,
+                            job -> WaylineJobStatusEnum.find(job.getStatus()), (left, right) -> left));
+            String detail = rejectedJobIds.stream()
+                    .map(id -> id + "(" + Optional.ofNullable(currentStates.get(id))
+                            .map(Enum::toString).orElse("NOT_FOUND") + ")")
+                    .collect(Collectors.joining(", "));
             throw new IllegalArgumentException(
-                    "These tasks do not exist or cannot be canceled in their current status. "
-                            + Arrays.toString(rejectedJobIds.toArray()));
+                    "These jobs are already finished or do not exist and cannot be canceled: "
+                            + detail + ". Refresh the job list to see the latest status.");
         }
 
         // A previously confirmed cancellation is an idempotent local-reconciliation
@@ -682,7 +772,10 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
         WaylineJobDTO waylineJob = waylineJobOpt.get();
         WaylineJobStatusEnum persistedStatus = WaylineJobStatusEnum.find(waylineJob.getStatus());
         if (persistedStatus.getEnd() || WaylineJobStatusEnum.PENDING == persistedStatus) {
-            throw new RuntimeException("The requested job is not active.");
+            throw new RuntimeException(
+                    "The requested job is not active (current status: " + persistedStatus
+                            + "). Only an in-progress or paused job can be paused or resumed. "
+                            + "Refresh the job list to see its latest status.");
         }
         String operationToken = acquireWaylineOperation(waylineJob.getDockSn());
         try {
@@ -805,6 +898,100 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
         return replyResult(response) != null && replyResult(response).isSuccess();
     }
 
+    /** 执行失败的任务统一进 FAILED 终态，避免列表堆积废弃的 PENDING 记录。 */
+    private void failJob(String jobId, int code) {
+        try {
+            waylineJobService.updateJobIfNotEnded(WaylineJobDTO.builder()
+                    .jobId(jobId)
+                    .executeTime(LocalDateTime.now())
+                    .status(WaylineJobStatusEnum.FAILED.getVal())
+                    .completedTime(LocalDateTime.now())
+                    .code(code)
+                    .build());
+        } catch (RuntimeException e) {
+            log.error("Failed to mark wayline job {} as failed.", jobId, e);
+        }
+    }
+
+    /**
+     * 官方文档：“航线任务指令目前需要在无人机关机或停桨时才能执行”（空中悬停时 RC 会永远以 104 拒绝)
+     * flighttask_execute 且不去下载 KMZ（MinIO trace 实测零请求），因此在下发前
+     * 拦截并给出准确提示。模式未知（OSD 未到/飞机关机）时放行，由设备自行裁决。
+     */
+    private void requireAircraftGroundedForWayline(String dockSn) {
+        DroneModeCodeEnum mode = deviceRedisService.getDeviceOnline(dockSn)
+                .map(DeviceDTO::getChildDeviceSn)
+                .filter(StringUtils::hasText)
+                .map(deviceService::getDeviceMode)
+                .orElse(DroneModeCodeEnum.DISCONNECTED);
+        if (DroneModeCodeEnum.IDLE == mode || DroneModeCodeEnum.DISCONNECTED == mode) {
+            return;
+        }
+        throw new IllegalStateException(
+                "The aircraft is airborne or busy (mode code " + mode.getCode() + "/" + mode
+                        + "). This firmware only starts wayline missions while the aircraft is on "
+                        + "the ground with motors stopped (mode code 0/IDLE). Land or return home "
+                        + "first, then retry.");
+    }
+
+    private TopicServicesResponse<ServicesReplyData> executeWithBusyRetry(WaylineJobDTO job) {
+        TopicServicesResponse<ServicesReplyData> reply = null;
+        boolean stalePointFlightCleanupTried = false;
+        for (int attempt = 1; attempt <= EXECUTE_BUSY_MAX_ATTEMPTS; attempt++) {
+            reply = isRcGateway(job.getDockSn())
+                    ? abstractWaylineService.flighttaskExecuteRc(
+                            SDKManager.getDeviceSDK(job.getDockSn()),
+                            new FlighttaskExecuteRequest().setFlightId(job.getJobId()))
+                    : abstractWaylineService.flighttaskExecute(
+                            SDKManager.getDeviceSDK(job.getDockSn()),
+                            new FlighttaskExecuteRequest().setFlightId(job.getJobId()));
+
+            com.yoox.great.mqtt.handle.services.ServicesErrorCode result = replyResult(reply);
+            if (result == null || result.getCode() != COMMAND_IN_PROGRESS_CODE
+                    || attempt == EXECUTE_BUSY_MAX_ATTEMPTS) {
+                return reply;
+            }
+
+            if (!stalePointFlightCleanupTried) {
+                stalePointFlightCleanupTried = true;
+                releaseStalePointFlightSession(job.getDockSn());
+            }
+
+            long delayMillis = Math.min(
+                    EXECUTE_BUSY_MAX_RETRY_DELAY_MILLIS,
+                    EXECUTE_BUSY_RETRY_DELAY_MILLIS << (attempt - 1));
+            log.warn("Gateway {} is still completing the previous command; retrying execute for job {} "
+                            + "in {} ms (attempt {}/{}).",
+                    job.getDockSn(), job.getJobId(), delayMillis, attempt + 1,
+                    EXECUTE_BUSY_MAX_ATTEMPTS);
+            try {
+                TimeUnit.MILLISECONDS.sleep(delayMillis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "Interrupted while waiting to retry wayline execution.", e);
+            }
+        }
+        return reply;
+    }
+
+    /**
+     * RC 固件在指点飞行/一键起飞到点后不会自行终结内部会话，之后
+     * flighttask_execute 会一直被 104 拒绝。交给 ControlService 统一清理
+     * （fly_to_point_stop + 定向 flighttask_undo 挂着的 takeoff）；点飞任务
+     * 仍活跃时它会拒绝清理，绝不自动取消飞行中的任务。
+     */
+    private void releaseStalePointFlightSession(String dockSn) {
+        try {
+            log.info("Gateway {} keeps rejecting execute with code {}. Trying to release stale "
+                    + "point-flight sessions before the next retry.", dockSn, COMMAND_IN_PROGRESS_CODE);
+            controlService.releaseStaleFlightSessions(dockSn);
+        } catch (RuntimeException e) {
+            // 清理失败不阻断 execute 重试，由既有的重试与最终报错兜底。
+            log.warn("Failed to release the stale point-flight session for gateway {}.", dockSn, e);
+        }
+    }
+
     private com.yoox.great.mqtt.handle.services.ServicesErrorCode replyResult(
             TopicServicesResponse<ServicesReplyData> response) {
         return Optional.ofNullable(response)
@@ -841,7 +1028,8 @@ public class FlightTaskServiceImpl extends AbstractWaylineService implements IFl
     }
 
 
-    @Override
+    @ServiceActivator(inputChannel = ChannelName.INBOUND_EVENTS_FLIGHTTASK_READY,
+            outputChannel = ChannelName.OUTBOUND_EVENTS)
     public TopicEventsResponse<MqttReply> flighttaskReady(TopicEventsRequest<FlighttaskReady> response, MessageHeaders headers) {
         List<String> flightIds = response.getData().getFlightIds();
 

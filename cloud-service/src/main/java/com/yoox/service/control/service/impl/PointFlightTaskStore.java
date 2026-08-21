@@ -28,8 +28,10 @@ public class PointFlightTaskStore {
 
     private static final String KEY_PREFIX = "control:point-flight:";
     private static final String ACTIVE_PREFIX = "control:point-flight:active:";
+    private static final String LAST_TAKEOFF_PREFIX = "control:point-flight:last-takeoff:";
     private static final long TTL_HOURS = 24;
     private static final long TTL_SECONDS = TimeUnit.HOURS.toSeconds(TTL_HOURS);
+    private static final long STALE_TAKEOFF_IDLE_GRACE_MS = TimeUnit.MINUTES.toMillis(2);
     private static final Set<String> TERMINAL_STATUSES = Set.of(
             "task_finish", "wayline_cancel", "wayline_failed", "wayline_ok",
             "command_failed", "cancel_confirmed");
@@ -144,14 +146,23 @@ public class PointFlightTaskStore {
                             + "local currentId = current['fly_to_id'] or current['flight_id']; "
                             + "if not currentId or not current['kind'] "
                             + "or current['kind'] .. '\\n' .. tostring(currentId) ~= token then return nil end; "
-                            + "if current['active'] ~= true "
-                            + "or tostring(current['status'] or '') ~= 'wayline_progress' then return nil end; "
+                            + "if current['active'] ~= true then return nil end; "
+                            + "local status = tostring(current['status'] or ''); "
+                            + "local updated = tonumber(current['updated_at']); "
+                            + "local staleBefore = tonumber(ARGV[5]); "
+                            + "local staleTakeoff = ARGV[3] == '0' and current['kind'] == 'takeoff' "
+                            + "and updated and staleBefore and updated <= staleBefore "
+                            + "and (status == 'command_pending' or status == 'command_accepted' "
+                            + "or status == 'command_unknown'); "
+                            + "if status ~= 'wayline_progress' and not staleTakeoff then return nil end; "
                             + "if ARGV[3] == '1' and current['kind'] ~= 'takeoff' then return nil end; "
-                            + "if current['kind'] == 'takeoff' then current['status'] = 'task_finish'; "
+                            + "if staleTakeoff then current['status'] = 'command_failed'; "
+                            + "elseif current['kind'] == 'takeoff' then current['status'] = 'task_finish'; "
                             + "else current['status'] = 'wayline_cancel'; end; "
                             + "current['active'] = false; current['uncertain'] = false; "
                             + "current['remaining_distance'] = 0; current['remaining_time'] = 0; "
-                            + "current['message'] = ARGV[4]; "
+                            + "if staleTakeoff then current['message'] = ARGV[6]; "
+                            + "else current['message'] = ARGV[4]; end; "
                             + "local nextUpdated = tonumber(ARGV[1]); if not nextUpdated then return nil end; "
                             + "local previousUpdated = tonumber(current['updated_at']); "
                             + "if previousUpdated and previousUpdated >= nextUpdated then "
@@ -161,6 +172,10 @@ public class PointFlightTaskStore {
                             + "if redis.call('get', KEYS[2]) == token then redis.call('del', KEYS[2]); end; "
                             + "return next",
                     String.class);
+
+    private static final DefaultRedisScript<Long> CLEAR_LAST_TAKEOFF = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end; return 0",
+            Long.class);
 
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
@@ -201,6 +216,31 @@ public class PointFlightTaskStore {
     public void recordAccepted(String gatewaySn, String kind, String taskId) {
         updateCommand(gatewaySn, kind, taskId,
                 "command_accepted", true, false, null);
+        // RC 不上报 takeoff 的终结事件且内部任务会一直挂着；单独记住最近被接受的
+        // takeoff flight_id（不随后续 flyto 覆盖），供航线执行遇 104 时定向 undo。
+        if ("takeoff".equals(kind) && validTask(gatewaySn, kind, taskId)) {
+            stringRedisTemplate.opsForValue().set(
+                    lastTakeoffKey(gatewaySn), taskId, TTL_SECONDS, TimeUnit.SECONDS);
+        }
+    }
+
+    /** 最近一次被设备接受、尚未确认被 undo 清除的 takeoff flight_id。 */
+    public Optional<String> getLastAcceptedTakeoffId(String gatewaySn) {
+        if (!StringUtils.hasText(gatewaySn)) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(
+                stringRedisTemplate.opsForValue().get(lastTakeoffKey(gatewaySn)))
+                .filter(StringUtils::hasText);
+    }
+
+    /** 仅当记录仍是该 flight_id 时才删除，避免误删并发新起飞的记录。 */
+    public void clearLastAcceptedTakeoffId(String gatewaySn, String flightId) {
+        if (!StringUtils.hasText(gatewaySn) || !StringUtils.hasText(flightId)) {
+            return;
+        }
+        stringRedisTemplate.execute(
+                CLEAR_LAST_TAKEOFF, List.of(lastTakeoffKey(gatewaySn)), flightId);
     }
 
     public void recordUnknown(String gatewaySn, String kind, String taskId, String message) {
@@ -314,7 +354,10 @@ public class PointFlightTaskStore {
      * point-flight event, without clearing a command that has not taken off yet.
      */
     public Optional<Map<String, Object>> finishProgressingTaskOnIdle(String gatewaySn) {
-        return finishProgressingTask(gatewaySn, false, "Aircraft returned to idle mode.");
+        return finishProgressingTask(
+                gatewaySn, false, "Aircraft returned to idle mode.",
+                System.currentTimeMillis() - STALE_TAKEOFF_IDLE_GRACE_MS,
+                "Released stale takeoff command because the aircraft remained idle.");
     }
 
     /**
@@ -323,12 +366,14 @@ public class PointFlightTaskStore {
      * 仅收尾 takeoff 任务（flyto 飞行中不是 MANUAL 模式，不受影响）。
      */
     public Optional<Map<String, Object>> finishProgressingTakeoffOnManual(String gatewaySn) {
-        return finishProgressingTask(gatewaySn, true,
-                "Takeoff completed. The aircraft is hovering.");
+        return finishProgressingTask(
+                gatewaySn, true, "Takeoff completed. The aircraft is hovering.",
+                0, "");
     }
 
     private Optional<Map<String, Object>> finishProgressingTask(
-            String gatewaySn, boolean onlyTakeoff, String message) {
+            String gatewaySn, boolean onlyTakeoff, String message,
+            long staleTakeoffBefore, String staleTakeoffMessage) {
         if (!StringUtils.hasText(gatewaySn)) {
             return Optional.empty();
         }
@@ -336,7 +381,8 @@ public class PointFlightTaskStore {
                 FINISH_PROGRESSING_TASK_ON_IDLE,
                 List.of(key(gatewaySn), activeKey(gatewaySn)),
                 Long.toString(System.currentTimeMillis()), Long.toString(TTL_SECONDS),
-                onlyTakeoff ? "1" : "0", message);
+                onlyTakeoff ? "1" : "0", message,
+                Long.toString(staleTakeoffBefore), staleTakeoffMessage);
         if (!StringUtils.hasText(stateJson)) {
             return Optional.empty();
         }
@@ -434,5 +480,9 @@ public class PointFlightTaskStore {
 
     private String activeKey(String gatewaySn) {
         return ACTIVE_PREFIX + gatewaySn;
+    }
+
+    private String lastTakeoffKey(String gatewaySn) {
+        return LAST_TAKEOFF_PREFIX + gatewaySn;
     }
 }

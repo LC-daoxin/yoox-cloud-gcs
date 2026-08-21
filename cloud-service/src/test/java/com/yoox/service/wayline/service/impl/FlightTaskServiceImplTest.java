@@ -12,8 +12,10 @@ import com.yoox.great.mqtt.model.wayline.FlighttaskProgress;
 import com.yoox.great.mqtt.model.wayline.FlighttaskUndoRequest;
 import com.yoox.great.redis.RedisConst;
 import com.yoox.great.redis.RedisOpsUtils;
+import com.yoox.service.control.service.IControlService;
 import com.yoox.service.manage.model.dto.DeviceDTO;
 import com.yoox.service.manage.service.IDeviceRedisService;
+import com.yoox.service.manage.service.IDeviceService;
 import com.yoox.service.wayline.model.dto.ConditionalWaylineJobKey;
 import com.yoox.service.wayline.model.dto.WaylineJobDTO;
 import com.yoox.service.wayline.model.enums.WaylineJobStatusEnum;
@@ -68,10 +70,19 @@ class FlightTaskServiceImplTest {
     private IDeviceRedisService deviceRedisService;
 
     @Mock
+    private IDeviceService deviceService;
+
+    @Mock
     private IWaylineRedisService waylineRedisService;
 
     @Mock
+    private com.yoox.service.wayline.service.IWaylineFileService waylineFileService;
+
+    @Mock
     private SDKWaylineService abstractWaylineService;
+
+    @Mock
+    private IControlService controlService;
 
     @Mock
     private RedisTemplate<String, Object> redisTemplate;
@@ -381,6 +392,22 @@ class FlightTaskServiceImplTest {
     }
 
     @Test
+    void immediateTaskDoesNotPrepareWhilePreviousWaylineIsCompleting() {
+        WaylineJobDTO nextJob = job(WaylineJobStatusEnum.PENDING);
+        nextJob.setTaskType(com.yoox.great.mqtt.enums.wayline.TaskTypeEnum.IMMEDIATE);
+        when(deviceRedisService.checkDeviceOnline(GATEWAY_SN)).thenReturn(true);
+        when(waylineRedisService.getRunningWaylineJob(GATEWAY_SN))
+                .thenReturn(Optional.of(running("previous-job")));
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> flightTaskService.publishOneFlightTask(nextJob));
+
+        assertTrue(exception.getMessage().contains("previous wayline job"));
+        verify(abstractWaylineService, never()).flighttaskPrepareRc(any(), any());
+        verify(abstractWaylineService, never()).flighttaskExecuteRc(any(), any());
+    }
+
+    @Test
     void rejectedExecuteClearsOnlyItsPreclaimedRuntimeState() {
         stubPendingJobForExecute();
         when(abstractWaylineService.flighttaskExecuteRc(any(), any())).thenReturn(reply(319_000));
@@ -392,6 +419,183 @@ class FlightTaskServiceImplTest {
         order.verify(waylineRedisService).setRunningWaylineJob(eq(GATEWAY_SN), any());
         order.verify(abstractWaylineService).flighttaskExecuteRc(any(), any());
         order.verify(waylineRedisService).clearWaylineJobState(GATEWAY_SN, JOB_ID);
+    }
+
+    @Test
+    void executeRetriesTransientCommandInProgressAfterPrepareSettles() {
+        stubPendingJobForExecute();
+        when(abstractWaylineService.flighttaskExecuteRc(any(), any()))
+                .thenReturn(reply(104), reply(0));
+        when(waylineJobService.updateJobIfNotEnded(any())).thenReturn(true);
+
+        assertTrue(flightTaskService.executeFlightTask(WORKSPACE_ID, JOB_ID));
+
+        verify(abstractWaylineService, org.mockito.Mockito.times(2))
+                .flighttaskExecuteRc(any(), any());
+        verify(waylineJobService).updateJobIfNotEnded(any());
+        verify(waylineRedisService, never()).clearWaylineJobState(GATEWAY_SN, JOB_ID);
+    }
+
+    @Test
+    void busyExecuteReleasesStaleFlightSessionsOnce() {
+        stubPendingJobForExecute();
+        when(abstractWaylineService.flighttaskExecuteRc(any(), any()))
+                .thenReturn(reply(104), reply(104), reply(0));
+        when(waylineJobService.updateJobIfNotEnded(any())).thenReturn(true);
+
+        assertTrue(flightTaskService.executeFlightTask(WORKSPACE_ID, JOB_ID));
+
+        // 残留会话只清理一次，之后交给既有重试。
+        verify(controlService, org.mockito.Mockito.times(1)).releaseStaleFlightSessions(GATEWAY_SN);
+        verify(abstractWaylineService, org.mockito.Mockito.times(3))
+                .flighttaskExecuteRc(any(), any());
+    }
+
+    @Test
+    void exhaustedBusyExecuteStillTriesCleanupOnlyOnce() {
+        stubPendingJobForExecute();
+        when(abstractWaylineService.flighttaskExecuteRc(any(), any()))
+                .thenReturn(reply(104), reply(104), reply(104), reply(104), reply(104), reply(104));
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> flightTaskService.executeFlightTask(WORKSPACE_ID, JOB_ID));
+
+        assertTrue(exception.getMessage().contains("code 104"));
+        verify(controlService, org.mockito.Mockito.times(1)).releaseStaleFlightSessions(GATEWAY_SN);
+    }
+
+    @Test
+    void pointFlightCleanupFailureDoesNotBreakExecuteRetry() {
+        stubPendingJobForExecute();
+        when(controlService.releaseStaleFlightSessions(GATEWAY_SN))
+                .thenThrow(new RuntimeException("stop timed out"));
+        when(abstractWaylineService.flighttaskExecuteRc(any(), any()))
+                .thenReturn(reply(104), reply(0));
+        when(waylineJobService.updateJobIfNotEnded(any())).thenReturn(true);
+
+        assertTrue(flightTaskService.executeFlightTask(WORKSPACE_ID, JOB_ID));
+
+        verify(abstractWaylineService, org.mockito.Mockito.times(2))
+                .flighttaskExecuteRc(any(), any());
+    }
+
+    @Test
+    void exhaustedBusyReplyMarksJobFailedAndReleasesLocalClaim() {
+        stubPendingJobForExecute();
+        when(abstractWaylineService.flighttaskExecuteRc(any(), any()))
+                .thenReturn(reply(104), reply(104), reply(104), reply(104), reply(104), reply(104));
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> flightTaskService.executeFlightTask(WORKSPACE_ID, JOB_ID));
+
+        assertTrue(exception.getMessage().contains("code 104"));
+        // 任务进终态，不再保留 PENDING 堆积。
+        ArgumentCaptor<WaylineJobDTO> failed = ArgumentCaptor.forClass(WaylineJobDTO.class);
+        verify(waylineJobService).updateJobIfNotEnded(failed.capture());
+        assertEquals(WaylineJobStatusEnum.FAILED.getVal(), failed.getValue().getStatus());
+        verify(waylineRedisService).clearWaylineJobState(GATEWAY_SN, JOB_ID);
+        verify(waylineRedisService).releaseWaylineJobOperation(GATEWAY_SN, "operation-token");
+    }
+
+    @Test
+    void airborneAircraftIsRejectedBeforeAnyExecuteCommand() {
+        when(waylineJobService.getJobByJobId(WORKSPACE_ID, JOB_ID))
+                .thenReturn(Optional.of(job(WaylineJobStatusEnum.PENDING)));
+        when(deviceRedisService.checkDeviceOnline(GATEWAY_SN)).thenReturn(true);
+        when(deviceRedisService.getDeviceOnline(GATEWAY_SN)).thenReturn(Optional.of(rcGateway()));
+        // 固件限制：悬停（MANUAL）时航线永远被 104 拒绝，必须前置拦截。
+        when(deviceService.getDeviceMode(AIRCRAFT_SN))
+                .thenReturn(com.yoox.great.mqtt.enums.device.DroneModeCodeEnum.MANUAL);
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> flightTaskService.executeFlightTask(WORKSPACE_ID, JOB_ID));
+
+        assertTrue(exception.getMessage().contains("on the ground"));
+        verify(abstractWaylineService, never()).flighttaskExecuteRc(any(), any());
+        verify(waylineRedisService, never()).setRunningWaylineJob(anyString(), any());
+        // 被拦截的任务同样进 FAILED 终态。
+        ArgumentCaptor<WaylineJobDTO> failed = ArgumentCaptor.forClass(WaylineJobDTO.class);
+        verify(waylineJobService).updateJobIfNotEnded(failed.capture());
+        assertEquals(WaylineJobStatusEnum.FAILED.getVal(), failed.getValue().getStatus());
+    }
+
+    @Test
+    void groundedIdleAircraftPassesTheAirborneGate() {
+        stubPendingJobForExecute();
+        when(deviceService.getDeviceMode(AIRCRAFT_SN))
+                .thenReturn(com.yoox.great.mqtt.enums.device.DroneModeCodeEnum.IDLE);
+        when(abstractWaylineService.flighttaskExecuteRc(any(), any())).thenReturn(reply(0));
+        when(waylineJobService.updateJobIfNotEnded(any())).thenReturn(true);
+
+        assertTrue(flightTaskService.executeFlightTask(WORKSPACE_ID, JOB_ID));
+    }
+
+    @Test
+    void immediatePublishRefusesWhileAircraftAirborne() {
+        WaylineJobDTO nextJob = job(WaylineJobStatusEnum.PENDING);
+        nextJob.setTaskType(com.yoox.great.mqtt.enums.wayline.TaskTypeEnum.IMMEDIATE);
+        when(deviceRedisService.checkDeviceOnline(GATEWAY_SN)).thenReturn(true);
+        when(deviceRedisService.getDeviceOnline(GATEWAY_SN)).thenReturn(Optional.of(rcGateway()));
+        when(waylineRedisService.getRunningWaylineJob(GATEWAY_SN)).thenReturn(Optional.empty());
+        when(waylineRedisService.getPausedWaylineJobId(GATEWAY_SN)).thenReturn(null);
+        when(deviceService.getDeviceMode(AIRCRAFT_SN))
+                .thenReturn(com.yoox.great.mqtt.enums.device.DroneModeCodeEnum.FLY_TO_POINT_MODE);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> flightTaskService.publishOneFlightTask(nextJob));
+
+        assertTrue(exception.getMessage().contains("on the ground"));
+        verify(abstractWaylineService, never()).flighttaskPrepareRc(any(), any());
+        verify(abstractWaylineService, never()).flighttaskPrepare(any(), any());
+        ArgumentCaptor<WaylineJobDTO> failed = ArgumentCaptor.forClass(WaylineJobDTO.class);
+        verify(waylineJobService).updateJobIfNotEnded(failed.capture());
+        assertEquals(WaylineJobStatusEnum.FAILED.getVal(), failed.getValue().getStatus());
+    }
+
+    @Test
+    void rcPreparePayloadUsesOnlyFieldSetProvenByDeviceAbTest() throws Exception {
+        // 2026-08-21 实测：RC 必需 takeoff_altitude，其余 Autel 扩展字段会导致 314010。
+        WaylineJobDTO nextJob = job(WaylineJobStatusEnum.PENDING);
+        nextJob.setTaskType(com.yoox.great.mqtt.enums.wayline.TaskTypeEnum.IMMEDIATE);
+        nextJob.setFileId("file-1");
+        nextJob.setBeginTime(java.time.LocalDateTime.now());
+        nextJob.setRthAltitude(100);
+        when(deviceRedisService.checkDeviceOnline(GATEWAY_SN)).thenReturn(true);
+        when(deviceRedisService.getDeviceOnline(GATEWAY_SN)).thenReturn(Optional.of(rcGateway()));
+        when(waylineRedisService.getRunningWaylineJob(GATEWAY_SN)).thenReturn(Optional.empty());
+        when(waylineRedisService.getPausedWaylineJobId(GATEWAY_SN)).thenReturn(null);
+        when(deviceService.getDeviceMode(AIRCRAFT_SN))
+                .thenReturn(com.yoox.great.mqtt.enums.device.DroneModeCodeEnum.IDLE);
+        com.yoox.great.mqtt.model.wayline.GetWaylineListResponse waylineFile =
+                new com.yoox.great.mqtt.model.wayline.GetWaylineListResponse()
+                        .setId("file-1").setSign("md5");
+        when(waylineFileService.getWaylineByWaylineId(WORKSPACE_ID, "file-1"))
+                .thenReturn(Optional.of(waylineFile));
+        when(waylineFileService.getObjectUrl(WORKSPACE_ID, "file-1"))
+                .thenReturn(new java.net.URL("http://host:9100/store/wayline.kmz"));
+        when(abstractWaylineService.flighttaskPrepareRc(any(), any())).thenReturn(reply(0));
+        when(abstractWaylineService.flighttaskExecuteRc(any(), any())).thenReturn(reply(0));
+        when(waylineJobService.getJobByJobId(WORKSPACE_ID, JOB_ID))
+                .thenReturn(Optional.of(job(WaylineJobStatusEnum.PENDING)));
+        when(waylineJobService.updateJobIfNotEnded(any())).thenReturn(true);
+
+        flightTaskService.publishOneFlightTask(nextJob);
+
+        ArgumentCaptor<com.yoox.great.mqtt.model.wayline.FlighttaskPrepareRequest> prepare =
+                ArgumentCaptor.forClass(com.yoox.great.mqtt.model.wayline.FlighttaskPrepareRequest.class);
+        verify(abstractWaylineService).flighttaskPrepareRc(any(GatewayManager.class), prepare.capture());
+        com.yoox.great.mqtt.model.wayline.FlighttaskPrepareRequest request = prepare.getValue();
+        assertEquals(100, request.getTakeoffAltitude());
+        org.junit.jupiter.api.Assertions.assertNull(request.getRthMode());
+        org.junit.jupiter.api.Assertions.assertNull(request.getWaylinePrecisionType());
+        org.junit.jupiter.api.Assertions.assertNull(request.getBarrierSwitchState());
+        org.junit.jupiter.api.Assertions.assertNull(request.getFirstWaypointSpeed());
+        org.junit.jupiter.api.Assertions.assertNull(request.getReturnSpeed());
+        org.junit.jupiter.api.Assertions.assertNull(request.getMediaUploadMethod());
+        org.junit.jupiter.api.Assertions.assertNull(request.getAlternateLandPoint());
     }
 
     @Test

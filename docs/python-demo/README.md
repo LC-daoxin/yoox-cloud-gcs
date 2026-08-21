@@ -50,13 +50,20 @@ YOOX_DRONE_SN=YOUR_DRONE_SN
 YOOX_PAYLOAD_INDEX=YOUR_PAYLOAD_INDEX
 ```
 
-点飞、一键起飞和 Look At 不再内置真实或示例坐标，必须显式配置或通过命令行传入：
+点飞和 Look At 不再内置真实或示例坐标，必须显式配置或通过命令行传入：
 
 ```dotenv
 YOOX_TARGET_LATITUDE=
 YOOX_TARGET_LONGITUDE=
 YOOX_TARGET_HEIGHT=
 YOOX_TARGET_MAX_SPEED=5
+```
+
+一键起飞使用独立经纬度，避免与 FlyTo/Look At 的目标位置互相覆盖：
+
+```dotenv
+YOOX_TAKEOFF_TARGET_LATITUDE=
+YOOX_TAKEOFF_TARGET_LONGITUDE=
 ```
 
 默认 Web/REST 入口为 `http://127.0.0.1:8080`，Pilot 登录与 WebSocket 网关为 `http://127.0.0.1:9000`。反向代理/TLS 场景可设置完整的 `YOOX_BASE_URL`、`YOOX_PILOT_BASE_URL` 和 `YOOX_WS_URL`。MQTT、RTSP、超时等完整配置见 [.env.example](./.env.example)。`config.py` 只读取环境变量，不应写入部署信息或凭证。
@@ -86,6 +93,8 @@ YOOX_TARGET_MAX_SPEED=5
 | `demo_17_wayline.py` | KMZ 上传、航线下发执行、进度、暂停、继续、取消 | dock、workspace、KMZ |
 | `demo_18_continuous_landing.py` | DRC 持续下降至待机，带 ACK/OSD/归零闭环 | dock、drone、workspace |
 | `demo_19_return_home.py` | 一键返航/取消返航，OSD 旁路监视 mode_code 确认 | dock；监视另需 MQTT |
+| `demo_20_kmz_generate.py` | 离线生成与参考文件结构相同的 wpmz 航线 KMZ，输出到 `kmz/` | 无（纯本地） |
+| `demo_21_kmz_interactive.py` | 交互式航线编辑：设航线信息→逐点设航点（可选云台动作）→生成 KMZ | 无（纯本地） |
 
 ## 4. 飞行控制流程
 
@@ -127,7 +136,9 @@ YOOX_TARGET_MAX_SPEED=5
 
 ### 4.2 一键起飞
 
-前提是飞机在地面、在线且为 `IDLE`。通常应把目标经纬度设为飞机当前有效 GPS 坐标，只改变相对高度：
+前提是飞机在地面、在线且为 `IDLE`。`demo_10` 从
+`YOOX_TAKEOFF_TARGET_LATITUDE/LONGITUDE` 读取专用坐标，通常应设为飞机当前有效
+GPS 坐标，只改变相对高度：
 
 ```bash
 # 目标经纬度、高度和速度从本机 .env 读取

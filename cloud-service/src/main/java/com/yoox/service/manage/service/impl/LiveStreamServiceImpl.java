@@ -26,8 +26,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -35,9 +38,19 @@ import java.util.stream.Collectors;
 @Transactional
 public class LiveStreamServiceImpl implements ILiveStreamService {
 
+    private static final long LIVE_START_COOLDOWN_MS = 30_000L;
+
     private static final HttpClient MEDIA_MTX_HTTP_CLIENT = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(1))
             .build();
+
+    /**
+     * The cockpit can be open in more than one browser tab. Serialize starts by
+     * stream and remember a recent accepted command so a slow encoder does not
+     * receive overlapping live_start_push retries from different tabs.
+     */
+    private final Map<String, ReentrantLock> liveStartLocks = new ConcurrentHashMap<>();
+    private final Map<String, Long> acceptedLiveStarts = new ConcurrentHashMap<>();
 
     @Autowired
     private ICapacityCameraService capacityCameraService;
@@ -101,71 +114,86 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
                 !customPushUrl &&
                 configuredPlaybackUrl != null;
 
-        if (canReusePublisher && isMediaPublisherReady(streamName)) {
-            return reusedLiveResponse(streamName, configuredPlaybackUrl, false);
-        }
-
-        LiveStartPushRequest3 request3 = new LiveStartPushRequest3();
-        request3.setUrl(pushUrl);
-        request3.setUrl_type(liveParam.getUrlType().getType());
-        // Autel's live_start_push protocol is an exception to the regular VideoId
-        // wire format: firmware expects "droneSn-payloadIndex" here. Stop, quality
-        // and lens-change commands still use the SDK's slash-delimited VideoId.
-        request3.setVideo_id(streamName);
-        request3.setVideo_quality(liveParam.getVideoQuality().getQuality());
-        if (liveParam.getVideoType() != null) {
-            request3.setVideo_type(liveParam.getVideoType().getType());
-        }
-
-        TopicServicesResponse<ServicesReplyData<String>> response;
+        ReentrantLock startLock = liveStartLocks.computeIfAbsent(streamName, ignored -> new ReentrantLock());
+        startLock.lock();
         try {
-            response = abstractLivestreamService.liveStartPush3(
-                    SDKManager.getDeviceSDK(responseResult.getData().getDeviceSn()),
-                    request3);
-        } catch (CloudSDKException exception) {
-            // Another page or a concurrent request may have started publishing while
-            // this MQTT request was waiting for a reply. Treat the ready publisher
-            // as the source of truth instead of surfacing a false 211001 failure.
             if (canReusePublisher && isMediaPublisherReady(streamName)) {
-                log.info("MQTT 启动直播未收到回复，但媒体流已就绪，按复用成功处理: stream={}", streamName);
-                return reusedLiveResponse(streamName, configuredPlaybackUrl, true);
+                return reusedLiveResponse(streamName, configuredPlaybackUrl, false);
             }
-            throw exception;
-        }
-
-        log.info("发送 RTSP 直播指令: video_id={}, video_type={}",
-                request3.getVideo_id(), request3.getVideo_type());
-        log.info("设备返回: result={}, info={}, output={}",
-                response.getData().getResult(),
-                response.getData().getInfo() == null ? null : "<RTSP URL>",
-                response.getData().getOutput());
-        if (!response.getData().getResult().isSuccess()) {
-            if (canReusePublisher && isMediaPublisherReady(streamName)) {
-                log.info("设备返回直播启动失败，但媒体流已就绪，按复用成功处理: stream={}", streamName);
-                return reusedLiveResponse(streamName, configuredPlaybackUrl, true);
+            Long acceptedAt = acceptedLiveStarts.get(streamName);
+            if (canReusePublisher && acceptedAt != null &&
+                    System.currentTimeMillis() - acceptedAt < LIVE_START_COOLDOWN_MS) {
+                log.info("直播启动指令刚被受理，等待设备编码器产生媒体帧，不重复下发: stream={}", streamName);
+                return reusedLiveResponse(streamName, configuredPlaybackUrl, false);
             }
-            return HttpResultResponse.error(response.getData().getResult());
+
+            LiveStartPushRequest3 request3 = new LiveStartPushRequest3();
+            request3.setUrl(pushUrl);
+            request3.setUrl_type(liveParam.getUrlType().getType());
+            // Autel's live_start_push protocol is an exception to the regular VideoId
+            // wire format: firmware expects "droneSn-payloadIndex" here. Stop, quality
+            // and lens-change commands still use the SDK's slash-delimited VideoId.
+            request3.setVideo_id(streamName);
+            request3.setVideo_quality(liveParam.getVideoQuality().getQuality());
+            if (liveParam.getVideoType() != null) {
+                request3.setVideo_type(liveParam.getVideoType().getType());
+            }
+
+            TopicServicesResponse<ServicesReplyData<String>> response;
+            try {
+                response = abstractLivestreamService.liveStartPush3(
+                        SDKManager.getDeviceSDK(responseResult.getData().getDeviceSn()),
+                        request3);
+            } catch (CloudSDKException exception) {
+                // Another page or a concurrent request may have started publishing while
+                // this MQTT request was waiting for a reply. Treat the ready publisher
+                // as the source of truth instead of surfacing a false 211001 failure.
+                if (canReusePublisher && isMediaPublisherReady(streamName)) {
+                    acceptedLiveStarts.put(streamName, System.currentTimeMillis());
+                    log.info("MQTT 启动直播未收到回复，但媒体流已就绪，按复用成功处理: stream={}", streamName);
+                    return reusedLiveResponse(streamName, configuredPlaybackUrl, true);
+                }
+                throw exception;
+            }
+
+            log.info("发送 RTSP 直播指令: video_id={}, video_type={}",
+                    request3.getVideo_id(), request3.getVideo_type());
+            log.info("设备返回: result={}, info={}, output={}",
+                    response.getData().getResult(),
+                    response.getData().getInfo() == null ? null : "<RTSP URL>",
+                    response.getData().getOutput());
+            if (!response.getData().getResult().isSuccess()) {
+                if (canReusePublisher && isMediaPublisherReady(streamName)) {
+                    acceptedLiveStarts.put(streamName, System.currentTimeMillis());
+                    log.info("设备返回直播启动失败，但媒体流已就绪，按复用成功处理: stream={}", streamName);
+                    return reusedLiveResponse(streamName, configuredPlaybackUrl, true);
+                }
+                return HttpResultResponse.error(response.getData().getResult());
+            }
+            acceptedLiveStarts.put(streamName, System.currentTimeMillis());
+
+            LiveDTO live = new LiveDTO();
+            live.setReused(false);
+            live.setStartedByRequest(true);
+
+            String deviceRtspUrl = response.getData().getInfo();
+            if (configuredPlaybackUrl != null && !configuredPlaybackUrl.trim().isEmpty()) {
+                // Devices publish RTSP to MediaMTX; browsers consume the matching WHEP endpoint.
+                live.setUrl(configuredPlaybackUrl);
+            } else if (deviceRtspUrl != null && !deviceRtspUrl.trim().isEmpty()) {
+                live.setUrl(deviceRtspUrl);
+            } else if (pushUrl.regionMatches(true, 0, "rtsp://", 0, 7)) {
+                live.setUrl(pushUrl);
+            } else {
+                return HttpResultResponse.error(
+                        LiveErrorCodeEnum.FUNCTION_NOT_SUPPORT.getCode(),
+                        "The device did not return an RTSP playback URL.");
+            }
+
+            return HttpResultResponse.success(live);
+        } finally {
+            startLock.unlock();
         }
-
-        LiveDTO live = new LiveDTO();
-        live.setReused(false);
-        live.setStartedByRequest(true);
-
-        String deviceRtspUrl = response.getData().getInfo();
-        if (configuredPlaybackUrl != null && !configuredPlaybackUrl.trim().isEmpty()) {
-            // Devices publish RTSP to MediaMTX; browsers consume the matching WHEP endpoint.
-            live.setUrl(configuredPlaybackUrl);
-        } else if (deviceRtspUrl != null && !deviceRtspUrl.trim().isEmpty()) {
-            live.setUrl(deviceRtspUrl);
-        } else if (pushUrl.regionMatches(true, 0, "rtsp://", 0, 7)) {
-            live.setUrl(pushUrl);
-        } else {
-            return HttpResultResponse.error(
-                    LiveErrorCodeEnum.FUNCTION_NOT_SUPPORT.getCode(),
-                    "The device did not return an RTSP playback URL.");
-        }
-
-        return HttpResultResponse.success(live);
     }
 
     @Override
@@ -181,6 +209,8 @@ public class LiveStreamServiceImpl implements ILiveStreamService {
         if (!response.getData().getResult().isSuccess()) {
             return HttpResultResponse.error(response.getData().getResult());
         }
+
+        acceptedLiveStarts.remove(streamName(videoId));
 
         return HttpResultResponse.success();
     }

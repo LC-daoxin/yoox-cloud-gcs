@@ -18,6 +18,7 @@ import com.yoox.great.mqtt.model.control.PayloadAuthorityGrabRequest;
 import com.yoox.great.mqtt.model.control.TakeoffToPointRequest;
 import com.yoox.great.mqtt.model.control.TargetDetectOpenRequest;
 import com.yoox.great.mqtt.model.device.PayloadIndex;
+import com.yoox.great.mqtt.model.wayline.FlighttaskUndoRequest;
 import com.yoox.great.websocket.enums.BizCodeEnum;
 import com.yoox.great.websocket.enums.UserTypeEnum;
 import com.yoox.great.websocket.service.IWebSocketMessageService;
@@ -43,6 +44,7 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -221,16 +223,32 @@ public class ControlServiceImpl implements IControlService {
         if (HttpResultResponse.CODE_SUCCESS != authority.getCode()) {
             return authority;
         }
+        Map<String, Object> taskState = pointFlightTaskStore.get(sn).orElse(Map.of());
+        String taskKind = String.valueOf(taskState.getOrDefault("kind", ""));
+        String takeoffFlightId = String.valueOf(taskState.getOrDefault("flight_id", ""));
         pointFlightTaskStore.recordCancelRequested(sn, false, "Cancel command is being sent.");
         TopicServicesResponse<ServicesReplyData> response;
         try {
-            // RC 网关需 device_list 寻址无人机，否则指令被静默丢弃（211001）。
+            // FlyTo and takeoff-to-point use different cancellation protocols.
+            // The latter is a flight task and must be canceled with
+            // flighttask_undo + flight_ids. RC commands in both branches need
+            // device_list addressing or they can time out with 211001.
             DeviceDomainEnum stopGatewayDomain = deviceRedisService.getDeviceOnline(sn)
                     .map(DeviceDTO::getDomain)
                     .orElse(null);
-            response = DeviceDomainEnum.REMOTER_CONTROL == stopGatewayDomain
-                    ? abstractControlService.flyToPointStopRc(SDKManager.getDeviceSDK(sn))
-                    : abstractControlService.flyToPointStop(SDKManager.getDeviceSDK(sn));
+            if ("takeoff".equals(taskKind) && StringUtils.hasText(takeoffFlightId)) {
+                FlighttaskUndoRequest undoRequest = new FlighttaskUndoRequest()
+                        .setFlightIds(List.of(takeoffFlightId));
+                response = DeviceDomainEnum.REMOTER_CONTROL == stopGatewayDomain
+                        ? abstractWaylineService.flighttaskUndoRc(
+                                SDKManager.getDeviceSDK(sn), undoRequest)
+                        : abstractWaylineService.flighttaskUndo(
+                                SDKManager.getDeviceSDK(sn), undoRequest);
+            } else {
+                response = DeviceDomainEnum.REMOTER_CONTROL == stopGatewayDomain
+                        ? abstractControlService.flyToPointStopRc(SDKManager.getDeviceSDK(sn))
+                        : abstractControlService.flyToPointStop(SDKManager.getDeviceSDK(sn));
+            }
         } catch (RuntimeException exception) {
             pointFlightTaskStore.recordCancelRequested(sn, true, exception.getMessage());
             throw exception;
@@ -240,17 +258,66 @@ public class ControlServiceImpl implements IControlService {
             pointFlightTaskStore.recordCancelRequested(
                     sn, true, "The device reply was empty.");
             return HttpResultResponse.error(
-                    "FlyTo stop status is unknown. It is safe to retry the stop command.");
+                "Point-flight cancellation status is unknown. It is safe to retry the cancel command.");
         }
         if (reply.getResult().isSuccess()) {
             // 设备已确认停止：进入终态并释放额度。若仅停留在 cancel_requested，
             // 从未真正启动过的任务将阻塞后续指令直至 TTL 过期。
             pointFlightTaskStore.recordCancelConfirmed(sn, "Cancel command accepted.");
+            if ("takeoff".equals(taskKind) && StringUtils.hasText(takeoffFlightId)) {
+                pointFlightTaskStore.clearLastAcceptedTakeoffId(sn, takeoffFlightId);
+            }
             return HttpResultResponse.success();
         }
         pointFlightTaskStore.recordCancelFailure(sn, reply.getResult().toString());
         return HttpResultResponse.error(
-                "The drone flying to the target point failed to stop. " + reply.getResult());
+                "The point-flight task failed to cancel. " + reply.getResult());
+    }
+
+    @Override
+    public HttpResultResponse releaseStaleFlightSessions(String sn) {
+        if (pointFlightTaskStore.hasPotentiallyActiveTask(sn)) {
+            return HttpResultResponse.error(
+                    "A point-flight task is still active. It will not be canceled automatically.");
+        }
+        requireOnlineGatewayAndAircraft(sn);
+        HttpResultResponse authority = seizeAuthority(sn, DroneAuthorityEnum.FLIGHT, null);
+        if (HttpResultResponse.CODE_SUCCESS != authority.getCode()) {
+            return authority;
+        }
+        boolean rcGateway = isRcGateway(sn);
+        // 先清 flyto 残留会话；失败不阻断后续 takeoff 清理。
+        try {
+            TopicServicesResponse<ServicesReplyData> stopReply = rcGateway
+                    ? abstractControlService.flyToPointStopRc(SDKManager.getDeviceSDK(sn))
+                    : abstractControlService.flyToPointStop(SDKManager.getDeviceSDK(sn));
+            log.info("【残留清理】fly_to_point_stop sn={} result={}", sn,
+                    Optional.ofNullable(stopReply)
+                            .map(TopicServicesResponse::getData)
+                            .map(ServicesReplyData::getResult)
+                            .orElse(null));
+        } catch (RuntimeException exception) {
+            log.warn("【残留清理】fly_to_point_stop 发送失败 sn={}", sn, exception);
+        }
+        // RC 不上报 takeoff 终结事件，内部任务会一直挂着并以 104 拒绝航线执行，
+        // 必须用 flighttask_undo + 当时的 flight_id 定向清除。
+        Optional<String> takeoffId = pointFlightTaskStore.getLastAcceptedTakeoffId(sn);
+        if (takeoffId.isPresent()) {
+            FlighttaskUndoRequest undoRequest = new FlighttaskUndoRequest()
+                    .setFlightIds(List.of(takeoffId.get()));
+            TopicServicesResponse<ServicesReplyData> undoReply = rcGateway
+                    ? abstractWaylineService.flighttaskUndoRc(SDKManager.getDeviceSDK(sn), undoRequest)
+                    : abstractWaylineService.flighttaskUndo(SDKManager.getDeviceSDK(sn), undoRequest);
+            ServicesReplyData undoData = undoReply == null ? null : undoReply.getData();
+            boolean undoAccepted = undoData != null && undoData.getResult() != null
+                    && undoData.getResult().isSuccess();
+            log.info("【残留清理】flighttask_undo sn={} flightId={} accepted={}",
+                    sn, takeoffId.get(), undoAccepted);
+            if (undoAccepted) {
+                pointFlightTaskStore.clearLastAcceptedTakeoffId(sn, takeoffId.get());
+            }
+        }
+        return HttpResultResponse.success();
     }
 
     @Override

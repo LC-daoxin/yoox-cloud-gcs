@@ -1,6 +1,7 @@
 package com.yoox.service.manage.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yoox.great.mqtt.enums.device.DroneModeCodeEnum;
 import com.yoox.great.mqtt.handle.osd.TopicOsdRequest;
 import com.yoox.great.mqtt.model.device.OsdRemoteControl;
 import com.yoox.great.mqtt.model.livestream.RcLiveCapacityDevice;
@@ -20,6 +21,8 @@ import java.util.Collections;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -84,6 +87,14 @@ class SDKDeviceServiceTest {
 
         verify(capacityCameraService, never())
                 .saveCapacityCameraReceiverList(anyList(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void idleModeOnlyCountsAsGroundedWhenReportedHeightIsNearGround() {
+        assertTrue(SDKDeviceService.isGroundIdle(DroneModeCodeEnum.IDLE, 1.0F));
+        assertFalse(SDKDeviceService.isGroundIdle(DroneModeCodeEnum.IDLE, 6.0F));
+        assertFalse(SDKDeviceService.isGroundIdle(DroneModeCodeEnum.IDLE, null));
+        assertFalse(SDKDeviceService.isGroundIdle(DroneModeCodeEnum.MANUAL, 0.0F));
     }
 
     private void prepareOnlineGateway(String childDeviceSn) {

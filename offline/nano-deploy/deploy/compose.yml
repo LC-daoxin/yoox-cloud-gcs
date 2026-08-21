@@ -218,6 +218,8 @@ services:
     image: yoox/mediamtx:1.19.3
     environment:
       MTX_WEBRTCADDITIONALHOSTS: ${YOOX_PUBLIC_HOST:-127.0.0.1}
+      MTX_WEBRTCLOCALUDPADDRESS: :${YOOX_WEBRTC_ICE_PORT:-8000}
+      MTX_WEBRTCLOCALTCPADDRESS: :${YOOX_WEBRTC_ICE_PORT:-8000}
       MTX_AUTHINTERNALUSERS_0_USER: ${YOOX_RTSP_USERNAME:-yoox-publisher}
       MTX_AUTHINTERNALUSERS_0_PASS: ${YOOX_RTSP_PASSWORD:?Set YOOX_RTSP_PASSWORD in .env}
       # RTSP 传输协议：Linux 主机默认 udp,tcp（优先 UDP，回退 TCP）；
@@ -225,7 +227,8 @@ services:
       MTX_RTSPTRANSPORTS: ${YOOX_RTSP_TRANSPORTS:-udp,tcp}
     ports:
       - "${YOOX_PUBLIC_RTSP_PORT:-8554}:8554"
-      - "${YOOX_WEBRTC_FALLBACK_UDP_PORT:-8000}:8000/udp"
+      - "${YOOX_WEBRTC_ICE_PORT:-8000}:${YOOX_WEBRTC_ICE_PORT:-8000}/udp"
+      - "${YOOX_WEBRTC_ICE_PORT:-8000}:${YOOX_WEBRTC_ICE_PORT:-8000}"
       - "${YOOX_RTP_PORT:-8188}:8188/udp"
       - "${YOOX_RTCP_PORT:-8189}:8189/udp"
     volumes:
@@ -402,7 +405,9 @@ services:
 
   promtail:
     <<: *service-defaults
-    image: grafana/promtail:3.7.2
+    # Promtail 已停止发布 3.x,Hub 上 2.9.10 为最终标签(与 loki 3.7.2 兼容);
+    # 原 3.7.2 为笔误(3.7.2 是 Loki 的版本号),离线 load 会找不到镜像。
+    image: grafana/promtail:2.9.10
     profiles:
       - monitoring
     command:

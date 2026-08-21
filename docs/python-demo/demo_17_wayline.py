@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import threading
 import time
 from pathlib import Path
@@ -24,6 +25,7 @@ import paho.mqtt.client as mqtt
 
 from config import (
     DOCK_SN,
+    DRONE_SN,
     MQTT_HOST,
     MQTT_PASSWORD,
     MQTT_PORT,
@@ -39,6 +41,17 @@ from demo_common import (
     print_error_and_hint,
     require_config,
 )
+
+# 子飞机 SN：优先用 DRONE_SN，未配置时从网关详情接口的 child_device_sn 解析。
+GATEWAY_CHILD_SN = DRONE_SN if DRONE_SN not in ("", "YOUR_DRONE_SN") else ""
+
+MODE_LABELS = {
+    0: "停桨待机", 1: "起飞准备", 2: "起飞完成", 3: "手动悬停", 4: "自动起飞",
+    5: "航线执行", 6: "全景拍摄", 7: "智能跟踪", 8: "ADS-B 避让", 9: "自动返航",
+    10: "自动降落", 11: "强制降落", 12: "三桨降落", 13: "升级中", 14: "失联",
+    15: "APAS", 16: "虚拟摇杆", 17: "指令飞行", 18: "RTK 固定", 19: "机巢评估",
+    20: "兴趣环绕", 37: "指点飞行", 39: "KML 航线",
+}
 
 
 JOB_STATUS = {
@@ -175,11 +188,21 @@ def upload_wayline(token: str) -> bool:
     return True
 
 
-def create_job(token: str, wayline: dict[str, Any]) -> bool:
+def create_job(token: str, wayline: dict[str, Any], watcher: "ProgressWatcher | None" = None) -> bool:
     file_id = str(wayline.get("id") or "")
     if not file_id:
         print("[✗] 航线记录缺少 id，不能下发")
         return False
+    # 固件限制（官方文档）：航线任务指令需要在无人机关机或停桨时才能执行。
+    # mode_code 已知且非 0 时直接拦截，避免设备侧 104 拒绝后留下失败任务。
+    if watcher is not None and watcher.aircraft_mode_code is not None:
+        mode_code = watcher.aircraft_mode_code
+        if mode_code != 0:
+            print(
+                f"[✗] 飞机当前状态为“{MODE_LABELS.get(mode_code, mode_code)}”(mode_code={mode_code})，"
+                "航线任务需飞机停桨在地面才能执行；请先降落或返航后再下发"
+            )
+            return False
     template_types = wayline.get("template_types") or [0]
     task_name = f"{wayline.get('name') or 'wayline'}-demo-{int(time.time() * 1000)}"
     body = {
@@ -328,10 +351,11 @@ def cancel_job(token: str, job: dict[str, Any]) -> bool:
         print(f"[✓] 已取消任务的幂等本地收敛调用成功: {_job_line(current)}")
         return True
 
+    # 运行中取消后端为 pause→undo 链路，undo 要等设备回复，收敛可能较慢。
     updated = _wait_job(
         token,
         lambda item: _job_id(item) == job_id and _job_status(item) == 4,
-        timeout=12,
+        timeout=25,
     )
     if updated:
         print(f"[{'恢复' if ambiguous else '✓'}] 取消已确认: {_job_line(updated)}")
@@ -344,13 +368,23 @@ def cancel_job(token: str, job: dict[str, Any]) -> bool:
 
 
 class ProgressWatcher:
-    """旁路订阅设备 ``flighttask_progress``，REST 查询仍是操作前的依据。"""
+    """旁路订阅设备 ``flighttask_progress`` 与飞机 OSD，REST 查询仍是操作前的依据。"""
 
     def __init__(self) -> None:
         self.topic = f"thing/product/{DOCK_SN}/events"
+        # 固件限制：航线任务需无人机关机或停桨（mode_code=0）才能执行，
+        # 下发前用子飞机 OSD 的 mode_code 本地判断。
+        self.osd_topic = f"thing/product/{GATEWAY_CHILD_SN}/osd" if GATEWAY_CHILD_SN else ""
+        self.aircraft_mode_code: int | None = None
         self.connected = threading.Event()
         self.subscribed = threading.Event()
         self._stopping = False
+        # MQTT 回调线程只入队，不直接打印；由菜单主线程在提示前统一刷新，
+        # 避免 progress 洪峰把 input() 提示行冲掉、导致无法输入取消命令。
+        self._progress_queue: queue.Queue[str] = queue.Queue()
+        self._last_line = ""
+        self._repeat_count = 0
+        self._latest_line: str | None = None
         self.client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=f"demo17_wayline_{int(time.time())}",
@@ -378,6 +412,8 @@ class ProgressWatcher:
         if reason_code == 0:
             self.connected.set()
             client.subscribe(self.topic, qos=0)
+            if GATEWAY_CHILD_SN:
+                client.subscribe(self.osd_topic, qos=0)
         else:
             print(f"[!] MQTT 连接被拒绝: {reason_code}")
 
@@ -387,12 +423,18 @@ class ProgressWatcher:
 
     def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties) -> None:
         if not self._stopping and reason_code != 0:
-            print(f"[!] MQTT 进度监听断开: {reason_code}")
+            self._progress_queue.put(f"[!] MQTT 进度监听断开: {reason_code}")
 
     def _on_message(self, client, userdata, message) -> None:
         try:
             payload = json.loads(message.payload.decode("utf-8"))
-            if payload.get("method") != "flighttask_progress":
+            method = payload.get("method")
+            if message.topic == self.osd_topic:
+                mode_code = (payload.get("data") or {}).get("mode_code")
+                if isinstance(mode_code, int):
+                    self.aircraft_mode_code = mode_code
+                return
+            if method != "flighttask_progress":
                 return
             data = payload.get("data") or {}
             output = data.get("output") or {}
@@ -403,14 +445,48 @@ class ProgressWatcher:
             result = data.get("result")
             if isinstance(result, dict):
                 result = result.get("code")
-            print(
-                f"\n[任务上报] id={job_id or '?'} "
+            line = (
+                f"[任务上报] id={job_id or '?'} "
                 f"status={FLIGHTTASK_STATUS.get(status, status or '?')} "
                 f"step={progress.get('current_step')} percent={progress.get('percent')} "
                 f"waypoint={ext.get('current_waypoint_index')} result={result}"
             )
+            self._progress_queue.put(line)
         except Exception as exc:
-            print(f"[!] 航线进度消息解析失败: {exc}")
+            self._progress_queue.put(f"[!] 航线进度消息解析失败: {exc}")
+
+    def flush(self) -> None:
+        """主线程安全刷新：打印缓冲的进度消息，连续相同的上报只保留一条。
+
+        回调线程不再直接 print，因此 ``input()`` 等待期间提示行不会被打断，
+        取消/继续等需要交互确认的操作可正常输入。
+        """
+        drained: list[str] = []
+        while True:
+            try:
+                drained.append(self._progress_queue.get_nowait())
+            except queue.Empty:
+                break
+        for line in drained:
+            if self._repeat_count > 1 and line != self._last_line:
+                print(f"    (上一条进度连续重复 {self._repeat_count} 次)")
+                self._repeat_count = 1
+            if line == self._last_line and self._repeat_count >= 1:
+                self._repeat_count += 1
+                continue
+            print(line)
+            self._last_line = line
+            self._repeat_count = 1
+        if drained:
+            self._latest_line = drained[-1]
+        elif self._repeat_count > 1 and self._last_line:
+            # 队列已空但还有未汇总的重复：提示一次并重置，避免每次刷新都打印。
+            print(f"    (上一条进度连续重复 {self._repeat_count} 次)")
+            self._repeat_count = 1
+
+    def latest_line(self) -> str | None:
+        """最近一条进度上报，用于菜单提示前展示当前任务状态。"""
+        return self._latest_line
 
     def stop(self) -> None:
         self._stopping = True
@@ -427,17 +503,33 @@ def _select_job(token: str, statuses: set[int], verb: str) -> dict[str, Any] | N
         labels = "/".join(JOB_STATUS[item] for item in sorted(statuses))
         print(f"[!] 没有可{verb}的任务（要求状态：{labels}）")
         return None
+    if len(jobs) == 1:
+        # 唯一候选直接选中，省去交互步骤：进度洪峰时快速取消更可靠。
+        print(f"[*] 唯一可{verb}任务，已自动选中: {_job_line(jobs[0])}")
+        return jobs[0]
     return choose(jobs, "选择任务序号> ", _job_line)
 
 
-def menu(token: str) -> None:
+def menu(token: str, watcher: ProgressWatcher) -> None:
     while True:
+        # 提示前统一刷新进度上报：此时不在 input() 等待中，不会打断输入。
+        watcher.flush()
+        latest = watcher.latest_line()
+        if latest:
+            print(f"[当前进度] {latest}")
+        if watcher.aircraft_mode_code is None:
+            print("[飞机状态] 尚未收到 OSD（订阅子飞机 osd 主题约 2s 内可就绪）")
+        else:
+            mode_code = watcher.aircraft_mode_code
+            label = MODE_LABELS.get(mode_code, mode_code)
+            hint = "可执行航线任务" if mode_code == 0 else "需先降落/返航（航线任务仅限停桨状态）"
+            print(f"[飞机状态] {label}(mode_code={mode_code}) -> {hint}")
         print("\n航线任务菜单：")
         print("  1. 下发并立即执行（flighttask_prepare + execute）")
         print("  2. 暂停执行中任务（flighttask_pause）")
         print("  3. 继续已暂停任务（flighttask_recovery）")
-        print("  4. 取消待执行/执行中/已暂停任务；已取消任务可做幂等收敛")
-        print("  5. 刷新任务列表")
+        print("  4. 取消待执行/执行中/已暂停任务；已取消任务可做幂等收敛（单任务自动选中）")
+        print("  5. 刷新任务列表（重新调用 REST 查询最新任务状态，暂停/取消等操作前先刷新）")
         print("  6. 上传 KMZ 航线文件到航线库")
         print("  0. 退出")
         choice_value = input("选择> ").strip()
@@ -455,7 +547,7 @@ def menu(token: str) -> None:
                     lambda item: f"{item.get('name')} ({item.get('drone_model_key', '—')})",
                 )
                 if selected:
-                    create_job(token, selected)
+                    create_job(token, selected, watcher)
             elif choice_value == "2":
                 selected = _select_job(token, PAUSABLE, "暂停")
                 if selected:
@@ -484,12 +576,31 @@ def menu(token: str) -> None:
 
 def main() -> int:
     require_config(YOOX_DOCK_SN=DOCK_SN, YOOX_WORKSPACE_ID=WORKSPACE_ID)
+    global GATEWAY_CHILD_SN
+    if not GATEWAY_CHILD_SN:
+        # 未配置 DRONE_SN 时从网关详情接口解析 child_device_sn（OSD 订阅需要）。
+        try:
+            token = login()
+            detail = api_call(
+                token,
+                "GET",
+                f"/manage/api/v1/devices/{WORKSPACE_ID}/devices/{DOCK_SN}",
+                action="查询网关详情",
+                timeout=15,
+            )
+            GATEWAY_CHILD_SN = str((detail.get("data") or {}).get("child_device_sn") or "")
+        except Exception as exc:
+            print(f"[!] 无法解析子飞机 SN，停桨前置判断将不可用: {exc}")
+            token = None
+    else:
+        token = login()
     print(f"[*] 目标网关: {DOCK_SN}  工作空间: {WORKSPACE_ID}")
-    token = login()
+    if token is None:
+        token = login()
     watcher = ProgressWatcher()
     watcher.start()
     try:
-        menu(token)
+        menu(token, watcher)
     finally:
         watcher.stop()
     return 0

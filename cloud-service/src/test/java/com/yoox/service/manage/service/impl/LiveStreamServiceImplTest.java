@@ -40,6 +40,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -121,6 +122,23 @@ class LiveStreamServiceImplTest {
 
         assertEquals(13013, response.getCode());
         verifyNoInteractions(abstractLivestreamService);
+    }
+
+    @Test
+    void liveStartSuppressesDuplicateCommandWhileEncoderIsStarting() {
+        when(abstractLivestreamService.liveStartPush3(
+                any(GatewayManager.class), any(LiveStartPushRequest3.class)))
+                .thenReturn(successfulStartReply());
+        LiveTypeDTO request = liveRequest();
+
+        HttpResultResponse first = liveStreamService.liveStart(request);
+        HttpResultResponse duplicate = liveStreamService.liveStart(request);
+
+        verify(abstractLivestreamService, times(1)).liveStartPush3(
+                any(GatewayManager.class), any(LiveStartPushRequest3.class));
+        assertEquals(Boolean.TRUE, ((LiveDTO) first.getData()).getStartedByRequest());
+        assertEquals(Boolean.TRUE, ((LiveDTO) duplicate.getData()).getReused());
+        assertEquals(Boolean.FALSE, ((LiveDTO) duplicate.getData()).getStartedByRequest());
     }
 
     @Test

@@ -172,13 +172,18 @@ make smoke
 2. macOS 防火墙提示 Docker 接受传入连接时选择允许。
 3. 确认设备与 Mac 网络互通，且 Wi-Fi 未启用客户端隔离。
 4. 遥控器云服务登录地址使用 `http://<Mac局域网IP>:9000`。
-5. 设备还需要访问 MQTT `1883`、RTSP `8554` 和 WebRTC UDP `8000/8188/8189`。
+5. 设备还需要访问 MQTT `1883`和 RTSP `8554`；浏览器需要访问 WebRTC ICE
+   `8000/udp` 或 `8000/tcp`。`8188/8189` 是 RTSP 入流在 UDP 模式下的 RTP/RTCP 端口，
+   不是浏览器 WHEP 端口。
 6. **Mac/Docker Desktop 的 RTSP 必须用 TCP 传输**：Docker Desktop 的 UDP 端口转发不可靠，
    设备推流的 UDP 媒体包会丢失导致推流失败。须在 `.env` 中添加（或确认已存在）：
 
    ```dotenv
    YOOX_RTSP_TRANSPORTS=tcp
    ```
+
+   WebRTC 出流与设备 RTSP 入流互相独立。Compose 会在 `YOOX_WEBRTC_ICE_PORT`
+   （默认 `8000`）同时发布 UDP 和 TCP；Docker Desktop 下 UDP ICE 失败时浏览器会自动回退 TCP。
 
    部署到 Linux/Jetson Nano 时**不要**设置该变量，保持默认 `udp,tcp`（优先低延迟 UDP，
    UDP 不通时自动回退 TCP）。

@@ -152,6 +152,25 @@ class SDKWaylineServiceTest {
         verify(webSocketMessageService).sendBatch(eq(WORKSPACE_ID), any(), any(), any());
     }
 
+    @ParameterizedTest
+    @EnumSource(value = FlighttaskStatusEnum.class, names = {"RETURN", "PENDING"})
+    void returningAndPendingProgressKeepRuntimeOwnership(FlighttaskStatusEnum status) {
+        stubOnlineGateway();
+        when(waylineJobService.getJobByJobId(WORKSPACE_ID, JOB_ID))
+                .thenReturn(Optional.of(job(JOB_ID, WaylineJobStatusEnum.IN_PROGRESS)));
+        when(waylineRedisService.applyWaylineJobProgress(
+                eq(GATEWAY_SN), eq(JOB_ID), any(), eq(1_000L), eq(false)))
+                .thenReturn(true);
+
+        sdkWaylineService.flighttaskProgress(request(JOB_ID, status), null);
+
+        verify(waylineRedisService).applyWaylineJobProgress(
+                eq(GATEWAY_SN), eq(JOB_ID), any(), eq(1_000L), eq(false));
+        verify(waylineRedisService, never()).clearWaylineJobState(any(), any());
+        verify(waylineJobService, never()).updateJobIfNotEnded(any());
+        verify(webSocketMessageService).sendBatch(eq(WORKSPACE_ID), any(), any(), any());
+    }
+
     @Test
     void malformedProgressEventsAreIgnoredWithoutMutatingState() {
         sdkWaylineService.flighttaskProgress(null, null);

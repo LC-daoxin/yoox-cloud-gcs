@@ -42,7 +42,6 @@ public abstract class AbstractWaylineService {
         throw new UnsupportedOperationException("flighttaskProgress not implemented");
     }
 
-    @ServiceActivator(inputChannel = ChannelName.INBOUND_EVENTS_FLIGHTTASK_READY, outputChannel = ChannelName.OUTBOUND_EVENTS)
     public TopicEventsResponse<MqttReply> flighttaskReady(TopicEventsRequest<FlighttaskReady> request, MessageHeaders headers) {
         throw new UnsupportedOperationException("flighttaskReady not implemented");
     }
