@@ -41,13 +41,6 @@ docker info >/dev/null 2>&1 || { printf '[✗] Docker 守护进程未运行\n'; 
 ls "$SCRIPT_DIR"/images/*.tar.gz >/dev/null 2>&1 || { printf '[✗] images/ 下没有镜像包（*.tar.gz）\n'; exit 1; }
 [ -f "$SCRIPT_DIR/deploy/compose.yml" ] || { printf '[✗] 缺少 deploy/compose.yml\n'; exit 1; }
 
-if [ -f "$SCRIPT_DIR/SHA256SUMS" ]; then
-    printf '校验部署包完整性...\n'
-    (cd "$SCRIPT_DIR" && sha256sum -c SHA256SUMS)
-else
-    printf '[!] 未找到 SHA256SUMS，跳过完整性校验\n'
-fi
-
 IP_MATCHED=$(ip addr 2>/dev/null | grep -c "inet $NODE_IP/" || true)
 if [ "$IP_MATCHED" = "0" ]; then
     printf '[!] 警告: %s 不是本机当前网卡 IP，请确认后再继续\n' "$NODE_IP"

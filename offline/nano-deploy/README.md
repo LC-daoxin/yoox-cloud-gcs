@@ -10,15 +10,16 @@
 yoox-cloud-gcs-nano-<version>/
 ├── install.sh                              # Nano 一键安装脚本
 ├── DEPLOYMENT.md                           # 完整部署、运维与排障指南
+├── WINDOWS-DEPLOYMENT.md                   # Windows x64 Docker Desktop 部署指南
 ├── .env.template                           # 部署环境配置
 ├── VERSION                                 # 业务镜像版本
 ├── IMAGE-MANIFEST.txt                      # 全部镜像清单
-├── SHA256SUMS                              # 包内文件完整性校验
 ├── images/
 │   └── yoox-cloud-gcs-<version>.tar.gz     # 全部 arm64 镜像（单一镜像归档）
 └── deploy/                                 # 部署包内容（install.sh 复制到 ~/yoox-cloud-gcs/）
     ├── compose.yml
     ├── compose.nano.yml
+    ├── compose.windows-x64.yml
     ├── scripts/
     │   ├── preflight.sh
     │   └── smoke-test.sh
@@ -129,11 +130,10 @@ cd ~/git/yooxplore/Autel/YOOX_Cloud_GCS
 
 ```text
 yoox-cloud-gcs-nano-<version>.tar.gz
-yoox-cloud-gcs-nano-<version>.tar.gz.sha256
 ```
 
 脚本会自动同步配置、构建 4 个业务镜像、拉取全部第三方 arm64 镜像、检查架构、
-导出镜像、生成完整性校验并封装为一个文件。也可运行：
+导出镜像并封装为一个文件。也可运行：
 
 ```bash
 make nano-offline-bundle ENV_TEMPLATE=.env.nano1
@@ -144,7 +144,8 @@ make nano-offline-bundle ENV_TEMPLATE=.env.nano1
 
 ## 注意事项
 
-- 镜像为 `linux/arm64`，只能在 aarch64 Jetson Nano 上运行。
+- 镜像为 `linux/arm64`，默认在 aarch64 Jetson Nano 上运行；Windows x64 Docker Desktop 可按
+  `WINDOWS-DEPLOYMENT.md` 使用 QEMU 模拟运行。
 - `offline/dist/` 和所有 `.tar.gz` 文件均不应提交 Git。
 - 使用 `.env.nano1` 打包时，归档包含明文密钥；不要上传公共网盘或发送给无关人员。
 - Nano 默认使用 `udp,tcp` RTSP 传输（优先低延迟 UDP，UDP 不通时回退 TCP）。
@@ -157,6 +158,7 @@ make nano-offline-bundle ENV_TEMPLATE=.env.nano1
 需运行 `bash scripts/sync-offline.sh` 同步：
 
 - `compose.yml`
+- `deploy/compose.windows-x64.yml`
 - `scripts/preflight.sh`
 - `scripts/smoke-test.sh`
 - `deploy/emqx/acl.conf`

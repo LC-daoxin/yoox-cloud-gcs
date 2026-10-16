@@ -1,0 +1,19 @@
+services:
+  redis:
+    command:
+      - sh
+      - -ec
+      - >-
+        exec redis-server --appendonly yes
+        --requirepass "$${YOOX_REDIS_PASSWORD}"
+        --ignore-warnings ARM64-COW-BUG
+
+  api:
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://127.0.0.1:9000/actuator/health || exit 1
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 5m

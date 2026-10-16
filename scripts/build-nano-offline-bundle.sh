@@ -39,14 +39,6 @@ docker info >/dev/null 2>&1 || { printf 'Docker 守护进程未运行。\n' >&2;
 [ -f "$ENV_FILE" ] || { printf 'Compose 环境文件不存在: %s\n' "$ENV_FILE" >&2; exit 1; }
 [ -f "$ENV_TEMPLATE" ] || { printf '部署环境模板不存在: %s\n' "$ENV_TEMPLATE" >&2; exit 1; }
 
-sha256_file() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1"
-    else
-        shasum -a 256 "$1"
-    fi
-}
-
 SERVER_ARCH=$(docker info --format '{{.Architecture}}')
 case "$SERVER_ARCH" in
     arm64|aarch64) ;;
@@ -117,6 +109,7 @@ cp -R "$ROOT_DIR/offline/nano-deploy/deploy" "$PACKAGE_DIR/deploy"
 cp "$ROOT_DIR/offline/nano-deploy/install.sh" "$PACKAGE_DIR/install.sh"
 cp "$ROOT_DIR/offline/nano-deploy/README.md" "$PACKAGE_DIR/README.md"
 cp "$ROOT_DIR/docs/13-Nano快速部署.md" "$PACKAGE_DIR/DEPLOYMENT.md"
+cp "$ROOT_DIR/docs/18-Windows10-11本地构建与部署.md" "$PACKAGE_DIR/WINDOWS-DEPLOYMENT.md"
 cp "$ENV_TEMPLATE" "$PACKAGE_DIR/.env.template"
 cp "$IMAGE_MANIFEST" "$PACKAGE_DIR/IMAGE-MANIFEST.txt"
 printf '%s\n' "$VERSION" > "$PACKAGE_DIR/VERSION"
@@ -127,22 +120,11 @@ printf '\n[6/7] 导出 %s 个镜像\n' "$(wc -l < "$IMAGE_MANIFEST" | tr -d ' ')
 # shellcheck disable=SC2046
 docker save $(cat "$IMAGE_MANIFEST") | gzip -1 > "$PACKAGE_DIR/images/yoox-cloud-gcs-$VERSION.tar.gz"
 
-(
-    cd "$PACKAGE_DIR"
-    find . -type f ! -name SHA256SUMS -print | LC_ALL=C sort | while IFS= read -r file; do
-        sha256_file "$file"
-    done > SHA256SUMS
-)
-
 OUTPUT_FILE="$OUT_DIR/$PACKAGE_NAME.tar.gz"
 printf '\n[7/7] 生成单文件部署包\n'
 tar -C "$STAGE_DIR" -czf "$OUTPUT_FILE" "$PACKAGE_NAME"
 chmod 600 "$OUTPUT_FILE"
-(
-    cd "$OUT_DIR"
-    sha256_file "$(basename "$OUTPUT_FILE")" > "$(basename "$OUTPUT_FILE").sha256"
-)
 
-printf '\n完成:\n  %s\n  %s\n' "$OUTPUT_FILE" "$OUTPUT_FILE.sha256"
+printf '\n完成:\n  %s\n' "$OUTPUT_FILE"
 printf 'Nano 使用:\n  tar xzf %s\n  cd %s\n  bash install.sh <Nano局域网IP>\n' \
     "$(basename "$OUTPUT_FILE")" "$PACKAGE_NAME"

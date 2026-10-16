@@ -105,7 +105,7 @@ C++ Demo 是平台 API 调用示例，不是无人机固件，也不会自动完
 
 - [文档总索引与状态说明](docs/README.md)
 - [macOS 本地构建与部署](docs/10-macOS本地构建与部署.md)
-- [Windows 10/11 本地构建与部署](docs/18-Windows10-11本地构建与部署.md)
+- [Windows 10/11 Docker Desktop 离线镜像部署](docs/18-Windows10-11本地构建与部署.md)
 - [Linux 本地构建与部署](docs/11-Linux本地构建与部署.md)
 - [Nano 完全离线快速部署](docs/13-Nano快速部署.md)
 - [Tailscale 异地访问指南](docs/17-Tailscale异地访问指南.md)

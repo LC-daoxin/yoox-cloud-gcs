@@ -56,16 +56,17 @@ $HOME/yoox-cloud-gcs
 yoox-cloud-gcs-nano-<version>/
 ├── install.sh
 ├── DEPLOYMENT.md
+├── WINDOWS-DEPLOYMENT.md
 ├── .env.template
 ├── VERSION
 ├── IMAGE-MANIFEST.txt
-├── SHA256SUMS
 ├── README.md
 ├── images/
 │   └── yoox-cloud-gcs-<version>.tar.gz
 └── deploy/
     ├── compose.yml
     ├── compose.nano.yml
+    ├── compose.windows-x64.yml
     ├── scripts/
     │   ├── preflight.sh
     │   └── smoke-test.sh

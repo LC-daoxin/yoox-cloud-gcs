@@ -14,7 +14,7 @@
 | [API 指南](07-API指南.md) | 登录、设备、直播、DRC、控制、航线、媒体流程 | Controller、运行时 OpenAPI |
 | [部署与运维指南](08-部署运维指南.md) | Nano 运行服务的巡检、配置变更、备份和排障 | Compose、运行时健康检查 |
 | [macOS 本地构建与部署](10-macOS本地构建与部署.md) | Docker Desktop 开发和真机局域网接入 | Makefile、Compose |
-| [Windows 10/11 本地构建与部署](18-Windows10-11本地构建与部署.md) | WSL2、Docker Desktop 部署和局域网真机接入 | Makefile、Compose、Docker/Microsoft 官方文档 |
+| [Windows 10/11 Docker Desktop 离线镜像部署](18-Windows10-11本地构建与部署.md) | WSL2、Docker Desktop、ARM64 离线包导入和局域网接入 | 离线包、Compose、Docker/Microsoft 官方文档 |
 | [Linux 本地构建与部署](11-Linux本地构建与部署.md) | Linux 源码构建和单机部署 | Makefile、Compose |
 | [Nano 完全离线快速部署](13-Nano快速部署.md) | Nano 8GB B 版离线安装、更新和回滚 | 离线包构建/安装脚本 |
 | [Tailscale 异地访问指南](17-Tailscale异地访问指南.md) | 无公网 IP 的 Nano SSH、RDP、GCS 和子网路由 | Tailscale/GNOME 官方文档、现场网络配置 |
