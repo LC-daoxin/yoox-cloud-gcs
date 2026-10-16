@@ -8,12 +8,15 @@
 
 ```bash
 cd docs/python-demo
-cp .env.example .env
+test -f .env || cp .env.example .env
 chmod +x run.sh
 ./run.sh demo_01_login.py
 ```
 
-`.env`、`.venv` 和 `__pycache__` 已被 Git 忽略。不要提交真实密码、token、设备 SN、工作空间 ID、IP 或飞行坐标。
+命令只会在 `.env` 不存在时从模板创建，不会覆盖已有配置。`docs/python-demo/.env` 含账号、
+设备 SN、工作空间 ID 和飞行坐标，只用于本地联调并被 Git 忽略；仓库只提交
+`.env.example`。Windows C++ 对应实现位于 [`../cpp-demo`](../cpp-demo/README.md)，可通过
+`--env-file ../python-demo/.env` 复用同一套 `YOOX_*` 配置语义。
 
 也可以手动运行：
 
@@ -95,6 +98,7 @@ YOOX_TAKEOFF_TARGET_LONGITUDE=
 | `demo_19_return_home.py` | 一键返航/取消返航，OSD 旁路监视 mode_code 确认 | dock；监视另需 MQTT |
 | `demo_20_kmz_generate.py` | 离线生成与参考文件结构相同的 wpmz 航线 KMZ，输出到 `kmz/` | 无（纯本地） |
 | `demo_21_kmz_interactive.py` | 交互式航线编辑：设航线信息→逐点设航点（可选云台动作）→生成 KMZ | 无（纯本地） |
+| `demo_22_two_drone_control.py` | 双机并发一键起飞、分别 FlyTo、独立状态恢复 | 两套网关/飞机 SN、两套起飞点和 FlyTo 目标 |
 
 ## 4. 飞行控制流程
 
@@ -149,6 +153,30 @@ GPS 坐标，只改变相对高度：
 请求体与当前 Web 控制台一致，只包含 `target_longitude`、`target_latitude`、`target_height` 和 `max_speed`。服务端统一补充安全起飞高度、返航高度和失联返航动作，并在 RC 网关场景加入 `device_list`。
 
 脚本在 HTTP 成功或超时后都通过 point-flight 状态恢复 `flight_id`。如果暂时不能恢复，脚本会退出并要求观察 OSD，绝不会自动重复起飞。
+
+### 4.2.1 双机起飞与分别指点飞行
+
+`demo_22_two_drone_control.py` 一次 Web 登录后控制两套明确配置的“网关 + 子飞机”。
+先在 `.env` 填写 `YOOX_DUAL_*` 配置；网关 SN 必须是遥控器或机巢 SN，飞机 SN
+仅用于运行前核对拓扑。脚本要求两起飞点、两 FlyTo 目标的水平间隔都至少为 10 m。
+
+```bash
+# 只核对双机在线拓扑和当前点飞状态，不发送动作
+./run.sh demo_22_two_drone_control.py status
+
+# 并发抢权并分别下发一次一键起飞
+./run.sh demo_22_two_drone_control.py takeoff
+
+# 两机已在空中 MANUAL 后，分别飞往各自目标
+./run.sh demo_22_two_drone_control.py flyto
+
+# 起飞全部明确成功后，再次人工确认并进入 FlyTo 阶段
+./run.sh demo_22_two_drone_control.py all
+```
+
+起飞阶段必须输入 `TAKEOFF TWO`，FlyTo 阶段必须输入 `FLYTO TWO`。任意一台出现
+超时、未知结果或失败时，`all` 都不会继续下一阶段。两台设备不是事务：一台已受理后，
+另一台仍可能失败，因此必须为每台飞机分别保留现场飞手、返航/悬停处置和安全隔离空域。
 
 ### 4.3 一键返航与取消返航
 

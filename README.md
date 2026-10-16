@@ -82,7 +82,7 @@ Demo 默认只使用安全占位配置；先复制示例环境文件并填写测
 
 ```bash
 cd docs/python-demo
-cp .env.example .env
+test -f .env || cp .env.example .env
 # 编辑 .env 后运行；首次执行会在本目录创建隔离虚拟环境
 ./run.sh demo_01_login.py
 ```
@@ -91,17 +91,34 @@ cp .env.example .env
 定位、电量、控制权和现场接管条件；HTTP 超时不等于指令未执行，必须先查询任务状态，禁止盲目重发。
 完整说明见 [Python Demo 使用指南](docs/python-demo/README.md)。
 
+## Windows C++ 联调 Demo
+
+[`docs/cpp-demo`](docs/cpp-demo/README.md) 是上述 Python Demo 的 Windows x64/C++17
+对应实现，提供 22 个同名入口，并共用相同的 `YOOX_*` 配置语义。它使用 CMake、vcpkg、
+libcurl、Paho MQTT C++、IXWebSocket 和 libzip；所有设备动作默认 dry-run，必须显式传入
+`--execute`、通过在线/任务预检并输入确认词后才会发送。
+
+C++ Demo 是平台 API 调用示例，不是无人机固件，也不会自动完成客户 RZXDM 或其他私有协议接入。
+客户应把自己的 `ActionDispatcher` 映射到 `YooxClient`，并在真机使用前完成现场安全验收。
+
 ## 文档
 
+- [文档总索引与状态说明](docs/README.md)
 - [macOS 本地构建与部署](docs/10-macOS本地构建与部署.md)
+- [Windows 10/11 本地构建与部署](docs/18-Windows10-11本地构建与部署.md)
 - [Linux 本地构建与部署](docs/11-Linux本地构建与部署.md)
+- [Nano 完全离线快速部署](docs/13-Nano快速部署.md)
+- [Tailscale 异地访问指南](docs/17-Tailscale异地访问指南.md)
 - [配置指南](docs/06-配置指南.md)
 - [API 指南](docs/07-API指南.md)
 - [部署与运维指南](docs/08-部署运维指南.md)
 - [遥控器云服务频繁断连排查](docs/09-遥控器云服务频繁断连排查.md)
+- [指令链路诊断日志指南](docs/14-指令链路诊断日志指南.md)
+- [MQTT 直连 A/B 测试指南](docs/15-MQTT直连AB测试指南.md)
+- [a-uav 上云接入分析](docs/16-a-uav上云服务接入分析与实施方案.md)
 - [Python Demo 使用指南](docs/python-demo/README.md)
+- [Windows C++ Demo 使用指南](docs/cpp-demo/README.md)
 - [项目总体方案](docs/01-项目总体方案.md)
-- [Demo 复用与改造清单](docs/02-Demo复用与改造清单.md)
 - [实施计划与验收标准](docs/03-实施计划与验收标准.md)
 - [部署与容量规划](docs/04-部署与容量规划.md)
 

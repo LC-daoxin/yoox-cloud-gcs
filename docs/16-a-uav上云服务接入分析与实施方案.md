@@ -4,6 +4,10 @@
 > 上云 API 基线：`YOOX_Cloud_GCS@e229836901d3`
 > 遥控器 APP 基线：`a-uav@ffdeda84650a`，分支 `feature/cloud-service`
 > 目标读者：Android/MSDK、云端后端、测试与部署人员
+>
+> 复核说明（2026-10-15）：`a-uav` 仍停留在上述提交，因此 APP 侧差距结论仍有效。云端源码已
+> 增加 MQTT 对外地址按登录请求主机下发，并在 Compose 映射 1883；2026-08-20 的公网连通性结果
+> 仅作为历史证据，不能代表当前部署状态，发布后必须重新实测。
 
 ## 1. 结论先行
 
@@ -22,7 +26,7 @@
 对“能否连接当前上云 API 服务”的准确回答是：
 
 1. **源码协议层面可以接入，不需要推翻现有云端协议。** 应在 `a-uav` 内新增 MSDK 到现有私有协议的设备端适配层。
-2. **现网目前不能完成完整三通道连接。** 2026-08-20 从开发机实测，健康检查、Pilot 登录和 WebSocket 握手可用，但公网 `124.220.168.49:1883` 拒绝 TCP 连接；登录还返回了容器内地址 `tcp://emqx:1883`。
+2. **2026-08-20 的目标环境未完成三通道连接。** 当时健康检查、Pilot 登录和 WebSocket 握手可用，但 `<server-ip>:1883` 拒绝 TCP 连接；登录还返回了容器内地址 `tcp://emqx:1883`。当前源码已修复地址生成和端口映射，部署状态需重新验收。
 3. **即便先修通 MQTT，当前 APP 也只会短暂上线，不能持续遥测或接受控制。** 必须按本文的阶段 0、阶段 1 完成后，才能称为“只读上云 MVP”；控制能力还需要阶段 2 的安全闭环。
 
 ### 1.1 兼容性总表
@@ -157,11 +161,11 @@ Content-Type: application/json
 
 关键服务端证据：
 
-- `yoox-framework-redis/.../RedisConst.java:12`：在线 TTL 为 60 秒；
-- `cloud-service/.../GlobalScheduleService.java:32`：30 秒周期离线检查；
-- `cloud-service/.../SDKDeviceService.java:402`：OSD 路由刷新在线状态；
-- `yoox-framework-mqtt/.../OsdRemoteControl.java:7`：RC OSD 模型；
-- `yoox-framework-mqtt/.../OsdRcDrone.java:11`：RC 所连飞机 OSD 模型。
+- `yoox-framework/yoox-framework-redis/src/main/java/com/yoox/great/redis/RedisConst.java:12`：在线 TTL 为 60 秒；
+- `cloud-service/src/main/java/com/yoox/service/assignment/GlobalScheduleService.java:32`：30 秒周期离线检查；
+- `cloud-service/src/main/java/com/yoox/service/manage/service/impl/SDKDeviceService.java:418`：OSD 路由刷新在线状态；
+- `yoox-framework/yoox-framework-mqtt/src/main/java/com/yoox/great/mqtt/model/device/OsdRemoteControl.java:7`：RC OSD 模型；
+- `yoox-framework/yoox-framework-mqtt/src/main/java/com/yoox/great/mqtt/model/device/OsdRcDrone.java:11`：RC 所连飞机 OSD 模型。
 
 ## 4. `feature/cloud-service` 代码评审
 
@@ -221,23 +225,28 @@ Content-Type: application/json
 - 展开和折叠状态设置了相同箭头资源；
 - 没有新增云连接单元测试或仪器测试。
 
-## 5. 现网验证显示 MQTT 是当前部署阻断项
+## 5. 2026-08-20 MQTT 连通性历史验证
 
 2026-08-20 使用脱敏脚本从当前开发网络验证公网目标，结果如下：
 
 | 检查 | 结果 | 判断 |
 |---|---|---|
-| `GET http://124.220.168.49:9000/actuator/health` | HTTP 200 | API 服务在线 |
+| `GET http://<server-ip>:9000/actuator/health` | HTTP 200 | API 服务在线 |
 | `POST /manage/api/v1/login` | `code=0`，返回 JWT/workspace/MQTT 凭据 | Pilot 登录可用 |
 | 登录返回的 `mqtt_addr` | `tcp://emqx:1883` | 错误地暴露了 Docker 内部主机名 |
 | `GET /api/v1/ws?x-auth-token=<redacted>` Upgrade | HTTP 101 | APP 当前 WS 路径正确 |
-| TCP `124.220.168.49:1883` | `Connection refused` | 遥控器当前无法从公网连接 MQTT |
+| TCP `<server-ip>:1883` | `Connection refused` | 当时遥控器无法从公网连接 MQTT |
 
-此外，仓库自带的示例 Pilot 凭据仍能登录公网服务。报告不记录具体密码，但生产环境应立即轮换默认凭据并审计使用记录。
+此外，当时示例 Pilot 凭据仍能登录目标服务。报告不记录具体密码；任何仍在使用的默认凭据都应
+立即轮换并审计使用记录。
 
-`compose.yml` 的当前源码本来会通过 `YOOX_MQTT_ADVERTISED_ADDRESS` 返回外部 Broker URI，也会映射 1883。因此现网行为说明至少存在以下一种情况：
+当前源码状态：`compose.yml` 已发布 MQTT 1883，登录返回地址支持按客户端访问主机生成，Nano
+离线包也包含 EMQX。是否真正可达仍取决于目标机 `.env`、防火墙、安全组和已部署镜像版本。
 
-- 生产 `.env` 未设置或错误设置外部 MQTT 地址；
+`compose.yml` 当前根据 `YOOX_PUBLIC_HOST` 和 `YOOX_MQTT_PORT` 生成 API 容器内的
+`YOOX_MQTT_ADVERTISED_ADDRESS`，并映射 1883。因此历史现网行为说明至少存在以下一种情况：
+
+- 生产 `.env` 中的 `YOOX_PUBLIC_HOST` 或 `YOOX_MQTT_PORT` 配置错误；
 - 远端仍在运行旧 compose/旧镜像；
 - EMQX 容器未启动或没有映射 1883；
 - 主机防火墙/云安全组未允许遥控器来源访问；
@@ -246,19 +255,23 @@ Content-Type: application/json
 需要在生产主机只读核对后再修复：
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 emqx cloud-service
-ss -lntp
-docker compose config
+docker compose --env-file .env ps
+docker compose --env-file .env logs --tail=200 emqx api
+docker compose --env-file .env exec -T api printenv YOOX_MQTT_ADVERTISED_ADDRESS
+ss -lntp | grep -E ':(1883|9000)\b'
+docker compose --env-file .env config --quiet
 ```
 
 期望配置至少满足：
 
 ```dotenv
-YOOX_PUBLIC_HOST=124.220.168.49
+YOOX_PUBLIC_HOST=<server-ip>
 YOOX_MQTT_PORT=1883
-YOOX_MQTT_ADVERTISED_ADDRESS=tcp://124.220.168.49:1883
+YOOX_MQTT_ADVERTISED_FOLLOW_REQUEST_HOST=true
 ```
+
+不要在 `.env` 中单独设置 `YOOX_MQTT_ADVERTISED_ADDRESS`；当前 Compose 不读取该宿主机变量，
+而是使用上面的公共主机和端口生成容器配置。
 
 上述是当前协议的临时可用配置。生产目标应是域名 + TLS（例如 MQTTS 8883）或受控 VPN，不应长期裸露公网明文 1883。
 
@@ -432,8 +445,8 @@ Topic：`thing/product/{drone_sn}/osd`，根字段 `gateway` 必须是当前 RC 
 
 ### 10.1 立即处理
 
-- 修复公网 MQTT 监听、端口映射和安全组；
-- 修复 `YOOX_MQTT_ADVERTISED_ADDRESS`，确保遥控器能解析并访问登录返回的 URI；
+- 源码已映射 MQTT 1883；每个目标环境仍需验证监听、防火墙和安全组；
+- 源码已支持登录地址跟随请求主机；每个目标环境仍需核对返回 URI 可解析且可达；
 - 轮换仍可用于公网登录的示例账号密码；
 - 确认生产运行提交与本报告评审基线，避免源码与容器行为不一致；
 - 修复 services 重试时变更关联 ID 的问题；

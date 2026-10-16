@@ -27,7 +27,7 @@ History uses Conventional Commit-style subjects, for example `feat: YOOX Cloud G
 
 ## Security & Configuration
 
-Never commit `.env`, credentials, or device identifiers. Keep safe placeholders in `.env.example`, and replace every `change_me` value before deployment.
+This private repository intentionally tracks all project `.env` and `.env.*` files, including populated deployment configuration, so environments can be restored from Git. Keep repository access tightly controlled, review environment-file diffs before pushing, and rotate exposed credentials if repository access broadens.
 
 ## Deployment
 

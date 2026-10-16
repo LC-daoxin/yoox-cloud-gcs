@@ -1,856 +1,670 @@
-# YOOX Cloud GCS 新 Nano 快速部署（Mac 构建镜像）
+# YOOX Cloud GCS Nano 完全离线快速部署
 
-本文适用于在全新的 Jetson Nano 上部署 YOOX Cloud GCS，且构建工作在 Mac（Apple Silicon）上完成。
-由于 Mac M 系列与 Jetson Nano 同为 `arm64` 架构，Mac 构建的镜像可以直接在 Nano 上运行，
-无需在 Nano 上执行耗时的 Maven 和 npm 编译。
+本文说明如何使用项目生成的单文件离线包，在 64 位 Jetson Nano 或 Jetson Orin Nano 上部署
+YOOX Cloud GCS。目标设备无需访问 GitHub、Docker Hub、Maven 或 npm，也不需要克隆项目仓库。
 
-仓库地址（公开仓库，无需配置 SSH 密钥）：
+当前现场部署目标为 **Nano 8GB B 版**。本文的默认资源配置、安装命令和验收步骤均按该设备
+编写；4 GB 设备仅作为兼容性参考，不是当前交付目标。
+
+离线包包含业务镜像、MySQL、Redis、MinIO、EMQX、MediaMTX、TURN、监控组件、Compose
+配置、数据库初始化 SQL、环境配置和一键安装脚本。目标 Nano 只需预先安装 Docker Engine 和
+Docker Compose v2。
+
+交付文件名格式如下：
 
 ```text
-https://github.com/LC-daoxin/yoox-cloud-gcs.git
+yoox-cloud-gcs-nano-<version>.tar.gz
 ```
 
-示例设备与目录：
+当前完整包大小约 1.4 GB，包含 17 个 `linux/arm64` 镜像。本文命令中的 `<version>` 应替换为
+实际文件名中的版本。
+
+> 离线包使用 `.env.nano1` 生成时包含明文部署密钥。只能通过可信局域网或可信存储介质传输，
+> 不得上传公共网盘、公开制品库或提交到 Git。
+
+## 1. 部署方案
+
+完整流程如下：
+
+| 步骤 | 执行位置 | 是否需要网络 | 说明 |
+| --- | --- | --- | --- |
+| 构建离线包 | Apple Silicon Mac | 可能需要 | 缺失的第三方镜像需要在构建机拉取 |
+| 传输单一归档 | Mac → Nano | 否 | 使用 U 盘、移动硬盘或局域网 `scp` |
+| 解压部署包 | Nano | 否 | 解压单一 `.tar.gz` 归档 |
+| 一键安装 | Nano | 否 | 自动加载、核对镜像，生成配置并启动服务 |
+| 烟雾测试 | Nano | 否 | 安装脚本自动执行健康和接口检查 |
+
+与旧部署方式相比，目标 Nano：
+
+- 不需要克隆项目仓库；
+- 不需要执行 Maven 或 npm 构建；
+- 不需要运行 `docker pull`；
+- 不需要手工加载 MySQL、Redis 等第三方镜像；
+- 不需要手工同步 `YOOX_VERSION`。
+
+安装后的运行目录固定为：
 
 ```text
-开发机（Mac）：    lince@<Mac 主机名>
-Nano 设备：        jetson@172.20.10.4
-Nano 部署目录：    /home/jetson/1_projects/yoox-cloud-gcs
+$HOME/yoox-cloud-gcs
 ```
 
-> 本文档同样适用于 Jetson Orin Nano 8GB 开发套件。如果 Nano 上同时运行
-> YOLOv5 等推理任务，务必阅读 [第 10 节：资源管控与 YOLOv5 共存](#10-资源管控与-yolov5-共存)。
+## 2. 离线包内容
 
-## 1. 方案概述
+解压后的目录结构如下：
 
-| 步骤 | 执行位置 | 说明 |
-| --- | --- | --- |
-| 构建镜像 | Mac | 编译后端 JAR、前端静态文件，打包为 Docker 镜像 |
-| 导出镜像 | Mac | `docker save` 打包 4 个自定义镜像 |
-| 传输镜像 | Mac → Nano | `scp` 或 U 盘拷贝 |
-| 克隆仓库 | Nano | 公开仓库，直接 HTTPS 克隆，获取 `compose.yml`、`compose.nano.yml`、`deploy/`、`sql/` 等配置文件 |
-| 加载镜像 | Nano | `docker load` 导入镜像，不触发构建 |
-| 启动服务 | Nano | `docker compose up -d`（或叠加 `compose.nano.yml` 启用资源限制） |
+```text
+yoox-cloud-gcs-nano-<version>/
+├── install.sh
+├── DEPLOYMENT.md
+├── .env.template
+├── VERSION
+├── IMAGE-MANIFEST.txt
+├── SHA256SUMS
+├── README.md
+├── images/
+│   └── yoox-cloud-gcs-<version>.tar.gz
+└── deploy/
+    ├── compose.yml
+    ├── compose.nano.yml
+    ├── scripts/
+    │   ├── preflight.sh
+    │   └── smoke-test.sh
+    ├── sql/
+    │   └── cloud_api.sql
+    └── deploy/
+        ├── emqx/
+        ├── mediamtx/
+        ├── grafana/
+        ├── loki/
+        ├── prometheus/
+        └── promtail/
+```
 
-第三方镜像（mysql、redis、emqx、minio 等）由 Nano 直接从 Docker Hub 拉取，均为多架构镜像，
-无需手动处理。
+### 2.1 包含的 17 个镜像
 
-## 2. 前提条件
+| 类别 | 镜像 |
+| --- | --- |
+| 业务后端 | `yoox/cloud-gcs-api:<version>` |
+| Web 控制台 | `yoox/cloud-gcs-web:<version>` |
+| API Portal | `yoox/cloud-gcs-api-portal:<version>` |
+| 流媒体 | `yoox/mediamtx:1.19.3` |
+| 数据库 | `mysql:8.4.6` |
+| 缓存 | `redis:7.4.9-alpine` |
+| 对象存储 | `minio/minio:RELEASE.2025-04-22T22-12-26Z` |
+| MinIO 初始化 | `minio/mc:RELEASE.2025-04-16T18-13-26Z` |
+| MQTT | `emqx/emqx:5.8.9` |
+| EMQX 初始化 | `curlimages/curl:8.15.0` |
+| TURN | `coturn/coturn:4.6.3` |
+| 指标 | `prom/prometheus:v3.13.0` |
+| 可视化 | `grafana/grafana:13.1.0` |
+| 日志存储 | `grafana/loki:3.7.2` |
+| 日志采集 | `grafana/promtail:2.9.10` |
+| 容器指标 | `gcr.io/cadvisor/cadvisor:v0.52.1` |
+| 主机指标 | `prom/node-exporter:v1.9.1` |
 
-### 2.1 Mac 侧
+其中 TURN 和监控镜像也已包含在包中，但考虑 Nano 的资源限制，默认不会启动。
 
-- Apple Silicon（M1/M2/M3/M4），架构为 `arm64`。
-- 已安装 Docker Desktop 或 Colima，并已启动。
-- 已克隆仓库。
+## 3. 前提条件
 
-确认 Mac 架构：
+### 3.1 目标 Nano
+
+目标设备必须满足：
+
+- 64 位 JetPack/Linux，`uname -m` 输出 `aarch64`；
+- Docker Engine 已安装且守护进程已启动；
+- Docker Compose v2 插件可用；
+- 当前用户有权限访问 Docker；
+- 建议部署前至少保留 10 GB 可用磁盘空间；
+- 当前交付目标为 Nano 8GB B 版；4 GB 型号仅参考第 9.2 节。
+
+检查命令：
 
 ```bash
 uname -m
-# 预期输出：arm64
+docker version
+docker compose version
+docker info
+df -h /
+free -h
 ```
 
-确认 Docker 架构：
+预期架构：
+
+```text
+aarch64
+```
+
+如果输出 `armv7l`，当前系统是 32 位，不能运行包内的 `linux/arm64` 镜像，必须先安装
+64 位系统。
+
+### 3.2 离线边界
+
+包内包含全部应用和第三方 Docker 镜像，因此安装和启动过程不访问外网。但以下内容不在包内：
+
+- Nano 操作系统和 JetPack；
+- Docker Engine；
+- Docker Compose v2；
+- 设备云侧账号、授权或网络连通性；
+- 无人机、遥控器与 Nano 之间的现场网络。
+
+## 4. 传输和解压
+
+### 4.1 传输文件
+
+只需传输单一归档：
+
+```text
+yoox-cloud-gcs-nano-<version>.tar.gz
+```
+
+可使用 U 盘，也可以通过局域网传输：
 
 ```bash
-docker version --format '{{.Server.Os}}/{{.Server.Arch}}'
-# 预期输出：linux/arm64
+scp \
+  offline/dist/yoox-cloud-gcs-nano-<version>.tar.gz \
+  jetson@<Nano-IP>:/tmp/
 ```
 
-### 2.2 Nano 侧
-
-- Jetson Nano 已刷 **64 位** JetPack 系统。
-- 建议使用 **8GB** 版本（4GB 版本可运行但需进一步压低资源限制，参见第 10 节）。
-- 已安装 Docker Engine 24+ 和 Compose v2 插件。
-- 如果 Nano 上同时运行 YOLOv5 等推理任务，需确保可用内存 ≥ 6 GB（GCS 栈 ≤ 3 GB + YOLOv5 ≤ 2 GB + OS ≤ 1 GB）。
-
-确认 Nano 架构：
+### 4.2 解压
 
 ```bash
-ssh jetson@172.20.10.4 'uname -m'
-# 预期输出：aarch64
+tar xzf yoox-cloud-gcs-nano-<version>.tar.gz
+cd yoox-cloud-gcs-nano-<version>
 ```
 
-> 如果输出 `armv7l`，说明 Nano 运行的是 32 位系统，Mac 构建的 arm64 镜像无法运行。
-> 需要重新刷 64 位 JetPack 系统后才能继续。
+## 5. 一键安装
 
-确认 Docker：
+### 5.1 首次安装
+
+安装脚本的第一个参数是 Nano 当前可被遥控器和浏览器访问的局域网 IP：
 
 ```bash
-ssh jetson@172.20.10.4 'docker version && docker compose version'
+bash install.sh 172.20.10.4
 ```
 
-## 3. RTSP 传输协议说明
+请替换为目标 Nano 的实际 IP。可先查看本机地址：
 
-RTSP 传输协议由 `YOOX_RTSP_TRANSPORTS` 控制，传递到 mediamtx 容器：
+```bash
+hostname -I
+ip addr
+```
+
+脚本执行六个阶段：
+
+1. 检查 `aarch64`、Docker、Compose 和镜像包；
+2. 使用 `docker load` 导入全部镜像；
+3. 对照 `IMAGE-MANIFEST.txt` 核对 17 个镜像；
+4. 创建 `$HOME/yoox-cloud-gcs` 并生成 `.env`；
+5. 叠加 `compose.nano.yml` 启动核心服务并等待健康检查；
+6. 运行烟雾测试并输出访问地址。
+
+安装过程不需要执行 `docker pull`。如果镜像缺失，脚本会报错并停止，不会把联网拉取作为正常
+安装步骤。
+
+### 5.2 环境配置
+
+当前交付包使用已经填写完成的 `.env.nano1` 作为 `.env.template`，没有
+`change_me` 或 `replace_with` 占位符。首次安装时脚本会自动：
+
+- 把 `YOOX_PUBLIC_HOST` 替换为命令行传入的 Nano IP；
+- 从包内 `VERSION` 写入正确的 `YOOX_VERSION`；
+- 将最终配置保存为 `$HOME/yoox-cloud-gcs/.env`；
+- 将 `.env` 权限设置为 `600`。
+
+安装后可以检查非敏感配置：
+
+```bash
+cd "$HOME/yoox-cloud-gcs"
+grep -E '^(COMPOSE_PROJECT_NAME|YOOX_PUBLIC_HOST|YOOX_VERSION)=' .env
+stat -c '%a %n' .env
+```
+
+不要把 `.env` 内容粘贴到工单、聊天群或公开日志中。
+
+### 5.3 可选服务
+
+默认只启动核心业务服务。按需启用 TURN 或监控：
+
+```bash
+# 核心服务 + TURN
+bash install.sh 172.20.10.4 --with-turn
+
+# 核心服务 + 监控栈
+bash install.sh 172.20.10.4 --with-monitoring
+
+# 核心服务 + TURN + 监控栈
+bash install.sh 172.20.10.4 --with-turn --with-monitoring
+```
+
+监控栈包含 Prometheus、Grafana、Loki、Promtail、cAdvisor 和 Node Exporter。4 GB Nano 不建议
+启用完整监控栈；8 GB Nano 同时运行 YOLOv5 时也应先观察实际内存占用。
+
+## 6. 服务和端口
+
+### 6.1 核心入口
+
+| 功能 | 地址或端口 | 说明 |
+| --- | --- | --- |
+| Web 控制台 | `http://<Nano-IP>:8080` | 浏览器管理端 |
+| Pilot 网关 | `http://<Nano-IP>:9000` | Pilot 登录、HTTP 和 WebSocket |
+| API Portal | `http://<Nano-IP>:8081` | 离线 API 文档 |
+| API 诊断 | `127.0.0.1:19000` | 仅本机健康检查 |
+| MQTT | `<Nano-IP>:1883` | 设备和云服务消息 |
+| MinIO S3 | `http://<Nano-IP>:9100` | 航线和媒体文件 |
+| RTSP | `<Nano-IP>:8554` | 视频推流/拉流控制及 TCP 交织传输 |
+| WebRTC ICE | `<Nano-IP>:8000/udp,tcp` | 浏览器低延迟播放 |
+| RTP | `<Nano-IP>:8188/udp` | RTSP UDP 媒体 |
+| RTCP | `<Nano-IP>:8189/udp` | RTSP UDP 控制 |
+
+初始 Web 账号：
+
+```text
+admin / Yoox@123456
+```
+
+首次登录后应立即修改密码。
+
+### 6.2 视频流使用 TCP 还是 UDP
+
+Nano 包的 `.env.template` 明确设置为：
+
+```dotenv
+YOOX_RTSP_TRANSPORTS=udp,tcp
+```
+
+MediaMTX 实际配置也是：
 
 ```yaml
-# compose.yml（mediamtx 服务）
-MTX_RTSPTRANSPORTS: ${YOOX_RTSP_TRANSPORTS:-udp,tcp}
+rtspTransports: [udp, tcp]
 ```
 
-该变量在 `compose.yml` 里有**内置默认值**：变量未设置（`.env` 中没有这一行）时
-mediamtx 自动取 `udp,tcp`。因此 `.env.nano1` **故意不写**这一项——缺省即最优。
+因此：
 
-不同环境的设置不同：
+- RTSP 同时允许 UDP 和 TCP；
+- UDP 媒体使用 `8188/udp` 和 `8189/udp`；
+- TCP 交织传输使用 RTSP 端口 `8554/tcp`；
+- WebRTC ICE 同时开放 `8000/udp` 和 `8000/tcp`。
 
-| 环境 | `YOOX_RTSP_TRANSPORTS` | 说明 |
-| --- | --- | --- |
-| Jetson Nano（Linux） | 不设置（默认 `udp,tcp`） | 优先低延迟 UDP；UDP 不通时自动回退 TCP |
-| Mac/Docker Desktop | **必须设置为 `tcp`** | Docker Desktop UDP 端口转发不可靠，强制 TCP 交织传输 |
-
-- **Nano 侧**（`.env.nano1`）：**不需要也不应该设置** `YOOX_RTSP_TRANSPORTS`。
-  Nano 是 Linux 主机、原生网络，UDP 端口映射可靠，`udp,tcp` 正是期望行为
-  （低延迟优先、不通回退 TCP）。
-- **Mac 本地开发**（`.env`）：必须添加 `YOOX_RTSP_TRANSPORTS=tcp`，否则设备 UDP
-  推流包经 Docker Desktop 端口转发后会丢失。
-- 若 Nano 处于 UDP 受限的特殊网络，可临时显式设 `tcp` 排除故障（见 §16.7），
-  排查后建议删除该行恢复默认。
-
-## 4. Mac 上准备配置和构建镜像
-
-### 4.1 拉取最新代码
+若现场网络丢弃 UDP，可在安装目录的 `.env` 中强制 RTSP 使用 TCP：
 
 ```bash
-cd ~/git/yooxplore/Autel/YOOX_Cloud_GCS
-git pull --ff-only
+cd "$HOME/yoox-cloud-gcs"
+nano .env
+# 新增或修改为：YOOX_RTSP_TRANSPORTS=tcp
+docker compose -f compose.yml -f compose.nano.yml --env-file .env up -d mediamtx
 ```
 
-确认工作树干净：
+如果 `.env` 已经存在该变量，应编辑原值，不要追加重复项。
+
+## 7. 部署验证
+
+安装脚本会自动运行烟雾测试。安装完成后仍建议手工确认：
 
 ```bash
-git status --short
-```
+cd "$HOME/yoox-cloud-gcs"
 
-### 4.2 确认 Nano 配置
+docker compose -f compose.yml -f compose.nano.yml --env-file .env ps
+bash scripts/smoke-test.sh .env
 
-`.env.nano1` 已纳入仓库（`.gitignore` 显式允许），`git pull` 后直接可用，无需从模板复制。
-
-每次构建前，将版本号同步到当前提交短号：
-
-```bash
-export YOOX_VERSION=nano1-$(git rev-parse --short HEAD)
-sed -i '' "s/^YOOX_VERSION=.*/YOOX_VERSION=$YOOX_VERSION/" .env.nano1
-```
-
-如果 Nano 的局域网 IP 发生变化，同步更新：
-
-```bash
-sed -i '' "s/^YOOX_PUBLIC_HOST=.*/YOOX_PUBLIC_HOST=<新IP>/" .env.nano1
-```
-
-Nano 是 Linux 主机，**不需要**在 `.env.nano1` 中设置 `YOOX_RTSP_TRANSPORTS`，保持默认
-`udp,tcp`（优先 UDP，UDP 不通时自动回退 TCP）即可。
-
-确认配置通过预检：
-
-```bash
-./scripts/preflight.sh .env.nano1
-```
-
-### 4.3 构建 4 个自定义镜像
-
-```bash
-cd ~/git/yooxplore/Autel/YOOX_Cloud_GCS
-
-# 读取版本号
-export YOOX_VERSION=$(sed -n 's/^YOOX_VERSION=//p' .env.nano1)
-
-COMPOSE_BAKE=false docker compose --env-file .env.nano1 build api web api-portal mediamtx
-```
-
-> 如果 `docker compose build` 卡在 `[+] build 0/2` 且进度长时间不动，这是 Compose bake
-> 构建器的已知问题。使用 `COMPOSE_BAKE=false` 禁用 bake 即可正常完成。
-
-确认镜像已构建：
-
-```bash
-docker image ls --format '{{.Repository}}:{{.Tag}}' | grep "$YOOX_VERSION"
-```
-
-预期输出包含：
-
-```text
-yoox/cloud-gcs-api:nano1-<提交号>
-yoox/cloud-gcs-web:nano1-<提交号>
-yoox/cloud-gcs-api-portal:nano1-<提交号>
-```
-
-以及固定标签的 mediamtx：
-
-```bash
-docker image ls --format '{{.Repository}}:{{.Tag}}' | grep mediamtx
-# 预期输出：yoox/mediamtx:1.19.3
-```
-
-## 5. 导出并传输镜像
-
-### 5.1 导出镜像
-
-```bash
-docker save \
-  yoox/cloud-gcs-api:$YOOX_VERSION \
-  yoox/cloud-gcs-web:$YOOX_VERSION \
-  yoox/cloud-gcs-api-portal:$YOOX_VERSION \
-  yoox/mediamtx:1.19.3 \
-  -o /tmp/yoox-nano1-images.tar
-```
-
-压缩以减少传输量：
-
-```bash
-gzip /tmp/yoox-nano1-images.tar
-ls -lh /tmp/yoox-nano1-images.tar.gz
-```
-
-### 5.2 传输到 Nano
-
-通过局域网 `scp` 传输：
-
-```bash
-scp /tmp/yoox-nano1-images.tar.gz jetson@172.20.10.4:/tmp/
-```
-
-> `.env.nano1` 已在仓库中，Nano 上通过 `git pull` 获取，无需单独传输。
-> 如果局域网带宽有限，也可以将镜像包拷贝到 U 盘，再在 Nano 上挂载读取。
-
-## 6. Nano 上克隆仓库
-
-仓库为公开仓库，直接 HTTPS 克隆，无需配置 SSH 密钥：
-
-```bash
-ssh jetson@172.20.10.4
-```
-
-确认目标目录不存在：
-
-```bash
-test ! -e /home/jetson/1_projects/yoox-cloud-gcs
-```
-
-克隆仓库：
-
-```bash
-cd /home/jetson/1_projects
-
-git clone \
-  https://github.com/LC-daoxin/yoox-cloud-gcs.git \
-  yoox-cloud-gcs
-```
-
-检查仓库：
-
-```bash
-cd /home/jetson/1_projects/yoox-cloud-gcs
-git log -1 --oneline
-git status --short
-```
-
-## 7. Nano 上加载镜像
-
-```bash
-gunzip -c /tmp/yoox-nano1-images.tar.gz | docker load
-```
-
-确认镜像已加载：
-
-```bash
-docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E 'yoox|mediamtx'
-```
-
-预期输出包含 4 个自定义镜像。第三方镜像（mysql、redis 等）会在 `docker compose up` 时
-自动拉取。
-
-## 8. Nano 上配置 .env
-
-`.env.nano1` 已在仓库中，克隆后直接复制使用：
-
-```bash
-cp .env.nano1 /home/jetson/1_projects/yoox-cloud-gcs/.env
-chmod 600 /home/jetson/1_projects/yoox-cloud-gcs/.env
-```
-
-> `.env.nano1` 与 `.env` 均已纳入仓库（`.gitignore` 显式允许 `!.env`、`!.env.nano1`），
-> Nano 侧无需额外传输，`git pull` 即可获取最新配置。部署目录下的 `.env` 建议保持 `600` 权限。
-
-确认关键配置：
-
-```bash
-grep -E '^(COMPOSE_PROJECT_NAME|YOOX_PUBLIC_HOST|YOOX_VERSION)=' .env
-```
-
-预期输出：
-
-```text
-COMPOSE_PROJECT_NAME=yoox-cloud-gcs
-YOOX_PUBLIC_HOST=172.20.10.4
-YOOX_VERSION=nano1-<提交号>
-```
-
-> `YOOX_VERSION` 必须与 Mac 构建时完全一致，否则 Compose 找不到镜像会尝试 build。
-
-运行预检：
-
-```bash
-make preflight
-docker compose --env-file .env config -q
-```
-
-## 9. 启动服务
-
-### 9.1 标准启动（无资源限制）
-
-适用于 Nano 专用于 GCS、不跑其他任务的场景：
-
-```bash
-cd /home/jetson/1_projects/yoox-cloud-gcs
-
-docker compose --env-file .env up \
-  -d \
-  --remove-orphans \
-  --wait \
-  --wait-timeout 300
-```
-
-### 9.2 资源受限启动（与 YOLOv5 共存）
-
-如果 Nano 上同时运行 YOLOv5 等推理任务，叠加 `compose.nano.yml` 启用资源限制，
-将 GCS 栈总内存控制在 ≤ 3 GB、CPU ≤ 2.5 核：
-
-> **注意**：`compose.nano.yml` 是后期提交入库的文件。如果 Nano 上克隆仓库的时间较早，
-> 需先执行 `git pull --ff-only` 确保该文件存在，否则会报
-> `open compose.nano.yml: no such file or directory`。
-
-```bash
-cd /home/jetson/1_projects/yoox-cloud-gcs
-
-# 若 compose.nano.yml 不存在，先拉取最新仓库文件
-git pull --ff-only
-
-# pull 可能更新了 .env.nano1 中的 YOOX_VERSION，必须重新同步到 .env
-cp .env.nano1 .env && chmod 600 .env
-
-# 确认 .env 版本号与已加载镜像一致，否则 Compose 会尝试 build（见 §16.9）
-grep YOOX_VERSION .env
-docker image ls --format '{{.Repository}}:{{.Tag}}' | grep yoox
-
-docker compose -f compose.yml -f compose.nano.yml --env-file .env up \
-  -d \
-  --remove-orphans \
-  --wait \
-  --wait-timeout 300
-```
-
-或使用 Makefile 快捷目标：
-
-```bash
-make up-nano
-```
-
-> **不要使用 `make up`**，因为 `make up` 带 `--build` 参数，会尝试在 Nano 上重新构建镜像。
-> `make up-nano` 不带 `--build`，直接复用已加载的镜像。
-
-首次启动时 Docker 会自动拉取 mysql、redis、emqx、minio 等第三方镜像，需要联网且耗时较长。
-
-查看状态和日志：
-
-```bash
-docker compose --env-file .env ps
-docker compose --env-file .env logs --tail=200 api web emqx mediamtx
-```
-
-## 10. 资源管控与 YOLOv5 共存
-
-Nano 通常需要同时运行 YOLOv5 推理任务。项目提供 `compose.nano.yml` 覆盖层，
-在不修改主 `compose.yml` 的前提下为每个容器设置 CPU/内存硬限制，确保 GCS 栈
-不会挤占 YOLOv5 的计算资源。
-
-### 10.1 资源分配概览（8GB Nano）
-
-| 服务 | 内存上限 | CPU 上限 | 优化措施 |
-| --- | --- | --- | --- |
-| mysql | 480 M | 0.4 核 | `innodb-buffer-pool-size=192M`，`max-connections=64` |
-| redis | 96 M | 0.2 核 | `maxmemory 64mb`，LRU 淘汰 |
-| minio | 256 M | 0.3 核 | - |
-| emqx | 512 M | 0.4 核 | 连接数限制 100 |
-| mediamtx | 128 M | 0.3 核 | - |
-| api (JVM) | 900 M | 1.0 核 | `-Xmx700m -XX:+UseSerialGC` |
-| web + api-portal | 112 M | 0.2 核 | 纯 nginx |
-| **GCS 合计** | **~2.5 GB** | **2.8 核** | - |
-| **剩余给 YOLOv5 + OS** | **~5.5 GB** | **~3.2 核** | - |
-
-### 10.2 关键优化说明
-
-- **JVM 改用 SerialGC**：单线程 GC 在小内存场景暂停更短、元数据开销更低，
-  比默认 G1 更适合 4-6 核小板。
-- **MySQL `innodb-buffer-pool-size=192M`**：默认会自动占用 128M-1G，显式压低。
-- **Redis `maxmemory 64mb`**：超出后 LRU 淘汰，防止 Redis 无限增长。
-- **`mem_swappiness: 0`（mysql）**：禁止数据页换出到 swap，避免拖慢整机。
-
-### 10.3 启动与验证
-
-```bash
-# 启动（叠加资源限制）
-make up-nano
-
-# 验证各容器资源使用
-
-docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}"
-
-# YOLOv5 启动时建议设较高 nice 值，确保 CPU 竞争时优先
-nice -n -5 python detect.py --weights yolov5m.pt --source 0
-```
-
-### 10.4 4GB Nano 的额外调整
-
-4GB 版本内存更紧张，需进一步压低限制。编辑 `compose.nano.yml`：
-
-- `api` 内存上限改为 `700M`，`JAVA_OPTS` 中 `-Xmx550m`
-- `mysql` 内存上限改为 `350M`，`innodb-buffer-pool-size=128M`
-- `emqx` 内存上限改为 `384M`
-- 总 GCS 占用约 1.8 GB，剩余约 2 GB 供 YOLOv5 + OS
-
-> 4GB 版本同时跑 GCS + YOLOv5 会比较紧张，建议 YOLOv5 使用量化模型（INT8）
-> 或 YOLOv5n/YOLOv5s 减少显存占用。
-
-## 11. 查看运行状态
-
-### 11.1 容器状态与日志
-
-```bash
-cd /home/jetson/1_projects/yoox-cloud-gcs
-
-# 查看所有容器健康状态
-docker compose --env-file .env ps
-
-# 查看关键服务日志（最近 200 行）
-docker compose --env-file .env logs --tail=200 api web emqx mediamtx
-
-# 持续跟踪日志（Ctrl+C 退出）
-docker compose --env-file .env logs -f api
-```
-
-### 11.2 系统资源监控
-
-```bash
-# 实时显示各容器 CPU / 内存用量（Ctrl+C 退出）
-docker stats
-
-# 只看 yoox-cloud-gcs 相关容器
-docker stats $(docker ps --filter "name=yoox-cloud-gcs" --format "{{.Names}}" | tr '\n' ' ')
-
-# 查看 Docker 磁盘占用（镜像、容器、卷、构建缓存）
-docker system df -v
-
-# 查看 Nano 系统内存
-free -h
-
-# 查看 Nano 磁盘空间
-df -h /
-```
-
-### 11.3 Jetson 专项监控
-
-```bash
-# Jetson 内置资源监控（CPU、GPU、内存、温度），Ctrl+C 退出
-tegrastats
-
-# 更友好的 jtop（需先安装：sudo pip3 install jetson-stats）
-jtop
-```
-
-## 12. 部署验证
-
-运行项目烟雾测试：
-
-```bash
-cd /home/jetson/1_projects/yoox-cloud-gcs
-make smoke
-```
-
-检查关键服务：
-
-```bash
 curl -fsS http://127.0.0.1:19000/actuator/health
 curl -fsS http://127.0.0.1:8080/
 curl -fsS http://127.0.0.1:8081/
 ```
 
-核心入口：
+查看关键服务日志：
 
-| 功能 | 地址 |
-| --- | --- |
-| Web 控制台 | `http://172.20.10.4:8080` |
-| Pilot 登录和 WebSocket 网关 | `http://172.20.10.4:9000` |
-| 在线 API 文档 | `http://172.20.10.4:8081` |
-| API 健康检查 | `http://172.20.10.4:8080/actuator/health` |
+```bash
+docker compose -f compose.yml -f compose.nano.yml --env-file .env \
+  logs --tail=200 api web mysql redis emqx mediamtx
+```
 
-初始化 Web 账号为 `admin / Yoox@123456`，仅用于首次登录，真机测试前应修改密码。
+真机验收至少包括：
 
-还应进行以下真机验证：
+1. Web 管理端能够登录；
+2. Pilot/遥控器能够登录并保持在线；
+3. MQTT OSD 持续到达；
+4. 无人机和相机拓扑正确；
+5. RTSP 推流正常；
+6. WebRTC 页面能够播放且延迟可接受；
+7. 云台、相机、航线和飞控接口按安全条件验证。
 
-1. Web 管理端能够登录。
-2. Pilot/遥控器能够登录并保持在线。
-3. MQTT OSD 持续到达。
-4. 无人机和相机拓扑正确。
-5. RTSP 推流正常。
-6. WebRTC 页面播放正常且延迟可接受。
-7. 云台、相机和航线接口按安全条件验证。
+## 8. 日常运维
 
-## 13. 日常更新流程
+### 8.1 状态和日志
 
-代码更新后，在 Mac 上重新构建镜像并传到 Nano。
+```bash
+cd "$HOME/yoox-cloud-gcs"
 
-### 13.1 Mac 侧
+docker compose -f compose.yml -f compose.nano.yml --env-file .env ps
+docker compose -f compose.yml -f compose.nano.yml --env-file .env logs --tail=200
+docker compose -f compose.yml -f compose.nano.yml --env-file .env logs -f api
+```
+
+### 8.2 资源和磁盘
+
+```bash
+docker stats
+docker system df
+free -h
+df -h /
+tegrastats
+```
+
+### 8.3 停止和重新启动
+
+停止并删除容器和项目网络，但保留命名数据卷：
+
+```bash
+cd "$HOME/yoox-cloud-gcs"
+docker compose -f compose.yml -f compose.nano.yml --env-file .env down
+```
+
+重新启动：
+
+```bash
+docker compose -f compose.yml -f compose.nano.yml --env-file .env up \
+  -d --remove-orphans --wait --wait-timeout 300
+```
+
+> 禁止执行 `docker compose down -v`。`-v` 会删除 MySQL、Redis、MinIO、EMQX 和监控数据卷，
+> 可能造成不可恢复的数据丢失。
+
+## 9. Nano 资源限制
+
+安装脚本默认叠加 `compose.nano.yml`，为核心服务设置资源上限，以便和 YOLOv5 等任务共存。
+
+### 9.1 Nano 8GB B 版（当前目标）
+
+| 服务 | 内存上限 | CPU 上限 | 主要优化 |
+| --- | ---: | ---: | --- |
+| MySQL | 480 MB | 0.4 核 | 192 MB buffer pool、64 连接 |
+| Redis | 96 MB | 0.2 核 | 64 MB LRU |
+| MinIO | 256 MB | 0.3 核 | 对象存储限额 |
+| EMQX | 512 MB | 0.4 核 | 限制连接数 |
+| MediaMTX | 128 MB | 0.3 核 | 视频转发 |
+| API | 900 MB | 1.0 核 | `-Xmx700m`、SerialGC |
+| Web + API Portal | 112 MB | 0.2 核 | nginx 静态服务 |
+
+初始化容器只短暂运行。核心常驻服务上限合计约 2.5 GB 内存和 2.8 核 CPU。
+该配置为当前 8GB B 版的默认配置，无需在首次部署时手工修改 `compose.nano.yml`。
+
+### 9.2 4 GB Nano（非当前交付目标）
+
+4 GB 设备同时运行完整 GCS 和视觉推理较紧张，建议：
+
+- 不启用 `--with-monitoring`；
+- 使用 YOLOv5n/YOLOv5s 或量化模型；
+- 将 API 上限降至约 `700M`，JVM `-Xmx550m`；
+- 将 MySQL 上限降至约 `350M`，buffer pool 调为 `128M`；
+- 将 EMQX 上限降至约 `384M`；
+- 用 `tegrastats` 和 `docker stats` 持续观察内存。
+
+这些调整需要修改安装目录中的 `compose.nano.yml`，修改前应备份原文件。
+
+## 10. 离线更新
+
+### 10.1 构建并传输新包
+
+在 Mac 上生成新版本离线包，传到 Nano。Nano 不需要更新 Git 仓库，也不需要单独传输镜像。
+
+### 10.2 更新安装
+
+在新包的解压目录执行：
+
+```bash
+bash install.sh <Nano-IP> --update
+```
+
+更新模式会：
+
+- 校验并加载新包中的全部镜像；
+- 更新 Compose、SQL、脚本和服务配置；
+- 保留 `$HOME/yoox-cloud-gcs/.env` 中的现有密码和现场配置；
+- 自动把 `YOOX_VERSION` 更新为新包版本；
+- 重新启动服务并运行烟雾测试。
+
+如果更新后仍需启用可选服务：
+
+```bash
+bash install.sh <Nano-IP> --update --with-turn --with-monitoring
+```
+
+更新前建议备份 `.env` 和重要业务数据。不要通过复制容器目录替代数据库和对象存储的正式备份。
+
+## 11. 回滚
+
+保留上一版本的完整离线包。需要回滚时，解压旧包并执行：
+
+```bash
+cd yoox-cloud-gcs-nano-<old-version>
+bash install.sh <Nano-IP> --update
+```
+
+旧包会重新加载旧镜像、恢复对应版本的 Compose 配置并自动修改 `YOOX_VERSION`，现有 `.env`
+中的现场密码和地址配置仍会保留。
+
+回滚后运行：
+
+```bash
+cd "$HOME/yoox-cloud-gcs"
+bash scripts/smoke-test.sh .env
+docker compose -f compose.yml -f compose.nano.yml --env-file .env ps
+```
+
+数据库结构发生不兼容变化时，镜像回滚不等于数据回滚，必须结合部署前的数据备份处理。
+
+## 12. 镜像和磁盘清理
+
+先查看占用：
+
+```bash
+docker system df
+docker image ls --format '{{.Repository}}:{{.Tag}}  {{.ID}}  {{.Size}}'
+```
+
+只清理未使用的悬空镜像：
+
+```bash
+docker image prune -f
+```
+
+确认旧版本不再用于运行或回滚后，才可按完整标签删除：
+
+```bash
+docker image rm yoox/cloud-gcs-api:<old-version>
+docker image rm yoox/cloud-gcs-web:<old-version>
+docker image rm yoox/cloud-gcs-api-portal:<old-version>
+```
+
+不要删除正在运行容器使用的镜像，也不要使用带 `-v` 的清理命令处理本项目。
+
+## 13. 在 Mac 上重新生成离线包
+
+### 13.1 构建机要求
+
+- Apple Silicon Mac，或 Docker 服务端为 `linux/arm64` 的其他构建机；
+- Docker Desktop/Colima 已启动；
+- 已克隆当前项目；
+- 首次拉取缺失第三方镜像时构建机需要访问镜像仓库；
+- 使用 JDK 17 运行仓库验证。
+
+确认 Docker 服务端架构：
+
+```bash
+docker version --format '{{.Server.Os}}/{{.Server.Arch}}'
+```
+
+预期输出：
+
+```text
+linux/arm64
+```
+
+### 13.2 生成可直接安装的包
 
 ```bash
 cd ~/git/yooxplore/Autel/YOOX_Cloud_GCS
-git pull --ff-only
 
-# 更新版本号
-export YOOX_VERSION=nano1-$(git rev-parse --short HEAD)
-# 同步更新 .env.nano1 中的 YOOX_VERSION
-sed -i '' "s/^YOOX_VERSION=.*/YOOX_VERSION=$YOOX_VERSION/" .env.nano1
-
-# 构建
-COMPOSE_BAKE=false docker compose --env-file .env.nano1 build api web api-portal mediamtx
-
-# 导出并传输（.env.nano1 已在仓库，无需单独 scp）
-docker save \
-  yoox/cloud-gcs-api:$YOOX_VERSION \
-  yoox/cloud-gcs-web:$YOOX_VERSION \
-  yoox/cloud-gcs-api-portal:$YOOX_VERSION \
-  yoox/mediamtx:1.19.3 \
-  -o /tmp/yoox-nano1-images.tar
-
-gzip -f /tmp/yoox-nano1-images.tar
-
-scp /tmp/yoox-nano1-images.tar.gz jetson@172.20.10.4:/tmp/
+./scripts/build-nano-offline-bundle.sh \
+  --version nano-$(date +%Y%m%d)-$(git rev-parse --short HEAD) \
+  --env-template .env.nano1
 ```
 
-### 13.2 Nano 侧
+也可以使用 Makefile：
 
 ```bash
-ssh jetson@172.20.10.4
-cd /home/jetson/1_projects/yoox-cloud-gcs
-
-# 拉取最新配置文件（含 .env.nano1）
-git pull --ff-only
-
-# 加载新镜像
-gunzip -c /tmp/yoox-nano1-images.tar.gz | docker load
-
-# 更新 .env（.env.nano1 随 git pull 同步，直接覆盖）
-cp .env.nano1 .env
-chmod 600 .env
-
-# 验证配置
-make preflight
-docker compose -f compose.yml -f compose.nano.yml --env-file .env config -q
-
-# 重启服务（叠加资源限制）
-docker compose -f compose.yml -f compose.nano.yml --env-file .env up \
-  -d \
-  --remove-orphans \
-  --wait \
-  --wait-timeout 300
-
-make smoke
+make nano-offline-bundle ENV_TEMPLATE=.env.nano1
 ```
 
-确认容器使用的是新镜像：
+输出位于：
+
+```text
+offline/dist/yoox-cloud-gcs-nano-<version>.tar.gz
+```
+
+构建脚本会自动：
+
+1. 同步离线部署配置；
+2. 校验 Compose；
+3. 构建 API、Web、API Portal 和 MediaMTX；
+4. 使用本地固定版本第三方镜像，缺失时拉取 arm64 镜像；
+5. 检查全部镜像均为 `arm64/aarch64`；
+6. 导出 17 个镜像；
+7. 写入镜像清单、完整部署文档并封装为一个归档。
+
+不希望把真实密钥写入包时，省略 `--env-template .env.nano1`。脚本默认使用
+`.env.example`，目标 Nano 首次安装时会停下并提示填写占位符。
+
+### 13.3 构建前验证
 
 ```bash
-docker compose -f compose.yml -f compose.nano.yml --env-file .env ps
-docker image ls --format '{{.Repository}}:{{.Tag}}  {{.CreatedAt}}' | grep yoox
+env JAVA_HOME=$(/usr/libexec/java_home -v 17) make verify
 ```
 
-## 14. 回滚
+如果 Maven 实际使用 JDK 21/25，Lombok 注解处理可能失败。以 `mvn -version` 显示的 Java
+版本为准，而不是只看 `java -version`。
 
-如果新版本验证失败，使用旧镜像回滚。
+## 14. 常见问题
 
-> 建议在 Mac 上归档旧镜像包：
-> ```bash
-> mv /tmp/yoox-nano1-images.tar.gz ~/backups/yoox-nano1-images-<旧提交号>.tar.gz
-> ```
-
-Nano 上回滚到旧版本：
+### 14.1 安装时提示非 aarch64
 
 ```bash
-ssh jetson@172.20.10.4
-cd /home/jetson/1_projects/yoox-cloud-gcs
-
-# 如需从 Mac 重新传输旧镜像：
-# scp ~/backups/yoox-nano1-images-<旧提交号>.tar.gz jetson@172.20.10.4:/tmp/
-gunzip -c /tmp/yoox-nano1-images-<旧提交号>.tar.gz | docker load
-
-# 将 .env 中的 YOOX_VERSION 改回旧版本
-nano .env
-# 修改 YOOX_VERSION=nano1-<旧提交号>
-
-# 重启（叠加资源限制）
-docker compose -f compose.yml -f compose.nano.yml --env-file .env up \
-  -d \
-  --remove-orphans \
-  --wait \
-  --wait-timeout 300
-
-make smoke
+uname -m
 ```
 
-如果需要回退代码到旧提交：
+- `aarch64`：符合要求；
+- `armv7l`：32 位系统，必须重装 64 位 JetPack；
+- `x86_64`：不是目标 Nano 架构，不能使用此包。
 
-```bash
-git fetch origin
-git log --oneline --decorate -10
-git checkout <旧提交号>
-```
-
-> 代码回退后，`compose.yml` 和 `deploy/` 配置也会回到旧版本。确保旧镜像与旧配置匹配。
-
-## 15. 镜像清理
-
-Nano 磁盘空间有限，定期清理旧镜像：
-
-```bash
-# 查看磁盘占用
-docker system df
-
-# 删除未被任何容器使用的 dangling 镜像
-docker image prune -f
-
-# 查看所有 yoox 镜像
-docker image ls --format '{{.Repository}}:{{.Tag}}  {{.ID}}  {{.Size}}' | grep yoox
-```
-
-> 不要使用 `docker compose down -v`，该命令会删除 MySQL、Redis、MinIO、EMQX 等命名卷中的
-> 业务数据。普通停机使用 `docker compose down` 或 `make down`。
-
-手动删除指定旧版本镜像：
-
-```bash
-docker image rm yoox/cloud-gcs-api:nano1-<旧提交号>
-docker image rm yoox/cloud-gcs-web:nano1-<旧提交号>
-docker image rm yoox/cloud-gcs-api-portal:nano1-<旧提交号>
-```
-
-## 16. 常见问题
-
-### 16.1 Nano 上 `docker compose up` 尝试 build
-
-如果 Nano 上报 `building` 且长时间不动，说明 `.env` 中的 `YOOX_VERSION` 与已加载的镜像 tag
-不匹配。
-
-```bash
-# 检查 .env 中的版本号
-grep YOOX_VERSION .env
-
-# 检查已加载的镜像
-docker image ls --format '{{.Repository}}:{{.Tag}}' | grep yoox
-```
-
-确保两者完全一致。如果 `.env` 中没有 `YOOX_VERSION`，Compose 会使用默认值 `local`，
-与 Mac 构建的 `nano1-<提交号>` 不匹配。
-
-### 16.2 `docker load` 报 `no space left on device`
+### 14.2 `no space left on device`
 
 ```bash
 df -h /
 docker system df
 ```
 
-清理未使用的镜像和构建缓存：
+外层归档、解压后的内层镜像包和 Docker 镜像层会同时占用空间。部署前建议至少保留 10 GB。
+确认无用镜像后可执行：
 
 ```bash
-docker system prune -f
+docker image prune -f
 ```
 
-> 不要加 `-v` 参数，`docker system prune -v` 行为不同于 `docker compose down -v`，
-> 但仍应谨慎。确认要清理的镜像不再使用后再操作。
+不要删除数据卷。
 
-### 16.3 第三方镜像拉取失败
+### 14.3 Docker 权限不足
 
-Nano 需要联网拉取以下镜像：
+如果出现 `permission denied while trying to connect to the Docker daemon socket`，需要让当前用户
+具备 Docker 权限，或在维护窗口使用具备权限的账号执行。修改用户组后通常需要重新登录。
 
-| 镜像 | 版本 |
-| --- | --- |
-| mysql | 8.4.6 |
-| redis | 7.4.9-alpine |
-| minio/minio | RELEASE.2025-04-22T22-12-26Z |
-| minio/mc | RELEASE.2025-04-16T18-13-26Z |
-| emqx/emqx | 5.8.9 |
-| curlimages/curl | 8.15.0 |
+### 14.4 安装脚本警告 IP 不属于本机
 
-如果网络不稳定，可以在 Mac 上提前拉取并一起导出：
+脚本仍会继续，但 `YOOX_PUBLIC_HOST` 会被写成传入值。先使用 `ip addr` 核对 IP；传错地址会
+导致 Pilot、浏览器、MQTT、MinIO 或视频回调访问错误。建议中止后使用正确 IP 重新执行。
+
+### 14.5 Compose 尝试拉取或构建镜像
+
+正常的一键安装会在启动前检查全部 17 个镜像，不应联网拉取。出现拉取或构建通常表示绕过了
+安装脚本、镜像导入失败，或 `.env` 中的 `YOOX_VERSION` 被手工改错。
 
 ```bash
-# Mac 上拉取第三方镜像
-docker pull --platform linux/arm64 mysql:8.4.6
-docker pull --platform linux/arm64 redis:7.4.9-alpine
-docker pull --platform linux/arm64 minio/minio:RELEASE.2025-04-22T22-12-26Z
-docker pull --platform linux/arm64 minio/mc:RELEASE.2025-04-16T18-13-26Z
-docker pull --platform linux/arm64 emqx/emqx:5.8.9
-docker pull --platform linux/arm64 curlimages/curl:8.15.0
-
-# 追加到导出包
-docker save \
-  mysql:8.4.6 \
-  redis:7.4.9-alpine \
-  minio/minio:RELEASE.2025-04-22T22-12-26Z \
-  minio/mc:RELEASE.2025-04-16T18-13-26Z \
-  emqx/emqx:5.8.9 \
-  curlimages/curl:8.15.0 \
-  -o /tmp/yoox-nano1-thirdparty.tar
-
-gzip /tmp/yoox-nano1-thirdparty.tar
-scp /tmp/yoox-nano1-thirdparty.tar.gz jetson@172.20.10.4:/tmp/
+cd "$HOME/yoox-cloud-gcs"
+grep '^YOOX_VERSION=' .env
+docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^(yoox/|mysql:|redis:|minio/|emqx/)'
 ```
 
-Nano 上加载：
+最稳妥的修复方式是回到完整离线包目录，重新运行 `install.sh`。不要把 `docker pull` 当作离线
+部署的修复步骤。
+
+### 14.6 健康检查超时
+
+查看状态和依赖服务日志：
 
 ```bash
-gunzip -c /tmp/yoox-nano1-thirdparty.tar.gz | docker load
+cd "$HOME/yoox-cloud-gcs"
+docker compose -f compose.yml -f compose.nano.yml --env-file .env ps -a
+docker compose -f compose.yml -f compose.nano.yml --env-file .env \
+  logs --tail=300 mysql redis minio emqx mediamtx api
 ```
 
-### 16.4 `COMPOSE_BAKE=false` 构建仍卡住
+常见原因包括端口占用、旧数据卷与新配置不兼容、磁盘不足、IP 配置错误或内存不足。
 
-```bash
-# 检查是否有残留构建进程
-ps aux | grep 'docker compose'
+### 14.7 RTSP 推流失败或 UDP 不稳定
 
-# 终止后重试
-kill <PID>
-COMPOSE_BAKE=false docker compose --env-file .env.nano1 build --progress=plain api
+确认防火墙和交换网络允许：
+
+```text
+8554/tcp
+8188/udp
+8189/udp
+8000/udp
+8000/tcp
 ```
 
-### 16.5 Nano 架构不是 aarch64
-
-```bash
-ssh jetson@172.20.10.4 'uname -m'
-```
-
-- 输出 `aarch64`：64 位系统，可以继续。
-- 输出 `armv7l`：32 位系统，Mac 构建的 arm64 镜像不兼容。需要重新刷 64 位 JetPack。
-
-### 16.6 Mac 为 Intel 芯片
-
-如果 Mac 为 Intel（`x86_64`），构建出的镜像是 `linux/amd64`，不能直接在 Nano（`arm64`）上运行。
-
-需要使用 buildx 跨架构构建：
-
-```bash
-# 创建 arm64 构建器（仅需一次）
-docker buildx create --name arm64builder --use
-
-# 跨架构构建并直接加载到本地镜像列表
-COMPOSE_BAKE=false docker buildx build \
-  --platform linux/arm64 \
-  --load \
-  -t yoox/cloud-gcs-api:$YOOX_VERSION \
-  -f Dockerfile \
-  .
-
-# web、api-portal、mediamtx 同理
-```
-
-> 跨架构构建速度较慢，长期使用建议在 ARM64 CI 或专用构建机上生成镜像。
-
-### 16.7 RTSP 设备推流失败（UDP 丢包）
-
-Nano 默认使用 `udp,tcp`（优先 UDP，UDP 不通时自动回退 TCP）。如果在特定网络环境下 UDP
-不稳定，可在 `.env` 中强制 TCP：
+临时强制 RTSP TCP：
 
 ```dotenv
 YOOX_RTSP_TRANSPORTS=tcp
 ```
 
-然后重启 mediamtx：
+修改后重启 MediaMTX。浏览器 WebRTC 仍会根据网络在 UDP/TCP ICE 候选间选择。
+
+### 14.8 容器退出码 137
+
+退出码 137 通常表示 OOM：
 
 ```bash
-docker compose --env-file .env up -d mediamtx
-```
-
-> Mac 本地开发环境因 Docker Desktop 的 UDP 端口转发限制，**必须**使用
-> `YOOX_RTSP_TRANSPORTS=tcp`，否则设备推流会失败。
-
-### 16.8 容器被 OOM Killed（内存不足）
-
-如果 `docker compose ps` 显示某容器状态为 `Exited (137)`，说明被 OOM Killer 杀掉：
-
-```bash
-# 查看被 kill 的容器
-docker compose -f compose.yml -f compose.nano.yml --env-file .env ps -a | grep Exited
-
-# 查看具体原因
+docker compose -f compose.yml -f compose.nano.yml --env-file .env ps -a
 docker inspect <容器名> --format '{{.State.OOMKilled}} {{.State.ExitCode}}'
 ```
 
-解决方法：
-- 8GB Nano：检查 YOLOv5 是否占用过多内存，适当降低 YOLOv5 batch size。
-- 4GB Nano：按第 10.4 节进一步压低 GCS 各服务内存上限。
-- 临时方案：去掉 `compose.nano.yml` 中的 `memory` limit（不推荐，会导致整机卡顿）。
+4 GB Nano 应关闭监控、降低视觉模型占用并按第 9.2 节压低服务限额。
 
-### 16.9 Compose 触发 build 并报网络超时（`dial tcp ... i/o timeout`）
+### 14.9 第三方镜像是否需要拉取
 
-**现象**：`docker compose up` 输出 `[+] Building`，随后报错类似：
+目标 Nano 不需要拉取。MySQL、Redis、MinIO、EMQX、TURN 和监控组件都在包内。
+只有构建离线包的 Mac 在本地缺少固定版本镜像时，打包脚本才会联网拉取。
 
-```
-failed to solve: DeadlineExceeded: maven:3.9-eclipse-temurin-17: failed to resolve source metadata ...: i/o timeout
-```
+## 15. 完成标准
 
-**根本原因**：`.env` 中 `YOOX_VERSION` 与已加载镜像的 tag 不匹配，Compose 找不到镜像，
-回退到构建流程，但 Nano 无法访问 Docker Hub 拉取构建基础镜像。
+满足以下条件后部署才算完成：
 
-最常见触发场景：`git pull` 更新了仓库中的 `.env.nano1`（含新版本号），
-但忘记重新复制到 `.env`，导致 `.env` 里的 `YOOX_VERSION` 仍是旧版本。
+- Nano 架构为 `aarch64`；
+- 安装脚本确认 17 个镜像全部存在；
+- `$HOME/yoox-cloud-gcs/.env` 权限为 `600`；
+- Compose 核心服务处于 `running/healthy`；
+- 烟雾测试通过；
+- Web、Pilot 网关和 API Portal 可访问；
+- Pilot、MQTT、RTSP、WebRTC 完成真机验证；
+- 未发生持续 OOM、磁盘写满或端口冲突；
+- 初始 Web 密码已经修改；
+- 离线包和 `.env` 已按敏感文件管理。
 
-**诊断**：
+## 16. 参考资料
 
-```bash
-# 查看 .env 中的版本号
-grep YOOX_VERSION .env
-
-# 查看已加载的镜像 tag
-docker image ls --format '{{.Repository}}:{{.Tag}}' | grep yoox
-```
-
-两者必须完全一致。
-
-**修复**：
-
-```bash
-# 将 .env.nano1 重新同步到 .env
-cp .env.nano1 .env
-chmod 600 .env
-grep YOOX_VERSION .env
-
-# 再次确认镜像 tag 与版本号匹配后，重新执行启动命令
-docker compose -f compose.yml -f compose.nano.yml --env-file .env up \
-  -d --remove-orphans --wait --wait-timeout 300
-```
-
-如果 `.env.nano1` 中的版本号与 Mac 传输的镜像 tag 也不一致（例如 Mac 侧用了更新的提交号
-但忘记 `scp` 新镜像），则需要重新在 Mac 上构建、导出并传输镜像。
-
-## 17. 完成标准
-
-满足以下条件后，新 Nano 部署才算完成：
-
-- Nano 系统架构为 `aarch64`。
-- Mac 构建的 4 个自定义镜像已加载到 Nano。
-- `.env` 中 `YOOX_VERSION` 与镜像 tag 一致。
-- `.env` 权限为 `600`。
-- `make preflight` 和 Compose 配置检查通过。
-- `make smoke` 通过。
-- 容器状态全部为 `healthy`。
-- 若使用 `compose.nano.yml`，`docker stats` 确认各容器未超内存上限。
-- Pilot、MQTT、RTSP、WebRTC 和关键控制接口完成真机验证。
-- 若 Nano 同时运行 YOLOv5，确认推理帧率可接受且 GCS 功能正常。
-
-## 18. 参考资料
-
+- [离线部署包 README](../offline/nano-deploy/README.md)
 - [Linux 本地构建与部署](11-Linux本地构建与部署.md)
 - [部署运维指南](08-部署运维指南.md)
 - [配置指南](06-配置指南.md)
-- [Docker：docker save](https://docs.docker.com/reference/cli/docker/image/save/)
-- [Docker：docker load](https://docs.docker.com/reference/cli/docker/image/load/)
+- [Docker image load](https://docs.docker.com/reference/cli/docker/image/load/)
+- [Docker image save](https://docs.docker.com/reference/cli/docker/image/save/)

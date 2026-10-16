@@ -31,13 +31,15 @@ build/
 
 ### VS Code ###
 .vscode/
+.DS_Store
 /.mvn/
 /mvnw
 /mvnw.cmd
 .env.*
-!.env
-!.env.example
-!.env.nano1
+# 本私有仓库按项目约定跟踪全部环境文件（包括各子目录中的实际配置）。
+!**/.env
+!**/.env.*
+yoox.env
 **/node_modules/
 
 # 离线部署包：镜像 tar 包和含密码的 .env.template 不入 Git
@@ -50,5 +52,9 @@ offline/nano-deploy/.env.template
 *.py[cod]
 *.tar
 *.tar.gz
+/YOOX_Cloud_GCS.zip
+/YOOX_Cloud_GCS_source_20261015.zip
+/YOOX_Cloud_GCS_source_with_env_20261016.zip
+/YOOX_Cloud_GCS_src.zip
 /logs/
 /src/test/

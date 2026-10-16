@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: YOOX
+    orgId: 1
+    folder: YOOX Cloud GCS
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

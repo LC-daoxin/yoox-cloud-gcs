@@ -1,6 +1,6 @@
 # 15. MQTT 直连 A/B 测试指南
 
-> 适用于 EVO RC 遥控器网关（TH7926043417 / RC 固件 1.9.1.203）的 services 指令报文排查。
+> 适用于 EVO RC 遥控器网关（设备 SN 已脱敏 / RC 固件 1.9.1.203）的 services 指令报文排查。
 > 当云端报 **211001（The sending of mqtt message is abnormal / No message reply received）** 时，先用 `docs/14-指令链路诊断日志指南.md` 的日志对账法锁定"设备零回复"，再用本指南的 A/B 工具确定固件接受的报文格式。
 > 配套脚本：`scripts/mqtt-services-abtest.py`（本文档 §3）。
 
@@ -21,7 +21,8 @@
 ## 2. 前置条件
 
 - 本地栈运行中（`docker compose ps` 确认 emqx healthy）；
-- MQQT 凭据取自项目根 `.env` 的 `YOOX_MQTT_USERNAME/PASSWORD`（脚本内置默认值与本地部署一致，生产环境请覆盖）；
+- MQTT 凭据取自项目根 `.env` 或受控的 `docs/python-demo/.env` 中的
+  `YOOX_MQTT_USERNAME/PASSWORD`；生产环境应使用授权测试账号；
 - Python 环境可用 `docs/python-demo/.venv/bin/python`（已装 paho-mqtt）；
 - **安全前提**：测试会真实触发指令。`return_home`/`fly_to_point`/`landing` 会改变飞行；`camera_look_at` 的 `locked:true` 可能联动机身航向，不能按普通相机参数测试看待。应由有资质人员在受控场地、满足设备手册安全条件时执行；当前无设备时只用 `--dry-run`。
 
@@ -32,6 +33,10 @@
 `--env-file` 指定其他配置文件。不会把 MQTT 密码打印或写入结果文件。
 
 ```bash
+# 仅 dry-run 时可使用 0.0；真机 execute 前必须改为经现场确认的安全坐标。
+APPROVED_LATITUDE=0.0
+APPROVED_LONGITUDE=0.0
+
 # 1. 当前无设备时：离线生成 Look At 的完整 12 组字段矩阵。
 # 2 payload_index × 3 locked（缺省/false/true）× 2 device_list；
 # 前后各有一个 camera_screen_drag 对照报文，总计 14 条，发布数必须为 0。
@@ -39,7 +44,7 @@ docs/python-demo/.venv/bin/python scripts/mqtt-services-abtest.py \
   --method camera_look_at \
   --gateway TEST_GATEWAY --drone TEST_DRONE \
   --payload-index 10806-0-0 \
-  --latitude 39.04187 --longitude 117.724655 --height 30 \
+  --latitude "$APPROVED_LATITUDE" --longitude "$APPROVED_LONGITUDE" --height 30 \
   --dry-run
 
 # 2. 真机接入且完成飞行安全确认后，替换下方 SN 占位符并使用 --execute。
@@ -48,7 +53,7 @@ docs/python-demo/.venv/bin/python scripts/mqtt-services-abtest.py \
   --method camera_look_at \
   --gateway TH-xxx --drone 1748xxx \
   --payload-index 10806-0-0 \
-  --latitude 39.04187 --longitude 117.724655 --height 30 \
+  --latitude "$APPROVED_LATITUDE" --longitude "$APPROVED_LONGITUDE" --height 30 \
   --host 127.0.0.1 --execute --output /tmp/look-at-abtest.json
 
 # 3. 如需额外验证子飞机下发 topic，把 12 组在两个 topic 各跑一遍（共 24 组）。

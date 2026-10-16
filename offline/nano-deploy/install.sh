@@ -4,24 +4,33 @@
 # 用法：
 #   1. 把整个 nano-deploy/ 目录复制到 U 盘
 #   2. Nano 上插入 U 盘，cd 到本目录
-#   3. bash install.sh <本机局域网IP>
+#   3. bash install.sh <本机局域网IP> [--update] [--with-turn] [--with-monitoring]
 #      例如：bash install.sh 172.20.10.4
 #
 # 更新模式（保留 .env，只更新配置文件和镜像）：
 #   bash install.sh 172.20.10.4 --update
-set -e
+set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_DIR="$HOME/yoox-cloud-gcs"
 UPDATE_MODE=false
+COMPOSE_PROFILES=""
 
 if [ -z "${1:-}" ] || echo "${1:-}" | grep -q '^-'; then
-    printf '用法: bash install.sh <本机局域网IP> [--update]\n'
+    printf '用法: bash install.sh <本机局域网IP> [--update] [--with-turn] [--with-monitoring]\n'
     printf '示例: bash install.sh 172.20.10.4\n'
     exit 1
 fi
 NODE_IP="$1"
-[ "${2:-}" = "--update" ] && UPDATE_MODE=true
+shift
+for arg in "$@"; do
+    case "$arg" in
+        --update) UPDATE_MODE=true ;;
+        --with-turn) COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}turn" ;;
+        --with-monitoring) COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}monitoring" ;;
+        *) printf '[✗] 未知参数: %s\n' "$arg"; exit 1 ;;
+    esac
+done
 
 # ── 1. 预检 ───────────────────────────────────────────────────────
 printf '\n=== [1/6] 预检 ===\n'
@@ -31,6 +40,13 @@ docker compose version >/dev/null 2>&1 || { printf '[✗] 未安装 docker compo
 docker info >/dev/null 2>&1 || { printf '[✗] Docker 守护进程未运行\n'; exit 1; }
 ls "$SCRIPT_DIR"/images/*.tar.gz >/dev/null 2>&1 || { printf '[✗] images/ 下没有镜像包（*.tar.gz）\n'; exit 1; }
 [ -f "$SCRIPT_DIR/deploy/compose.yml" ] || { printf '[✗] 缺少 deploy/compose.yml\n'; exit 1; }
+
+if [ -f "$SCRIPT_DIR/SHA256SUMS" ]; then
+    printf '校验部署包完整性...\n'
+    (cd "$SCRIPT_DIR" && sha256sum -c SHA256SUMS)
+else
+    printf '[!] 未找到 SHA256SUMS，跳过完整性校验\n'
+fi
 
 IP_MATCHED=$(ip addr 2>/dev/null | grep -c "inet $NODE_IP/" || true)
 if [ "$IP_MATCHED" = "0" ]; then
@@ -47,10 +63,20 @@ for f in "$SCRIPT_DIR"/images/*.tar.gz; do
 done
 printf '[✓] 镜像加载完成\n'
 
-# 验证自定义应用镜像已存在
-APP_TARBALL=$(ls "$SCRIPT_DIR"/images/yoox-cloud-gcs-*.tar.gz 2>/dev/null | grep -v thirdparty | head -1 || true)
-if [ -n "$APP_TARBALL" ]; then
-    YOOX_VERSION=$(basename "$APP_TARBALL" .tar.gz | sed 's/^yoox-cloud-gcs-//')
+# 验证包内声明的全部镜像已存在
+if [ -f "$SCRIPT_DIR/IMAGE-MANIFEST.txt" ]; then
+    while IFS= read -r image; do
+        [ -n "$image" ] || continue
+        docker image inspect "$image" >/dev/null 2>&1 || {
+            printf '[✗] 镜像加载后仍不存在: %s\n' "$image"
+            exit 1
+        }
+    done < "$SCRIPT_DIR/IMAGE-MANIFEST.txt"
+    printf '[✓] 镜像清单验证通过\n'
+fi
+
+if [ -f "$SCRIPT_DIR/VERSION" ]; then
+    YOOX_VERSION=$(sed -n '1p' "$SCRIPT_DIR/VERSION")
 else
     YOOX_VERSION="local"
 fi
@@ -66,6 +92,7 @@ if $UPDATE_MODE || [ -e "$TARGET_DIR/.env" ]; then
     # 更新模式：只更新配置文件，不覆盖 .env
     cp -r \
         "$SCRIPT_DIR/deploy/compose.yml" \
+        "$SCRIPT_DIR/deploy/compose.nano.yml" \
         "$SCRIPT_DIR/deploy/scripts" \
         "$SCRIPT_DIR/deploy/deploy" \
         "$SCRIPT_DIR/deploy/sql" \
@@ -74,8 +101,11 @@ if $UPDATE_MODE || [ -e "$TARGET_DIR/.env" ]; then
     printf '[✓] 配置文件已更新，.env 未修改\n'
     # 更新 YOOX_VERSION（如有变化）
     if [ "$YOOX_VERSION" != "local" ]; then
-        sed -i "s|^YOOX_VERSION=.*|YOOX_VERSION=$YOOX_VERSION|" "$TARGET_DIR/.env" 2>/dev/null || \
+        if grep -q '^YOOX_VERSION=' "$TARGET_DIR/.env"; then
+            sed -i "s|^YOOX_VERSION=.*|YOOX_VERSION=$YOOX_VERSION|" "$TARGET_DIR/.env"
+        else
             printf 'YOOX_VERSION=%s\n' "$YOOX_VERSION" >> "$TARGET_DIR/.env"
+        fi
         printf '[✓] YOOX_VERSION 已更新为 %s\n' "$YOOX_VERSION"
     fi
 else
@@ -116,6 +146,10 @@ printf '[✓] 配置有效\n'
 # ── 5. 启动服务 ───────────────────────────────────────────────────
 printf '\n=== [5/6] 启动服务（等待健康检查，最多 300 秒）===\n'
 # 若存在 compose.nano.yml 覆盖层，叠加使用以启用资源限制
+if [ -n "$COMPOSE_PROFILES" ]; then
+    export COMPOSE_PROFILES
+    printf '启用可选 profile: %s\n' "$COMPOSE_PROFILES"
+fi
 if [ -f "$TARGET_DIR/compose.nano.yml" ]; then
     docker compose -f compose.yml -f compose.nano.yml --env-file .env up -d --remove-orphans --wait --wait-timeout 300
 else

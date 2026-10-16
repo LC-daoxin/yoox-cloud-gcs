@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -23,7 +24,23 @@ from config import (
 
 
 _NO_BODY = object()
-_SESSION = requests.Session()
+_SESSION_LOCAL = threading.local()
+
+
+def _http_session() -> requests.Session:
+    """Return one HTTP session per thread.
+
+    Most demos run in a single thread. Multi-aircraft coordinators issue two
+    requests concurrently, and ``requests.Session`` does not promise that its
+    mutable cookie/header state is thread-safe. Keeping the connection pool
+    thread-local preserves reuse without sharing that state across aircraft.
+    """
+    session = getattr(_SESSION_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        _SESSION_LOCAL.session = session
+    return session
+
 
 POINT_FLIGHT_TERMINAL_STATUSES = {
     "task_finish",
@@ -154,7 +171,7 @@ def api_call(
         kwargs["files"] = files
 
     try:
-        response = _SESSION.request(
+        response = _http_session().request(
             method, f"{(base_url or BASE_URL).rstrip('/')}{path}", **kwargs
         )
     except requests.RequestException as exc:

@@ -29,13 +29,18 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
+import java.net.URI;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -45,6 +50,8 @@ public class UserServiceImpl implements IUserService {
 
     private static final BCryptPasswordEncoder PASSWORD_ENCODER = new BCryptPasswordEncoder();
 
+    private static final Set<String> LOOPBACK_HOSTS = Set.of("localhost", "127.0.0.1", "::1", "0.0.0.0");
+
     @Autowired
     private IUserMapper mapper;
 
@@ -53,6 +60,9 @@ public class UserServiceImpl implements IUserService {
 
     @Value("${app.mqtt-advertised-address:}")
     private String mqttAdvertisedAddress;
+
+    @Value("${app.mqtt-advertised-follow-request-host:true}")
+    private boolean mqttAdvertisedFollowRequestHost;
 
     @Autowired
     private IWorkspaceService workspaceService;
@@ -240,8 +250,45 @@ public class UserServiceImpl implements IUserService {
      * must receive an address that is reachable outside the Compose network.
      */
     private String getAdvertisedMqttAddress() {
-        return StringUtils.hasText(mqttAdvertisedAddress)
+        String configured = StringUtils.hasText(mqttAdvertisedAddress)
                 ? mqttAdvertisedAddress.trim()
                 : MqttPropertyConfiguration.getBasicMqttAddress();
+        if (!mqttAdvertisedFollowRequestHost) {
+            return configured;
+        }
+        return alignHostWithRequest(configured, currentRequestHost());
+    }
+
+    /**
+     * 多网段部署（遥控器与总控端接在不同网卡）时固定公告地址只对一侧可达，
+     * 因此按客户端本次访问的主机名回填 Broker 地址，端口与协议仍取配置值。
+     */
+    private String alignHostWithRequest(String configured, String requestHost) {
+        if (!StringUtils.hasText(requestHost)) {
+            return configured;
+        }
+        try {
+            URI uri = URI.create(configured);
+            if (!StringUtils.hasText(uri.getScheme()) || uri.getPort() < 0
+                    || requestHost.equalsIgnoreCase(uri.getHost())) {
+                return configured;
+            }
+            return new URI(uri.getScheme(), null, requestHost, uri.getPort(), null, null, null).toString();
+        } catch (Exception e) {
+            log.warn("Unable to align MQTT address {} with the request host {}.", configured, requestHost, e);
+            return configured;
+        }
+    }
+
+    private String currentRequestHost() {
+        RequestAttributes attributes = RequestContextHolder.getRequestAttributes();
+        if (!(attributes instanceof ServletRequestAttributes servletAttributes)) {
+            return null;
+        }
+        String host = servletAttributes.getRequest().getServerName();
+        if (!StringUtils.hasText(host) || LOOPBACK_HOSTS.contains(host.toLowerCase())) {
+            return null;
+        }
+        return host;
     }
 }

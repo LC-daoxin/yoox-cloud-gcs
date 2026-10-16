@@ -1,7 +1,7 @@
 # YOOX Cloud GCS API 指南
 
-> 适用版本：1.0.0  
-> 更新日期：2026-08-10
+> 适用版本：1.10.0
+> 更新日期：2026-10-15
 > 在线契约：`/swagger-ui/index.html`、`/v3/api-docs`  
 > 在线文档门户：`http://<YOOX_PUBLIC_HOST>:<YOOX_API_PORTAL_PORT>`（默认 8081，`api-portal` 静态站）
 
@@ -68,6 +68,10 @@ curl -sS -X PUT "$BASE_URL/manage/api/v1/users/current/password" \
 
 ## 3. 核心 HTTP API
 
+本章按业务场景列出常用接口，不是完整路由清单。固件、日志、用户管理及 DTO 字段等完整契约以
+当前运行实例的 `/v3/api-docs` 为准；若本指南与 OpenAPI 冲突，应先按 OpenAPI/Controller 修正
+调用并同步更新本文。
+
 ### 3.1 工作空间、设备与状态
 
 | 方法 | 路径 | 说明 |
@@ -83,6 +87,13 @@ curl -sS -X PUT "$BASE_URL/manage/api/v1/users/current/password" \
 | PUT | `/manage/api/v1/devices/{workspace_id}/devices/{device_sn}/property` | 设置单个设备属性 |
 | GET | `/map/api/v1/workspaces/{workspace_id}/device-status` | 地图设备状态 |
 | GET | `/manage/api/v1/devices/{workspace_id}/devices/hms` | HMS 告警分页 |
+| GET | `/manage/api/v1/devices/{workspace_id}/devices/hms/{device_sn}` | 指定设备 HMS 告警 |
+| PUT | `/manage/api/v1/devices/{workspace_id}/devices/hms/{device_sn}` | 更新指定设备 HMS 状态 |
+| GET | `/map/api/v1/workspaces/{workspace_id}/element-groups` | 地图元素组 |
+| POST | `/map/api/v1/workspaces/{workspace_id}/element-groups/{group_id}/elements` | 新增地图元素 |
+| PUT | `/map/api/v1/workspaces/{workspace_id}/elements/{element_id}` | 更新地图元素 |
+| DELETE | `/map/api/v1/workspaces/{workspace_id}/elements/{element_id}` | 删除地图元素 |
+| GET | `/map/api/v1/workspaces/{workspace_id}/flight-areas` | 飞行区域列表 |
 
 设备列表：
 
@@ -277,10 +288,13 @@ DRC MQTT 消息保持设备物模型信封：
 | POST | `/control/api/v1/devices/{sn}/jobs/{service_identifier}` | 通用服务指令，如返航 |
 | POST | `/control/api/v1/devices/{sn}/jobs/fly-to-point` | 飞向目标点 |
 | DELETE | `/control/api/v1/devices/{sn}/jobs/fly-to-point` | 取消飞向目标点 |
+| GET | `/control/api/v1/devices/{sn}/jobs/point-flight/status` | 查询起飞/指点飞行状态 |
 | POST | `/control/api/v1/devices/{sn}/jobs/takeoff-to-point` | 起飞到点 |
 | POST | `/control/api/v1/devices/{sn}/authority/flight` | 获取飞行控制权 |
 | POST | `/control/api/v1/devices/{sn}/authority/payload` | 获取负载控制权 |
 | POST | `/control/api/v1/devices/{sn}/payload/commands` | 云台、相机和负载命令 |
+| POST | `/control/api/v1/devices/{sn}/target-detection` | 开启目标识别 |
+| DELETE | `/control/api/v1/devices/{sn}/target-detection` | 关闭目标识别 |
 
 可用 `service_identifier` 与 payload 命令受机型、固件和设备能力限制；前端应按能力上报显示，
 不得把未验证指令作为固定按钮开放。

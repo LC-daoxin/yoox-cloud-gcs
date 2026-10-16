@@ -1,7 +1,12 @@
 # YOOX Cloud GCS Linux 本地构建与部署
 
+> 状态：当前源码构建手册
+> 适用版本：1.10.0
+> 更新日期：2026-10-15
+
 本文用于在 Linux 工作站或单机服务器上完成源码构建验证，并通过 Docker Compose 部署完整的
 YOOX Cloud GCS 本地服务。命令以 Ubuntu/Debian 为例，其他发行版请使用对应的软件包管理器。
+Jetson Nano 交付不在设备上执行源码构建，参见 [Nano 完全离线快速部署](13-Nano快速部署.md)。
 
 ## 1. 环境要求
 
@@ -243,7 +248,7 @@ make up-monitoring
 ```
 
 默认仅允许主机本地访问的监控入口包括 Grafana `3000`、Prometheus `9090`、Loki `3100`、
-cAdvisor `8088`、Node Exporter `9100` 和 EMQX Dashboard `18083`。
+cAdvisor `8088`、Node Exporter `9101` 和 EMQX Dashboard `18083`。
 
 跨 NAT 的 WebRTC 需要 TURN 时：
 

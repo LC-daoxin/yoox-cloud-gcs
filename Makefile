@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: init preflight config build up up-nano up-monitoring down logs ps smoke api-build web-build verify
+.PHONY: init preflight config build up up-nano up-monitoring down logs ps smoke api-build web-build verify nano-offline-bundle
 
 init:
 	@test -f .env || cp .env.example .env
@@ -46,3 +46,10 @@ web-build:
 	cd web-console && npm ci && npm run build
 
 verify: config api-build web-build
+
+# 构建 Jetson Nano/aarch64 单文件完全离线部署包。
+# 可通过 VERSION=... ENV_TEMPLATE=... 覆盖版本号和包内环境配置。
+nano-offline-bundle:
+	./scripts/build-nano-offline-bundle.sh \
+		--version "$${VERSION:-}" \
+		--env-template "$${ENV_TEMPLATE:-.env.example}"

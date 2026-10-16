@@ -1,0 +1,13 @@
+{
+  "name": "yoox-cpp-demo",
+  "version-string": "1.0.0",
+  "builtin-baseline": "6ade29bbd5a4c7e99439ec52adbc63c073953a57",
+  "dependencies": [
+    "curl",
+    "ixwebsocket",
+    "libzip",
+    "nlohmann-json",
+    "paho-mqttpp3"
+  ]
+}
+

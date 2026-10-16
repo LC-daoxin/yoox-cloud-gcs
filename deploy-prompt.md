@@ -31,11 +31,11 @@ YOOX Cloud GCS 是道通（Autel）无人机云平台，支持 APP 上云、设�
 
 | 项目 | 值 |
 |------|-----|
-| 服务器 | ubuntu@124.220.168.49，密码 20260727@Yoox |
+| 服务器 | `ubuntu@124.220.168.49` |
 | 项目路径 | /home/ubuntu/yoox-cloud-gcs |
 | 访问地址 | http://124.220.168.49:8080 |
 | 管理员账号 | admin / Yoox@123456 |
-| SSH 方式 | sshpass -p '20260727@Yoox' ssh ubuntu@124.220.168.49 |
+| SSH 方式 | SSH key 或已加载密钥的 SSH agent；禁止在仓库保存密码 |
 
 ## 本地部署步骤
 
@@ -78,8 +78,8 @@ web (nginx:80) ──→ api (Java:9000) ──→ mysql:3306
 | mysql | mysql:8.4.6 | 内部 3306 | 数据库 |
 | redis | redis:7.4.9-alpine | 内部 6379 | 缓存 |
 | emqx | emqx/emqx:5.8.9 | 1883, 18083（仅本地） | MQTT 代理 |
-| minio | minio/minio | 9001（仅本地） | 对象存储 |
-| mediamtx | yoox/mediamtx:1.19.3 | 8554, 8189/udp | 视频流 |
+| minio | minio/minio | 9100、9001（Console 仅本地） | 对象存储 |
+| mediamtx | yoox/mediamtx:1.19.3 | 8554、8000/udp,tcp、8188/udp、8189/udp | 视频流 |
 | api-portal | yoox/cloud-gcs-api-portal | 8081 | API 文档 |
 
 ## 关键文件
@@ -92,25 +92,25 @@ web (nginx:80) ──→ api (Java:9000) ──→ mysql:3306
 | `web-console/nginx.conf` | 前端 nginx 反向代理配置 |
 | `.env` | 环境变量（密码、端口、凭据） |
 | `sql/cloud_api.sql` | 数据库初始化脚本 |
-| `web-console/public/runtime-config.js` | 前端运行时配置（高德Key、MQTT凭据） |
+| `web-console/runtime-config.js.template` | 容器启动时生成的前端运行时配置模板 |
 | `cloud-service/src/main/resources/application.yml` | Spring Boot 配置 |
 
 ## 部署到云服务器
 
 ```bash
 # 1. 同步代码（排除构建产物和敏感文件）
-sshpass -p '20260727@Yoox' rsync -avz --delete \
+rsync -avz --delete \
   --exclude='.git' --exclude='node_modules' --exclude='target' \
   --exclude='srs' --exclude='web-console/dist' --exclude='.env' \
   ./ ubuntu@124.220.168.49:/home/ubuntu/yoox-cloud-gcs/
 
 # 2. 远程构建并重启
-sshpass -p '20260727@Yoox' ssh ubuntu@124.220.168.49 \
-  "cd /home/ubuntu/yoox-cloud-gcs && docker compose build api web && docker compose up -d api web"
+ssh ubuntu@124.220.168.49 \
+  "cd /home/ubuntu/yoox-cloud-gcs && docker compose --env-file .env build api web && docker compose --env-file .env up -d api web"
 
 # 3. 验证
-sshpass -p '20260727@Yoox' ssh ubuntu@124.220.168.49 \
-  "docker compose ps && curl -sS http://127.0.0.1:19000/actuator/health"
+ssh ubuntu@124.220.168.49 \
+  "cd /home/ubuntu/yoox-cloud-gcs && docker compose --env-file .env ps && curl -fsS http://127.0.0.1:19000/actuator/health"
 ```
 
 ### ⚠️ 部署注意事项
@@ -118,7 +118,8 @@ sshpass -p '20260727@Yoox' ssh ubuntu@124.220.168.49 \
 1. **根 Dockerfile 是 Java 后端**（Maven 构建），`web-console/Dockerfile` 是前端（Node 构建），不要混淆
 2. **服务器 .env 不要覆盖**，rsync 时排除 `.env`
 3. **YOOX_PUBLIC_HOST** 本地用 `127.0.0.1`，服务器用公网 IP
-4. **runtime-config.js** 通过 volume 挂载，修改后无需重建前端镜像
+4. 容器启动时由 `runtime-config.js.template` 和环境变量生成 `runtime-config.js`；修改公共主机或 Pilot
+   端口后重建 Web 容器即可，修改模板中的地图 Key 等静态内容则需要重新构建 Web 镜像
 5. 前端 nginx 将 `/manage|/map|/media|/wayline|/storage|/control|/actuator` 代理到 `api:9000`
 6. 设备 MQTT 共享凭据：`pilot / pilot123`（EMQX built_in_database 认证）
 

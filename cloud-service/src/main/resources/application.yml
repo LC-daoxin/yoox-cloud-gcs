@@ -45,6 +45,8 @@ jwt:
 
 app:
   mqtt-advertised-address: ${YOOX_MQTT_ADVERTISED_ADDRESS:}
+  # 多网段部署时按客户端本次访问的主机名回填 Broker 地址（端口仍取公告地址）
+  mqtt-advertised-follow-request-host: ${YOOX_MQTT_ADVERTISED_FOLLOW_REQUEST_HOST:true}
 
 mqtt:
   BASIC:
