@@ -2,17 +2,18 @@
 
 > 状态：离线镜像部署手册
 > 适用交付物：`yoox-cloud-gcs-nano-<version>.tar.gz`
-> 已验证样例：`yoox-cloud-gcs-nano-20261015-aa0e868-worktree.tar.gz`
+> 样例交付物：`yoox-cloud-gcs-nano-20261015-aa0e868-worktree-updated.tar.gz`
 > 更新日期：2026-10-16
 
 本手册用于把已经打包完成的 YOOX Cloud GCS 离线镜像包运行在 Windows 10/11 x64 的
 Docker Desktop 上。整个业务部署过程不使用项目源码、Maven/npm 或 Makefile 命令；所有业务
 镜像只从交付归档导入。
 
-样例归档位置：
+离线包可以放在客户电脑上任意可由 WSL 读取的本地目录，不要求存在 `D:\Code`。
+以下仅为样例归档位置；执行第 4 节时，必须使用实际收到的文件名和实际存放路径：
 
 ```text
-D:\Code\yoox-cloud-gcs-nano-20261015-aa0e868-worktree.tar.gz
+D:\Code\yoox-cloud-gcs-nano-20261015-aa0e868-worktree-updated.tar.gz
 ```
 
 归档内含 Compose 配置、环境模板、数据库初始化 SQL、脚本，以及 17 个 `linux/arm64`
@@ -25,7 +26,7 @@ GPU、资源、弱网或飞控安全验收。
 ```text
 Windows 10/11 x64
 ├─ Docker Desktop（WSL 2 backend、Linux containers、linux/amd64 服务端）
-├─ WSL2 Ubuntu（解压、校验、docker load、Compose 和烟雾测试）
+├─ WSL2 Ubuntu（解压、配置检查、docker load、Compose 和烟雾测试）
 ├─ QEMU（Docker Desktop 内置，用于运行 linux/arm64 镜像）
 └─ Windows 物理网卡 IPv4（浏览器、APP 和遥控器访问入口）
 ```
@@ -146,16 +147,50 @@ ipconfig
 
 ## 4. 复制和解压
 
-部署流程默认提供的归档文件完整，不执行 SHA256 哈希校验。以下命令均在 Ubuntu 中执行，先设置
-本次样例文件名：
+部署流程默认提供的归档文件完整，不执行 SHA256 哈希校验。以下命令均在 **Ubuntu 终端**中
+执行，不是在 PowerShell 中执行。
+
+### 4.1 按实际位置设置离线包路径
+
+1. 在 Windows 文件资源管理器中找到收到的 `.tar.gz` 离线包，使用“复制文件地址”，或在文件
+   属性中确认完整路径。路径必须包含文件名，不能只填所在文件夹。
+2. 把下面 `wslpath -u` 后单引号内的样例，替换为该文件的 **Windows 完整路径**。
+   如果复制结果自带外层双引号，去掉这对双引号，但保留命令中的单引号。
+3. `wslpath -u` 会转换为当前 Ubuntu 可用的 Linux 路径，客户不必把文件移动到 `D:\Code`。
+   路径中的空格和中文应原样保留，不要去掉引号。
 
 ```bash
-WINDOWS_ARCHIVE='/mnt/d/Code/yoox-cloud-gcs-nano-20261015-aa0e868-worktree.tar.gz'
+# 必须替换为客户电脑上的实际完整路径；下面只是示例。
+WINDOWS_ARCHIVE="$(wslpath -u 'D:\Code\yoox-cloud-gcs-nano-20261015-aa0e868-worktree-updated.tar.gz')" || {
+  printf '路径转换失败，请检查 Windows 完整路径。\n' >&2
+  exit 1
+}
+
+[ -f "$WINDOWS_ARCHIVE" ] && [ -r "$WINDOWS_ARCHIVE" ] || {
+  printf '找不到或无法读取离线包：%s\n请检查盘符、目录、完整文件名和 WSL 访问权限。\n' "$WINDOWS_ARCHIVE" >&2
+  exit 1
+}
+
 BUNDLE_NAME="${WINDOWS_ARCHIVE##*/}"
 WORK_DIR="$HOME/yoox-offline"
+printf '将使用离线包：%s\n' "$WINDOWS_ARCHIVE"
 ```
 
-把大文件复制到 WSL 文件系统后再解压和加载，避免长期从 `/mnt/d` 读取镜像层：
+例如，在 WSL 默认挂载配置下且相应盘符已挂载时，`C:\Users\客户\Downloads` 对应
+`/mnt/c/Users/客户/Downloads`，`D:\交付 包` 对应 `/mnt/d/交付 包`，文件名接在目录后。
+上述命令使用 `wslpath` 自动转换，无需手动拼接 `/mnt/<盘符>/`。
+
+如果提示文件不存在，先修正路径并重新执行本节；不要继续复制或加载镜像。此处仅检查文件是否
+存在且可读，不做 SHA256 校验。网络共享、尚未在 WSL 中挂载的移动盘或仅在线的云盘文件，建议
+先复制或下载到本机可读取的目录。
+
+归档文件名可能带 `-updated`，也可能因交付版本不同而变化。以实际收到的文件名为准，**不要
+根据归档文件名猜测镜像版本**：第 6 节会从包内 `VERSION` 读取正确的 `YOOX_VERSION`。
+
+### 4.2 复制和解压离线包
+
+把大文件复制到 WSL 文件系统后再解压和加载，避免长期从 Windows 挂载目录（例如 `/mnt/c`
+或 `/mnt/d`）读取镜像层：
 
 ```bash
 mkdir -p "$WORK_DIR"
