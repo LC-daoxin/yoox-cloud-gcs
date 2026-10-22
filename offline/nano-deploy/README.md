@@ -3,6 +3,8 @@
 由 `scripts/build-nano-offline-bundle.sh` 生成的单一 `.tar.gz` 文件包含
 **Jetson Nano 完全离线部署所需的全部内容**，无需目标 Nano 联网或克隆仓库。
 镜像范围包括核心业务、MySQL、Redis、MinIO、EMQX、MediaMTX、TURN，以及完整监控栈。
+同时包含全国普通离线地图、完整中文字体、普通屏及高分屏图标。默认首次打开使用离线地图，
+首页与座舱可切换到高德在线地图。地图包说明见 `OFFLINE-MAPS.md`。
 
 ## 目录结构
 
@@ -11,6 +13,8 @@ yoox-cloud-gcs-nano-<version>/
 ├── install.sh                              # Nano 一键安装脚本
 ├── DEPLOYMENT.md                           # 完整部署、运维与排障指南
 ├── WINDOWS-DEPLOYMENT.md                   # Windows x64 Docker Desktop 部署指南
+├── OFFLINE-MAPS.md                         # 地图安装、切换、更新与回滚
+├── maps/                                   # 全国 PMTiles、中文字体、图标及 SHA-256
 ├── .env.template                           # 部署环境配置
 ├── VERSION                                 # 业务镜像版本
 ├── IMAGE-MANIFEST.txt                      # 全部镜像清单
@@ -38,7 +42,7 @@ yoox-cloud-gcs-nano-<version>/
 
 ## 使用方法（Nano 完全无网环境）
 
-1. 把生成的单一 `.tar.gz` 包复制到 U 盘或 Nano
+1. 把生成的单一 `.tar.gz` 包复制到 U 盘或 Nano；含地图的包可能超过 4 GiB，U 盘应使用 exFAT/NTFS 等支持大文件的格式
 2. 在 Nano 上解压
 3. 进入解压目录执行一键安装，参数是本机局域网 IP：
 
@@ -102,7 +106,24 @@ YOOX_DEVICE_MQTT_USERNAME=pilot
 YOOX_DEVICE_MQTT_PASSWORD=pilot123
 ```
 
-编辑后重新运行 `bash install.sh <IP>` 即可继续。
+编辑的是安装日志所列的**部署目录 `.env`**，不是安装包里的模板。首次安装失败后 `.env` 仍会保留，
+重跑脚本会自动进入更新模式；仅修改 `.env.template` 不会同步到已有部署。
+更新时只更新镜像版本，不会用命令行 IP 自动覆盖已有 `YOOX_PUBLIC_HOST`。
+普通用户通常使用 `$HOME/yoox-cloud-gcs/.env`；root/sudo 安装可能使用 `/root/yoox-cloud-gcs/.env`，
+请以日志中的绝对路径为准。
+
+进入实际部署目录后，先备份，再定位并修改占位值：
+
+```bash
+cp -p .env ".env.bak.$(date +%Y%m%d-%H%M%S)"
+grep -nE '=(.*change_me|replace_with)' .env | cut -d= -f1
+nano .env
+bash scripts/preflight.sh .env
+```
+
+可从已填写模板逐项补齐占位值，不要整份覆盖 `.env` 或删除数据卷；已有服务应沿用原凭据。
+TURN 和 Grafana 等可选服务的占位值也需要处理。校验通过后，以原安装用户回到离线包目录重新运行
+`bash install.sh <IP>` 即可继续；原来启用的 `--with-turn` / `--with-monitoring` 参数也需保留。
 
 ## 部署后登录信息
 

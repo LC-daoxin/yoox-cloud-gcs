@@ -36,7 +36,7 @@ export interface Device {
   sub_type?: number
   firmware_version?: string
   bound_status?: boolean
-  status?: boolean | string
+  status?: boolean | string | number
   login_time?: string
   bound_time?: string
   children?: Device

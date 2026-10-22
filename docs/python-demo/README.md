@@ -99,6 +99,7 @@ YOOX_TAKEOFF_TARGET_LONGITUDE=
 | `demo_20_kmz_generate.py` | 离线生成与参考文件结构相同的 wpmz 航线 KMZ，输出到 `kmz/` | 无（纯本地） |
 | `demo_21_kmz_interactive.py` | 交互式航线编辑：设航线信息→逐点设航点（可选云台动作）→生成 KMZ | 无（纯本地） |
 | `demo_22_two_drone_control.py` | 双机并发一键起飞、分别 FlyTo、独立状态恢复 | 两套网关/飞机 SN、两套起飞点和 FlyTo 目标 |
+| `demo_23_two_drone_takeoff_test.py` | 自动发现当前两机、实时 OSD 预检、并发起飞测试与 JSON 报告 | 服务地址、登录账号、workspace；执行需显式 `--execute` |
 
 ## 4. 飞行控制流程
 
@@ -177,6 +178,36 @@ GPS 坐标，只改变相对高度：
 起飞阶段必须输入 `TAKEOFF TWO`，FlyTo 阶段必须输入 `FLYTO TWO`。任意一台出现
 超时、未知结果或失败时，`all` 都不会继续下一阶段。两台设备不是事务：一台已受理后，
 另一台仍可能失败，因此必须为每台飞机分别保留现场飞手、返航/悬停处置和安全隔离空域。
+
+### 4.2.2 当前在线双机起飞接口测试
+
+`demo_23_two_drone_takeoff_test.py` 从指定工作空间发现**恰好两套在线网关与飞机**，
+通过 WebSocket 获取各机实时 GPS 和地面待机状态，以各自当前位置为目标，默认
+目标相对高度 2 m、速度 1 m/s。先检查 `.env` 中的账号和工作空间是否对应目标服务。
+
+```bash
+# 只预检，不获取控制权、不发送飞行动作
+./run.sh demo_23_two_drone_takeoff_test.py \
+  --base-url http://192.168.5.3:8080 --ws-url ws://192.168.5.3:9000/api/v1/ws
+
+# 已确认两台均拆桨的台架测试：每机并发调用一次起飞 API
+./run.sh demo_23_two_drone_takeoff_test.py \
+  --base-url http://192.168.5.3:8080 --ws-url ws://192.168.5.3:9000/api/v1/ws \
+  --execute --props-removed --wait 30 --report /tmp/dual-takeoff-test.json
+
+# 离线回归检查，不连接设备
+.venv/bin/python3 -m unittest discover -s tests -v
+```
+
+报告文件必须不存在，省略 `--report` 时自动新建临时 JSON 文件。报告包含设备 SN、
+遥测、目标位置、各机调用时间、API 响应、任务状态与客户端调用时间差，不记录登录 Token。
+请求超时或结果未知时客户端不重发；服务端 MQTT 层仍有自己的重试策略。
+退出码 0 表示预检通过或两机均上报明确成功，1 表示预检/连接失败，2 表示有失败或未确认结果。
+
+`--props-removed` 是操作者对两台均拆桨的明确声明，仅允许台架测试省略原有的
+10 m 起飞点间隔检查；在线、地面待机、新鲜 OSD、有效坐标和设备原生检查仍然保留。
+**无桨测试只能验证指令链路，不能证明实际起飞成功或精确同步。** `task_finish`
+可能只是设备一直待机后的任务清理，报告将标为 `ended_unverified`。
 
 ### 4.3 一键返航与取消返航
 

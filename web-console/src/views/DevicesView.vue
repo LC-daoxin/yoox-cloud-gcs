@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { get, put, del } from '../services/api'
+import { isDeviceOnline as isOnline } from '../services/device-status'
 import { useSessionStore } from '../stores/session'
 import type { Device } from '../types'
 
@@ -107,9 +108,6 @@ function formatTime(value?: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }
 
-function isOnline(device: Device): boolean {
-  return device.status === true || device.status === 'online' || device.status === '1'
-}
 async function load() {
   loading.value = true; loadError.value = ''
   try {

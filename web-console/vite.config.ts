@@ -6,6 +6,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      '/maps/': 'http://localhost:8080',
       '/manage': 'http://localhost:9000',
       '/map': 'http://localhost:9000',
       '/media': 'http://localhost:9000',

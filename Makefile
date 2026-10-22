@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: init preflight config build up up-nano up-monitoring down logs ps smoke api-build web-build verify nano-offline-bundle
+.PHONY: init preflight config build up up-nano up-monitoring down logs ps smoke api-build web-build verify nano-offline-bundle offline-map
 
 init:
 	@test -f .env || cp .env.example .env
@@ -53,3 +53,6 @@ nano-offline-bundle:
 	./scripts/build-nano-offline-bundle.sh \
 		--version "$${VERSION:-}" \
 		--env-template "$${ENV_TEMPLATE:-.env.example}"
+
+offline-map:
+	bash scripts/prepare-offline-map.sh

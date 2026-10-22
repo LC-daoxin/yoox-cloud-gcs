@@ -4,10 +4,13 @@ export interface WhepStats {
   bitrateKbps: number
   width: number
   height: number
+  framesDecoded?: number
 }
 
 export interface WhepOptions {
   timeoutMs?: number
+  // Allow a just-started publisher to finish RTSP setup before WHEP is ready.
+  publisherWaitMs?: number
   onState?: (state: WhepState) => void
   onStats?: (stats: WhepStats) => void
 }
@@ -17,7 +20,8 @@ export type WhepErrorCode = 'cancelled' | 'http' | 'connectivity' | 'first-frame
 export class WhepError extends Error {
   constructor(
     message: string,
-    readonly code: WhepErrorCode
+    readonly code: WhepErrorCode,
+    readonly status?: number
   ) {
     super(message)
     this.name = 'WhepError'
@@ -34,6 +38,7 @@ interface WhepSession {
   video: HTMLVideoElement
   stream?: MediaStream
   resourceUrl?: string
+  request: AbortController
 }
 
 export class WhepPlayer {
@@ -52,13 +57,14 @@ export class WhepPlayer {
 
     const timeoutMs = options.timeoutMs ?? 16_000
     const deadline = Date.now() + timeoutMs
+    const publisherDeadline = Math.min(deadline, Date.now() + (options.publisherWaitMs ?? 0))
     let lastError: unknown
 
     while (generation === this.generation && Date.now() < deadline) {
       let session: WhepSession | undefined
       try {
         options.onState?.('connecting')
-        session = await this.open(video, endpoint, generation, options)
+        session = await this.open(video, endpoint, generation, options, Math.max(1, deadline - Date.now()))
         if (!this.isCurrent(session)) throw new WhepError('直播连接已取消', 'cancelled')
         await waitForPeerConnection(session.peer, Math.max(1_000, deadline - Date.now()))
         if (!this.isCurrent(session)) throw new WhepError('直播连接已取消', 'cancelled')
@@ -72,11 +78,11 @@ export class WhepPlayer {
         lastError = reason
         if (session) await this.closeSession(session)
         if (generation !== this.generation || Date.now() >= deadline) break
-        // HTTP errors (most commonly MediaMTX's 404 when no publisher exists)
-        // cannot be repaired by opening another WHEP session immediately. Let
-        // the page start/recover the device stream, then retry through its
-        // normal backoff instead of flooding MediaMTX for the whole timeout.
-        if (reason instanceof WhepError && reason.code === 'http') break
+        // The initial publisher probe fails immediately. After an acknowledged
+        // start, a short 404 window is normal while RTSP ANNOUNCE/RECORD finishes.
+        // Never retry authorization or other HTTP errors as publisher startup.
+        if (reason instanceof WhepError && reason.code === 'http' &&
+            (reason.status !== 404 || Date.now() + 600 >= publisherDeadline)) break
         await delay(600)
       }
     }
@@ -89,13 +95,15 @@ export class WhepPlayer {
     video: HTMLVideoElement,
     endpoint: string,
     generation: number,
-    options: WhepOptions
+    options: WhepOptions,
+    timeoutMs: number
   ) {
     video.autoplay = true
     video.muted = true
     video.playsInline = true
     const peer = new RTCPeerConnection()
-    const session: WhepSession = { generation, peer, video }
+    const session: WhepSession = { generation, peer, video, request: new AbortController() }
+    const requestTimeout = window.setTimeout(() => session.request.abort(), timeoutMs)
     this.session = session
     peer.addTransceiver('video', { direction: 'recvonly' })
     peer.ontrack = (event) => {
@@ -124,9 +132,10 @@ export class WhepPlayer {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/sdp' },
-        body: peer.localDescription?.sdp
+        body: peer.localDescription?.sdp,
+        signal: session.request.signal
       })
-      if (!response.ok) throw new WhepError(`WHEP 建链失败：HTTP ${response.status}`, 'http')
+      if (!response.ok) throw new WhepError(`WHEP 建链失败：HTTP ${response.status}`, 'http', response.status)
 
       const location = response.headers.get('Location')
       if (location) {
@@ -138,6 +147,8 @@ export class WhepPlayer {
     } catch (reason) {
       await this.closeSession(session)
       throw reason
+    } finally {
+      window.clearTimeout(requestTimeout)
     }
   }
 
@@ -162,7 +173,8 @@ export class WhepPlayer {
         options.onStats?.({
           bitrateKbps,
           width: session.video.videoWidth,
-          height: session.video.videoHeight
+          height: session.video.videoHeight,
+          framesDecoded: report.framesDecoded
         })
       })
     }, 1_000)
@@ -181,9 +193,18 @@ export class WhepPlayer {
     if (this.session === session) this.session = undefined
     if (session.video.srcObject === session.stream) session.video.srcObject = null
     session.peer.close()
+    session.request.abort()
     const resource = session.resourceUrl
     session.resourceUrl = undefined
-    if (resource) await fetch(resource, { method: 'DELETE' }).catch(() => undefined)
+    if (resource) {
+      const cleanup = new AbortController()
+      const timeout = window.setTimeout(() => cleanup.abort(), 1500)
+      try {
+        await fetch(resource, { method: 'DELETE', signal: cleanup.signal }).catch(() => undefined)
+      } finally {
+        window.clearTimeout(timeout)
+      }
+    }
   }
 
   async stop() {
@@ -191,6 +212,38 @@ export class WhepPlayer {
     window.clearInterval(this.statsTimer)
     this.statsTimer = 0
     await this.closeActiveSession()
+  }
+
+  async waitForFrame(timeoutMs = 3_000) {
+    const session = this.session
+    if (!session) throw new WhepError('直播连接已取消', 'cancelled')
+    await new Promise<void>((resolve, reject) => {
+      const video = session.video
+      const initialTime = video.currentTime
+      let callback: number | undefined
+      let settled = false
+      const timeout = window.setTimeout(() => finish(false), timeoutMs)
+      const poll = window.setInterval(() => {
+        if (video.currentTime !== initialTime && video.readyState >= 2) finish(true)
+      }, 100)
+      const cancelled = () => finish(false)
+      function finish(success: boolean) {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timeout)
+        window.clearInterval(poll)
+        session!.request.signal.removeEventListener('abort', cancelled)
+        if (callback !== undefined) video.cancelVideoFrameCallback(callback)
+        if (success) resolve()
+        else reject(new WhepError('等待新镜头视频帧超时或连接已取消', 'first-frame'))
+      }
+      session.request.signal.addEventListener('abort', cancelled, { once: true })
+      if (session.request.signal.aborted) return finish(false)
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        callback = video.requestVideoFrameCallback(() => finish(true))
+      }
+    })
+    if (!this.isCurrent(session)) throw new WhepError('直播连接已取消', 'cancelled')
   }
 }
 

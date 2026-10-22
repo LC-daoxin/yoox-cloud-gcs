@@ -323,6 +323,9 @@ services:
     environment:
       YOOX_PUBLIC_HOST: ${YOOX_PUBLIC_HOST:-127.0.0.1}
       YOOX_PILOT_PORT: ${YOOX_PILOT_PORT:-9000}
+      YOOX_MAP_PROVIDER: ${YOOX_MAP_PROVIDER:-offline}
+    volumes:
+      - ${YOOX_MAP_DATA_DIR:-./maps}:/srv/maps:ro
     depends_on:
       api:
         condition: service_healthy

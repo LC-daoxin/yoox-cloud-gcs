@@ -22,3 +22,4 @@ test "$(curl -sS -o /dev/null -w '%{http_code}' "$PILOT_BASE_URL/manage/api/v1/l
 test "$(curl -sS -o /dev/null -w '%{http_code}' "$PILOT_BASE_URL/api/v1/ws")" = "400"
 printf 'YOOX Cloud GCS HTTP smoke test passed: %s\n' "$BASE_URL"
 printf 'YOOX Pilot gateway smoke test passed: %s\n' "$PILOT_BASE_URL"
+bash "$ROOT_DIR/scripts/smoke-map.sh" "$BASE_URL"

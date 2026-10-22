@@ -3,6 +3,8 @@
 interface YooxRuntime {
   amapKey?: string
   amapSecurityCode?: string
+  mapProvider?: 'offline' | 'amap'
+  mapBaseUrl?: string
 }
 
 declare global {
@@ -34,15 +36,34 @@ export function loadAMap(): Promise<any> {
 
   window.__amapLoading = new Promise((resolve, reject) => {
     const script = document.createElement('script')
+    let settled = false
+    const timeout = window.setTimeout(() => {
+      if (settled) return
+      settled = true
+      script.remove()
+      window.__amapLoading = undefined
+      reject(new Error('高德地图加载超时，需要外网；可切换到全国离线地图'))
+    }, 12000)
     script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(key)}`
     script.async = true
     script.onerror = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      script.remove()
       window.__amapLoading = undefined
       reject(new Error('高德地图脚本加载失败，请检查 Key、安全密钥与网络'))
     }
     script.onload = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
       if (window.AMap) resolve(window.AMap)
-      else reject(new Error('高德地图脚本已加载但 AMap 未就绪'))
+      else {
+        window.__amapLoading = undefined
+        script.remove()
+        reject(new Error('高德地图脚本已加载但 AMap 未就绪'))
+      }
     }
     document.head.appendChild(script)
   })

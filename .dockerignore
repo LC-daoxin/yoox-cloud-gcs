@@ -6,3 +6,7 @@
 **/.DS_Store
 *.md
 docs/
+maps/
+offline/dist/
+web-console/test-results/
+web-console/playwright-report/

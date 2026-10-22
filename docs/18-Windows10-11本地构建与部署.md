@@ -50,7 +50,7 @@ Windows 10/11 x64
 - WSL 2.1.5 或更高版本；
 - Docker Desktop，使用 WSL 2 backend 和 Linux containers；
 - 至少 4 核 CPU、8 GB 内存，建议 16 GB；
-- C 盘建议至少预留 20 GB，归档所在磁盘和 WSL 文件系统还应各预留约 10 GB。
+- 含全国地图的首次安装建议为 WSL/Docker 数据盘预留至少 30 GB；归档所在盘还需容纳压缩包和解压目录，以实际交付文件大小复核。
 
 ARM64 模拟比原生运行慢，尤其是 MySQL、EMQX 和 Java API 首次启动。不要为此环境应用
 `compose.nano.yml` 的 Nano 资源上限。

@@ -55,6 +55,10 @@ offline/nano-deploy/.env.template
 /YOOX_Cloud_GCS.zip
 /YOOX_Cloud_GCS_source_20261015.zip
 /YOOX_Cloud_GCS_source_with_env_20261016.zip
+/YOOX_Cloud_GCS_source_with_env_20261022.zip
 /YOOX_Cloud_GCS_src.zip
 /logs/
 /src/test/
+/maps/
+/web-console/test-results/
+/web-console/playwright-report/

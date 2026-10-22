@@ -40,6 +40,7 @@ docker compose version >/dev/null 2>&1 || { printf '[✗] 未安装 docker compo
 docker info >/dev/null 2>&1 || { printf '[✗] Docker 守护进程未运行\n'; exit 1; }
 ls "$SCRIPT_DIR"/images/*.tar.gz >/dev/null 2>&1 || { printf '[✗] images/ 下没有镜像包（*.tar.gz）\n'; exit 1; }
 [ -f "$SCRIPT_DIR/deploy/compose.yml" ] || { printf '[✗] 缺少 deploy/compose.yml\n'; exit 1; }
+bash "$SCRIPT_DIR/deploy/scripts/install-offline-map.sh" "$SCRIPT_DIR/maps" "$SCRIPT_DIR/maps" --verify-only
 
 IP_MATCHED=$(ip addr 2>/dev/null | grep -c "inet $NODE_IP/" || true)
 if [ "$IP_MATCHED" = "0" ]; then
@@ -91,7 +92,8 @@ if $UPDATE_MODE || [ -e "$TARGET_DIR/.env" ]; then
         "$SCRIPT_DIR/deploy/sql" \
         "$TARGET_DIR/"
     chmod +x "$TARGET_DIR/scripts/preflight.sh" "$TARGET_DIR/scripts/smoke-test.sh" 2>/dev/null || true
-    printf '[✓] 配置文件已更新，.env 未修改\n'
+    printf '[✓] 配置文件已更新；保留部署配置 %s/.env（仅镜像版本会更新）\n' "$TARGET_DIR"
+    printf '[i] 已有部署不会重新读取 %s/.env.template，也不会自动覆盖 YOOX_PUBLIC_HOST；请直接编辑部署配置。\n' "$SCRIPT_DIR"
     # 更新 YOOX_VERSION（如有变化）
     if [ "$YOOX_VERSION" != "local" ]; then
         if grep -q '^YOOX_VERSION=' "$TARGET_DIR/.env"; then
@@ -119,21 +121,17 @@ else
     chmod 600 "$TARGET_DIR/.env"
     printf '[✓] 已生成 %s/.env（YOOX_PUBLIC_HOST=%s, YOOX_VERSION=%s）\n' \
         "$TARGET_DIR" "$NODE_IP" "$YOOX_VERSION"
-
-    # 检查是否仍有未替换的占位符
-    if grep -Eq '=(.*change_me|replace_with)' "$TARGET_DIR/.env"; then
-        printf '\n[!] .env 中仍有未填写的变量（change_me / replace_with），请编辑后再继续：\n'
-        grep -E '=(.*change_me|replace_with)' "$TARGET_DIR/.env" | sed 's/=.*//' | sed 's/^/    /'
-        printf '\n    编辑命令: nano %s/.env\n' "$TARGET_DIR"
-        printf '    编辑完成后重新运行: bash %s %s\n' "$0" "$NODE_IP"
-        exit 1
-    fi
 fi
 
 # ── 4. 校验配置 ───────────────────────────────────────────────────
 printf '\n=== [4/6] 校验配置 ===\n'
+printf '[i] 实际部署配置：%s/.env\n' "$TARGET_DIR"
 cd "$TARGET_DIR"
-bash scripts/preflight.sh .env
+MAP_DEST=$(sed -n 's/^YOOX_MAP_DATA_DIR=//p' .env | tail -n 1 | sed "s/^['\"]//; s/['\"]$//")
+MAP_DEST=${MAP_DEST:-./maps}
+case "$MAP_DEST" in /*) ;; *) MAP_DEST="$TARGET_DIR/$MAP_DEST";; esac
+bash scripts/install-offline-map.sh "$SCRIPT_DIR/maps" "$MAP_DEST"
+bash scripts/preflight.sh "$TARGET_DIR/.env"
 printf '[✓] 配置有效\n'
 
 # ── 5. 启动服务 ───────────────────────────────────────────────────

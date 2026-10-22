@@ -31,4 +31,8 @@ This private repository intentionally tracks all project `.env` and `.env.*` fil
 
 ## Deployment
 
-The production target is `ubuntu@124.220.168.49`. After each requested update passes relevant checks, deploy unless the user opts out. Authenticate with an SSH key, agent, or runtime secret; never store passwords here. Review the diff, preserve remote `.env` and data volumes, rebuild with Docker Compose, and run `make smoke`. Configure the remote checkout path outside this file.
+Deploy only when the user explicitly requests deployment; completing an update does not require deployment. Use the deployment target and remote checkout path specified for that request. Authenticate with an SSH key, agent, or runtime secret; never store passwords here. Before a requested deployment, run relevant checks and review the diff. Preserve remote `.env` and data volumes, rebuild with Docker Compose, and run `make smoke`.
+
+## Troubleshooting Priority
+
+For Nano/Autel cloud connections that succeed and immediately disconnect, check Nano internet access, default route, DNS, actual clock accuracy, NTP synchronization, and external service dependencies first, before changing IPs, restarting services, or deploying code fixes. On 2026-10-21, the user reported that connecting Nano to the internet stopped the disconnections; Nano had also been about 11 hours 49 minutes behind, with NTP unsynchronized. Connectivity was restored after a separate clock correction, so neither NTP nor any particular external dependency is a proven sole cause. Treat MQTT `takenover` and protocol errors as evidence requiring correlation, not automatic proof of the root cause. Follow `docs/09-遥控器云服务频繁断连排查.md`, including its dated incident record and safe online/offline comparison procedure.

@@ -11,6 +11,8 @@ import com.yoox.great.mqtt.handle.requests.TopicRequestsRequest;
 import com.yoox.great.mqtt.handle.requests.TopicRequestsResponse;
 import com.yoox.great.mqtt.handle.state.TopicStateRequest;
 import com.yoox.great.mqtt.handle.state.TopicStateResponse;
+import com.yoox.great.mqtt.handle.status.TopicStatusRequest;
+import com.yoox.great.mqtt.handle.status.TopicStatusResponse;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.annotation.AfterReturning;
 import org.aspectj.lang.annotation.Aspect;
@@ -22,14 +24,18 @@ import java.util.Objects;
 @Component
 public class MqttReplyHandler {
 
-    @AfterReturning(value = "execution(public com.yoox.great.mqtt.core.CommonTopicResponse+ com.yoox.*.api.*.*(com.yoox.great.mqtt.core.CommonTopicRequest+, org.springframework.messaging.MessageHeaders))", returning = "result")
+    // Handlers override the API methods in com.yoox.service.*. Match the
+    // reply signature there as well, otherwise correlation fields are lost.
+    @AfterReturning(value = "execution(public com.yoox.great.mqtt.core.CommonTopicResponse+ com.yoox..*.*(com.yoox.great.mqtt.core.CommonTopicRequest+, org.springframework.messaging.MessageHeaders))", returning = "result")
     public Object validateReturnValue(JoinPoint point, CommonTopicResponse result) {
         if (Objects.isNull(result)) {
             return null;
         }
         CommonTopicRequest request = (CommonTopicRequest) point.getArgs()[0];
         result.setBid(request.getBid()).setTid(request.getTid()).setTimestamp(System.currentTimeMillis());
-        if (result instanceof TopicEventsResponse) {
+        if (result instanceof TopicStatusResponse) {
+            ((TopicStatusResponse) result).setMethod(((TopicStatusRequest) request).getMethod());
+        } else if (result instanceof TopicEventsResponse) {
             fillEvents((TopicEventsResponse) result, (TopicEventsRequest) request);
         } else if (result instanceof TopicRequestsResponse) {
             validateRequests((TopicRequestsResponse) result, (TopicRequestsRequest) request);
