@@ -1,0 +1,32 @@
+# Optional x86 Linux software transcoder. Include after compose.yml explicitly.
+# docker compose -f compose.yml -f compose.transcode.yml --env-file .env up -d --build --no-deps rtsp-transcoder
+services:
+  rtsp-transcoder:
+    build:
+      context: ./deploy/rtsp-transcoder
+    image: yoox/rtsp-transcoder:local
+    restart: unless-stopped
+    init: true
+    networks:
+      - yoox-net
+    environment:
+      YOOX_TRANSCODE_SOURCE_PATH: ${YOOX_TRANSCODE_SOURCE_PATH:?Set the original MediaMTX path}
+      YOOX_TRANSCODE_WIDTH: ${YOOX_TRANSCODE_WIDTH:-1280}
+      YOOX_TRANSCODE_HEIGHT: ${YOOX_TRANSCODE_HEIGHT:-720}
+      YOOX_TRANSCODE_FPS: ${YOOX_TRANSCODE_FPS:-25}
+      YOOX_TRANSCODE_BITRATE_KBPS: ${YOOX_TRANSCODE_BITRATE_KBPS:-1500}
+      YOOX_TRANSCODE_THREADS: ${YOOX_TRANSCODE_THREADS:-2}
+      YOOX_RTSP_USERNAME: ${YOOX_RTSP_USERNAME:-yoox-publisher}
+      YOOX_RTSP_PASSWORD: ${YOOX_RTSP_PASSWORD:?Set YOOX_RTSP_PASSWORD in .env}
+    cpus: 2.0
+    mem_limit: 768m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

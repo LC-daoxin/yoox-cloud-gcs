@@ -323,3 +323,10 @@ docker compose --env-file .env logs --tail=200 api web mysql redis emqx mediamtx
 - `make smoke` 同时通过 HTTP 和 Pilot 网关检查。
 - Web 可以登录，API 健康状态为 `UP`。
 - 真机测试时，设备能够访问 Linux 主机的 Pilot、MQTT、RTSP 和 WebRTC 端口。
+
+## 可选 RTSP 低码率转码
+
+x86 Linux 可显式叠加 `compose.transcode.yml`，使用独立 FFmpeg 容器发布 `-low` 流。
+默认最高 720p、25 fps、目标 1500 kbps，限制 2 核 CPU / 768 MB 内存，不新增端口或卷。
+输入路径及 `YOOX_TRANSCODE_*` 参数见 [RTSP 低码率转码服务](21-RTSP低码率转码服务.md)。
+该服务默认不启动，使用现有 RTSP 发布凭据，未纳入现有离线镜像包。

@@ -11,6 +11,7 @@
 | 文档 | 用途 | 权威来源 |
 | --- | --- | --- |
 | [配置指南](06-配置指南.md) | 环境变量、端口、多网卡、MQTT、MinIO、媒体 | `.env.example`、Compose、`application.yml` |
+| [RTSP 低码率转码服务](21-RTSP低码率转码服务.md) | x86 Linux 可选 FFmpeg 转码、VLC 低码率输出、验证与停止 | `compose.transcode.yml`、`deploy/rtsp-transcoder/` |
 | [全国离线地图与高德切换](20-全国离线地图与高德切换.md) | 全国底图、中文字体、离线打包、地图切换和验收 | 地图适配器、地图包清单、安装及 smoke 脚本 |
 | [API 指南](07-API指南.md) | 登录、设备、直播、DRC、控制、航线、媒体流程 | Controller、运行时 OpenAPI |
 | [部署与运维指南](08-部署运维指南.md) | Nano 运行服务的巡检、配置变更、备份和排障 | Compose、运行时健康检查 |
